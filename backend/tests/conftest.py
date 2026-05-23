@@ -5,6 +5,7 @@ os.environ.setdefault("SYNC_DATABASE_URL", "sqlite:///./test.db")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("REDIS_URL", "redis://localhost:6379/15")
+os.environ["DEBUG"] = "true"
 
 import pytest
 from httpx import ASGITransport, AsyncClient

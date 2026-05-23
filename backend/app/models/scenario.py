@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Integer, Float, Boolean, DateTime, Text, ARRAY, Enum as SAEnum
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import String, Integer, Float, Boolean, DateTime, Text, JSON, Enum as SAEnum
+from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
 
@@ -23,19 +23,19 @@ class Scenario(Base):
 
     industry_vertical: Mapped[str] = mapped_column(SAEnum("healthcare", "energy", "finance", "government", "technology", "retail", "education", "other", name="industry_vertical"), nullable=True)
     initial_access_vector: Mapped[str] = mapped_column(String(255), nullable=True)
-    affected_asset_types: Mapped[list] = mapped_column(ARRAY(String), nullable=True)
+    affected_asset_types: Mapped[list] = mapped_column(ARRAY(String).with_variant(JSON, "sqlite"), nullable=True)
 
-    mitre_techniques: Mapped[list] = mapped_column(ARRAY(String), nullable=True)
-    nist_controls: Mapped[list] = mapped_column(ARRAY(String), nullable=True)
-    regulatory_frameworks: Mapped[list] = mapped_column(ARRAY(String), nullable=True)
+    mitre_techniques: Mapped[list] = mapped_column(ARRAY(String).with_variant(JSON, "sqlite"), nullable=True)
+    nist_controls: Mapped[list] = mapped_column(ARRAY(String).with_variant(JSON, "sqlite"), nullable=True)
+    regulatory_frameworks: Mapped[list] = mapped_column(ARRAY(String).with_variant(JSON, "sqlite"), nullable=True)
 
     difficulty: Mapped[str] = mapped_column(SAEnum("awareness", "practitioner", "expert", name="difficulty_level"), default="practitioner")
     estimated_minutes: Mapped[int] = mapped_column(Integer, default=45)
     compression_ratio: Mapped[float] = mapped_column(Float, default=8.0)
 
-    alert_sequence: Mapped[dict] = mapped_column(JSONB, nullable=True)
-    decision_tree: Mapped[dict] = mapped_column(JSONB, nullable=True)
-    debrief_skeleton: Mapped[dict] = mapped_column(JSONB, nullable=True)
+    alert_sequence: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
+    decision_tree: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
+    debrief_skeleton: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
 
     status: Mapped[str] = mapped_column(SAEnum("draft", "review", "approved", "rejected", "archived", name="scenario_status"), default="draft")
     is_private: Mapped[bool] = mapped_column(Boolean, default=False)

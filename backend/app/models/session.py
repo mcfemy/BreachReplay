@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, Integer, Float, Boolean, DateTime, ForeignKey, Text, Enum as SAEnum
+from sqlalchemy import String, Integer, Float, Boolean, DateTime, ForeignKey, Text, JSON, Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
@@ -26,7 +26,7 @@ class SimulationSession(Base):
     decisions_made: Mapped[int] = mapped_column(Integer, default=0)
     decisions_correct: Mapped[int] = mapped_column(Integer, default=0)
 
-    debrief_report: Mapped[dict] = mapped_column(JSONB, nullable=True)
+    debrief_report: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
     debrief_pdf_key: Mapped[str] = mapped_column(String(500), nullable=True)
     debrief_generated_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
