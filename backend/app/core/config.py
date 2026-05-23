@@ -1,0 +1,38 @@
+from pydantic_settings import BaseSettings
+from typing import Optional
+
+
+class Settings(BaseSettings):
+    DATABASE_URL: str
+    SYNC_DATABASE_URL: str
+
+    ANTHROPIC_API_KEY: str
+    CLAUDE_MODEL: str = "claude-sonnet-4-6"
+
+    SECRET_KEY: str
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+
+    REDIS_URL: str = "redis://localhost:6379/0"
+
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    AWS_REGION: str = "us-east-1"
+    S3_BUCKET: str = "breachreplay-documents"
+
+    SENDGRID_API_KEY: Optional[str] = None
+    FROM_EMAIL: str = "noreply@breachreplay.io"
+
+    SENTRY_DSN: Optional[str] = None
+
+    SUPABASE_URL: Optional[str] = None
+    SUPABASE_ANON_KEY: Optional[str] = None
+
+    ENVIRONMENT: str = "development"
+    DEBUG: bool = True
+
+    class Config:
+        env_file = ".env"
+
+
+settings = Settings()
