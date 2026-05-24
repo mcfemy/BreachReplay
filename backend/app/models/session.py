@@ -35,8 +35,8 @@ class SimulationSession(Base):
 
     scenario: Mapped["Scenario"] = relationship("Scenario", back_populates="sessions")
     organization: Mapped["Organization"] = relationship("Organization", back_populates="sessions")
-    participants: Mapped[list["SessionParticipant"]] = relationship("SessionParticipant", back_populates="session")
-    decisions: Mapped[list["SessionDecision"]] = relationship("SessionDecision", back_populates="session")
+    participants: Mapped[list["SessionParticipant"]] = relationship("SessionParticipant", back_populates="session", cascade="all, delete-orphan")
+    decisions: Mapped[list["SessionDecision"]] = relationship("SessionDecision", back_populates="session", cascade="all, delete-orphan")
 
 
 class SessionParticipant(Base):

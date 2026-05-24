@@ -1,4 +1,7 @@
+import axios from "axios";
 import { create } from "zustand";
+
+const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api/v1";
 
 interface User {
   id: string;
@@ -11,19 +14,51 @@ interface User {
 interface AuthState {
   user: User | null;
   token: string | null;
-  setAuth: (token: string, user: User) => void;
-  logout: () => void;
+  refreshToken: string | null;
+  setAuth: (token: string, refreshToken: string, user: User) => void;
+  setToken: (token: string, refreshToken: string) => void;
+  logout: () => Promise<void>;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
-  user: null,
+function loadUser(): User | null {
+  try {
+    const raw = localStorage.getItem("br_user");
+    return raw ? (JSON.parse(raw) as User) : null;
+  } catch {
+    return null;
+  }
+}
+
+export const useAuthStore = create<AuthState>((set, get) => ({
+  user: loadUser(),
   token: localStorage.getItem("br_token"),
-  setAuth: (token, user) => {
+  refreshToken: localStorage.getItem("br_refresh_token"),
+
+  setAuth: (token, refreshToken, user) => {
     localStorage.setItem("br_token", token);
-    set({ token, user });
+    localStorage.setItem("br_refresh_token", refreshToken);
+    localStorage.setItem("br_user", JSON.stringify(user));
+    set({ token, refreshToken, user });
   },
-  logout: () => {
+
+  setToken: (token, refreshToken) => {
+    localStorage.setItem("br_token", token);
+    localStorage.setItem("br_refresh_token", refreshToken);
+    set({ token, refreshToken });
+  },
+
+  logout: async () => {
+    const refreshToken = get().refreshToken;
+    if (refreshToken) {
+      try {
+        await axios.post(`${API_BASE}/auth/logout`, { refresh_token: refreshToken });
+      } catch {
+        // Best-effort — clear local state regardless of network failure
+      }
+    }
     localStorage.removeItem("br_token");
-    set({ token: null, user: null });
+    localStorage.removeItem("br_refresh_token");
+    localStorage.removeItem("br_user");
+    set({ token: null, refreshToken: null, user: null });
   },
 }));

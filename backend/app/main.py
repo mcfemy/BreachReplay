@@ -1,11 +1,12 @@
+import asyncio
+import json
 import time
 import uuid
-from collections import defaultdict
 from contextlib import asynccontextmanager
 
 import redis.asyncio as aioredis
 import sentry_sdk
-from fastapi import FastAPI, WebSocket, Query
+from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.requests import Request
 from jose import JWTError, jwt as jose_jwt
@@ -18,6 +19,7 @@ from starlette.responses import JSONResponse, Response
 from app.api import api_router
 from app.core.config import settings
 from app.core.logging import set_request_context, setup_logging
+from app.core.redis import get_redis
 from app.core.security import limiter, sentry_before_send
 from app.db.session import engine
 from app.websocket.handlers import simulation_ws_handler
@@ -63,9 +65,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Strict-Transport-Security"] = (
             "max-age=31536000; includeSubDomains; preload"
         )
+        local_ws = "ws://localhost:8000 ws://127.0.0.1:8000" if settings.DEBUG else ""
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "connect-src 'self' wss://breachreplay.io; "
+            f"connect-src 'self' wss://breachreplay.io {local_ws}; "
             "frame-ancestors 'none'"
         )
         return response
@@ -131,37 +134,65 @@ async def health_redis():
         await redis_client.aclose()
 
 
-# ── WebSocket per-IP rate limiter (10 new connections / 60 s) ─────────────────
-_ws_connect_log: dict[str, list[float]] = defaultdict(list)
+# ── WebSocket per-IP rate limiter — Redis sliding window (10 conn / 60 s) ─────
 _WS_LIMIT = 10
 _WS_WINDOW = 60
 
 
-def _ws_rate_allowed(client_ip: str) -> bool:
-    now = time.monotonic()
-    log = _ws_connect_log[client_ip]
-    log[:] = [t for t in log if now - t < _WS_WINDOW]
-    if not log and client_ip in _ws_connect_log:
-        del _ws_connect_log[client_ip]
-    if len(log) >= _WS_LIMIT:
-        return False
-    _ws_connect_log[client_ip].append(now)
-    return True
+def _get_client_ip(websocket: WebSocket) -> str:
+    """Extract the true client IP, respecting standard proxy headers."""
+    forwarded_for = websocket.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    cf_ip = websocket.headers.get("cf-connecting-ip")
+    if cf_ip:
+        return cf_ip.strip()
+    return websocket.client.host if websocket.client else "unknown"
+
+
+async def _ws_rate_allowed(r: aioredis.Redis, client_ip: str) -> bool:
+    """Distributed sliding-window rate check backed by Redis sorted sets."""
+    key = f"ws_rate:{client_ip}"
+    now_ms = int(time.time() * 1000)
+    window_start_ms = now_ms - (_WS_WINDOW * 1000)
+    member = str(uuid.uuid4())  # unique per request to avoid score collisions
+
+    pipe = r.pipeline()
+    pipe.zremrangebyscore(key, "-inf", window_start_ms)
+    pipe.zadd(key, {member: now_ms})
+    pipe.zcard(key)
+    pipe.expire(key, _WS_WINDOW + 1)
+    results = await pipe.execute()
+    count = results[2]
+    return count <= _WS_LIMIT
 
 
 @app.websocket("/ws/session/{session_id}")
-async def websocket_session(
-    websocket: WebSocket,
-    session_id: str,
-    token: str = Query(..., description="JWT access token"),
-):
-    # 1. Per-IP rate limit before the handshake is completed
-    client_ip = websocket.client.host if websocket.client else "unknown"
-    if not _ws_rate_allowed(client_ip):
-        await websocket.close(code=4029)  # 4029 = Too Many Requests (app-level)
+async def websocket_session(websocket: WebSocket, session_id: str):
+    # 1. Per-IP rate limit before completing the upgrade (BR-ARC-02)
+    client_ip = _get_client_ip(websocket)
+    r = await get_redis()
+    if not await _ws_rate_allowed(r, client_ip):
+        await websocket.close(code=4029)
         return
 
-    # 2. Verify JWT before accepting the WebSocket upgrade
+    # 2. Complete the HTTP → WebSocket upgrade
+    await websocket.accept()
+
+    # 3. First message must be an auth frame within 3 s (BR-SEC-01 / BR-BUG-01)
+    #    This avoids putting the JWT in the URL (where it would appear in server logs).
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)
+        auth_msg = json.loads(raw)
+        if auth_msg.get("type") != "auth":
+            await websocket.close(code=4001)
+            return
+        token = auth_msg.get("token", "")
+    except (asyncio.TimeoutError, json.JSONDecodeError, Exception):
+        await websocket.close(code=4001)
+        return
+
+    # 4. Verify JWT
     try:
         payload = jose_jwt.decode(
             token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
@@ -170,7 +201,7 @@ async def websocket_session(
         if not user_id:
             raise ValueError("Missing sub claim")
     except (JWTError, ValueError):
-        await websocket.close(code=4001)  # 4001 = Unauthorized
+        await websocket.close(code=4001)
         return
 
     await simulation_ws_handler(websocket, session_id, user_id)

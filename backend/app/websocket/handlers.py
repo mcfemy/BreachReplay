@@ -34,7 +34,8 @@ async def simulation_ws_handler(websocket: WebSocket, session_id: str, user_id: 
                 await manager.send_personal(websocket, build_system_event("pong"))
 
             elif msg_type == "stream_alerts":
-                asyncio.create_task(_stream_alerts(session_id, user_id))
+                if manager.start_streaming(session_id):
+                    asyncio.create_task(_stream_alerts(session_id, user_id))
 
     except WebSocketDisconnect:
         manager.disconnect(session_id, websocket)
@@ -62,15 +63,18 @@ async def _stream_alerts(session_id: str, requester_id: str):
         total = len(alerts)
         speed = session.speed_multiplier or 1.0
 
-        for i, alert in enumerate(alerts):
-            await manager.broadcast(session_id, build_alert_event(alert, i, total))
+        try:
+            for i, alert in enumerate(alerts):
+                await manager.broadcast(session_id, build_alert_event(alert, i, total))
 
-            if alert.get("timestamp") in gates_by_trigger:
-                gate = gates_by_trigger[alert["timestamp"]]
-                await manager.broadcast(session_id, build_decision_gate_event(gate))
-                await asyncio.sleep(0)
+                if alert.get("timestamp") in gates_by_trigger:
+                    gate = gates_by_trigger[alert["timestamp"]]
+                    await manager.broadcast(session_id, build_decision_gate_event(gate))
+                    await asyncio.sleep(0)
 
-            interval = 3.0 / speed
-            await asyncio.sleep(interval)
+                interval = 3.0 / speed
+                await asyncio.sleep(interval)
 
-        await manager.broadcast(session_id, build_system_event("simulation_complete"))
+            await manager.broadcast(session_id, build_system_event("simulation_complete"))
+        finally:
+            manager.stop_streaming(session_id)

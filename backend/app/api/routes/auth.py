@@ -15,6 +15,7 @@ from app.core.security import (
     get_current_user,
     hash_password,
     limiter,
+    revoke_all_user_sessions,
     revoke_refresh_token,
     store_password_reset_token,
     validate_password_reset_token,
@@ -79,6 +80,7 @@ async def register(request: Request, payload: UserCreate, db: AsyncSession = Dep
     await db.flush()
     access_token = create_access_token({"sub": user.id})
     refresh_token = await create_refresh_token(str(user.id))
+    await db.commit()
     return TokenOut(
         access_token=access_token,
         refresh_token=refresh_token,
@@ -94,6 +96,7 @@ async def login(request: Request, payload: UserLogin, db: AsyncSession = Depends
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     user.last_login = datetime.utcnow()
+    await db.commit()
     access_token = create_access_token({"sub": user.id})
     refresh_token = await create_refresh_token(str(user.id))
     return TokenOut(
@@ -156,6 +159,9 @@ async def reset_password(request: Request, payload: ResetPasswordRequest, db: As
     if not user or not user.is_active:
         raise HTTPException(status_code=400, detail="Invalid or expired reset token")
     user.hashed_password = hash_password(payload.new_password)
+    await db.commit()
+    # Revoke every active session so a hijacker cannot keep using old refresh tokens (BR-SEC-02)
+    await revoke_all_user_sessions(user_id)
     await delete_password_reset_token(payload.token)
     return MessageResponse(message="Password reset successfully")
 

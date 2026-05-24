@@ -1,4 +1,3 @@
-import asyncio
 import json
 from datetime import datetime, timezone
 
@@ -8,7 +7,7 @@ from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.db.session import AsyncSessionLocal
+from app.db.session import SyncSessionLocal
 from app.models.scenario import Scenario
 from app.models.session import SimulationSession, SessionDecision
 from app.pipeline.celery_app import celery_app
@@ -99,7 +98,7 @@ def process_advisory_url(self, url: str, source_type: str = "cisa", source_refer
             "status": "review" if extracted.get("extraction_confidence", 0) >= 0.7 else "draft",
         }
 
-        asyncio.run(_save_scenario(scenario_data))
+        _save_scenario_sync(scenario_data)
         return {"status": "success", "title": scenario_data["title"], "confidence": extracted.get("extraction_confidence")}
     except Exception as e:
         _handle_task_failure(self, e)
@@ -109,31 +108,34 @@ def process_advisory_url(self, url: str, source_type: str = "cisa", source_refer
 @celery_app.task(bind=True, name="app.pipeline.tasks.generate_session_debrief")
 def generate_session_debrief(self, session_id: str):
     try:
-        asyncio.run(_generate_debrief(session_id))
+        _generate_debrief_sync(session_id)
     except Exception as e:
         _handle_task_failure(self, e)
         raise
 
 
-async def _save_scenario(data: dict):
-    async with AsyncSessionLocal() as db:
+def _save_scenario_sync(data: dict) -> None:
+    with SyncSessionLocal() as db:
         scenario = Scenario(**{k: v for k, v in data.items() if v is not None})
         db.add(scenario)
-        await db.commit()
+        db.commit()
 
 
-async def _generate_debrief(session_id: str):
-    async with AsyncSessionLocal() as db:
-        s_result = await db.execute(select(SimulationSession).where(SimulationSession.id == session_id))
-        session = s_result.scalar_one_or_none()
+def _generate_debrief_sync(session_id: str) -> None:
+    with SyncSessionLocal() as db:
+        session = db.execute(
+            select(SimulationSession).where(SimulationSession.id == session_id)
+        ).scalar_one_or_none()
         if not session:
             return
 
-        sc_result = await db.execute(select(Scenario).where(Scenario.id == session.scenario_id))
-        scenario = sc_result.scalar_one_or_none()
+        scenario = db.execute(
+            select(Scenario).where(Scenario.id == session.scenario_id)
+        ).scalar_one_or_none()
 
-        d_result = await db.execute(select(SessionDecision).where(SessionDecision.session_id == session_id))
-        decisions_raw = d_result.scalars().all()
+        decisions_raw = db.execute(
+            select(SessionDecision).where(SessionDecision.session_id == session_id)
+        ).scalars().all()
 
         decision_tree_map = {g["id"]: g for g in (scenario.decision_tree or [])}
 
@@ -165,4 +167,4 @@ async def _generate_debrief(session_id: str):
 
         session.debrief_report = report
         session.debrief_generated_at = datetime.utcnow()
-        await db.commit()
+        db.commit()

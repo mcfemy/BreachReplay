@@ -12,7 +12,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=True)
-    role: Mapped[str] = mapped_column(SAEnum("admin", "ciso", "analyst", "observer", name="user_role"), default="analyst")
+    role: Mapped[str] = mapped_column(SAEnum("owner", "admin", "analyst", "viewer", name="user_role"), default="analyst")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     organization_id: Mapped[str] = mapped_column(String, ForeignKey("organizations.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

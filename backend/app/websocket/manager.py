@@ -8,9 +8,21 @@ from datetime import datetime
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[str, Set[WebSocket]] = {}
+        self.streaming_sessions: Set[str] = set()
+
+    def start_streaming(self, session_id: str) -> bool:
+        """Mark a session as streaming. Returns False if already streaming."""
+        if session_id in self.streaming_sessions:
+            return False
+        self.streaming_sessions.add(session_id)
+        return True
+
+    def stop_streaming(self, session_id: str):
+        """Remove a session from streaming state."""
+        self.streaming_sessions.discard(session_id)
 
     async def connect(self, session_id: str, websocket: WebSocket):
-        await websocket.accept()
+        # Caller (websocket_session in main.py) already called websocket.accept()
         if session_id not in self.active_connections:
             self.active_connections[session_id] = set()
         self.active_connections[session_id].add(websocket)

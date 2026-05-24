@@ -62,7 +62,7 @@ async def create_scenario(
 ):
     scenario = Scenario(**payload.model_dump())
     db.add(scenario)
-    await db.flush()
+    await db.commit()
     return ScenarioOut.model_validate(scenario)
 
 
@@ -77,6 +77,7 @@ async def approve_scenario(
     if not scenario:
         raise HTTPException(status_code=404, detail="Scenario not found")
     scenario.status = "approved"
+    await db.commit()
     return ScenarioOut.model_validate(scenario)
 
 
@@ -93,4 +94,5 @@ async def reject_scenario(
         raise HTTPException(status_code=404, detail="Scenario not found")
     scenario.status = "rejected"
     scenario.review_notes = review_notes
+    await db.commit()
     return ScenarioOut.model_validate(scenario)

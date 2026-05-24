@@ -9,6 +9,7 @@ from app.models.scenario import Scenario
 from app.models.user import User
 from app.schemas.session import SessionCreate, SessionOut, DecisionSubmit, DecisionResult
 from app.core.security import get_current_user
+from app.pipeline.tasks import generate_session_debrief
 from typing import List
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -50,6 +51,7 @@ async def create_session(
         role="incident_commander",
     )
     db.add(participant)
+    await db.commit()
     return SessionOut.model_validate(session)
 
 
@@ -84,6 +86,7 @@ async def start_session(
         raise HTTPException(status_code=400, detail=f"Session cannot be started from status: {session.status}")
     session.status = "active"
     session.started_at = datetime.utcnow()
+    await db.commit()
     return SessionOut.model_validate(session)
 
 
@@ -128,6 +131,7 @@ async def submit_decision(
     session.decisions_made += 1
     if is_correct:
         session.decisions_correct += 1
+    await db.commit()
 
     return DecisionResult(
         decision_gate_id=payload.decision_gate_id,
@@ -151,10 +155,17 @@ async def complete_session(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     assert_org_access(session, current_user)
+    # Idempotent — return current state if already completed (prevents duplicate Celery tasks)
+    if session.status == "completed":
+        return SessionOut.model_validate(session)
+    if session.status != "active":
+        raise HTTPException(status_code=400, detail=f"Cannot complete a '{session.status}' session")
     session.status = "completed"
     session.completed_at = datetime.utcnow()
     if session.decisions_made > 0:
         session.team_score = round((session.decisions_correct / session.decisions_made) * 100, 1)
+    await db.commit()
+    generate_session_debrief.delay(session_id)
     return SessionOut.model_validate(session)
 
 
@@ -172,5 +183,6 @@ async def get_debrief(
     if session.status != "completed":
         raise HTTPException(status_code=400, detail="Session not yet completed")
     if not session.debrief_report:
-        raise HTTPException(status_code=202, detail="Debrief is being generated")
+        # Return a 200 with a sentinel so the frontend can poll without Axios treating it as error
+        return {"generating": True}
     return session.debrief_report

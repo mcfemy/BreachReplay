@@ -1,5 +1,6 @@
+from sqlalchemy import create_engine
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from app.core.config import settings
 
 engine_kwargs = {"echo": settings.DEBUG, "pool_pre_ping": True}
@@ -19,6 +20,14 @@ AsyncSessionLocal = async_sessionmaker(
     autoflush=False,
 )
 
+# Synchronous engine for Celery workers (avoids asyncio.run overhead)
+_sync_engine_kwargs: dict = {"pool_pre_ping": True}
+if not settings.SYNC_DATABASE_URL.startswith("sqlite"):
+    _sync_engine_kwargs.update({"pool_size": 5, "max_overflow": 10})
+
+sync_engine = create_engine(settings.SYNC_DATABASE_URL, **_sync_engine_kwargs)
+SyncSessionLocal = sessionmaker(bind=sync_engine, autocommit=False, autoflush=False)
+
 
 class Base(DeclarativeBase):
     pass
@@ -28,7 +37,6 @@ async def get_db():
     async with AsyncSessionLocal() as session:
         try:
             yield session
-            await session.commit()
         except Exception:
             await session.rollback()
             raise

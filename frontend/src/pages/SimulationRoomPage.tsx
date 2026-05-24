@@ -1,7 +1,6 @@
-import { useEffect, useRef } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
 import { useSimStore } from "../store/simulation";
-import { useAuthStore } from "../store/auth";
 import { useSimulationSocket } from "../lib/useSimulationSocket";
 import { api } from "../lib/api";
 
@@ -12,21 +11,57 @@ const SEVERITY_COLORS: Record<string, string> = {
   low: "border-l-breach-blue text-breach-blue",
 };
 
+interface Notification {
+  kind: "success" | "error" | "info";
+  message: string;
+}
+
+const NOTIFICATION_COLORS: Record<Notification["kind"], string> = {
+  success: "bg-green-900/80 border-breach-green text-breach-green",
+  error: "bg-red-900/80 border-breach-accent text-breach-accent",
+  info: "bg-blue-900/80 border-breach-blue text-breach-blue",
+};
+
 export default function SimulationRoomPage() {
   const { sessionId } = useParams<{ sessionId: string }>();
-  const { user } = useAuthStore();
+  const navigate = useNavigate();
   const { alerts, currentGate, isPaused, isComplete, chatMessages, setGate } = useSimStore();
-  const { sendChat, startStream } = useSimulationSocket(sessionId!, user?.id || "");
+  const { sendChat, startStream } = useSimulationSocket(sessionId!);
   const alertsEndRef = useRef<HTMLDivElement>(null);
   const chatInput = useRef<HTMLInputElement>(null);
+  const [notification, setNotification] = useState<Notification | null>(null);
+
+  // BUG-07: Reset stale simulation state when navigating to a new session
+  useEffect(() => {
+    useSimStore.getState().reset();
+  }, [sessionId]);
 
   useEffect(() => {
     alertsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [alerts]);
 
+  function notify(kind: Notification["kind"], message: string) {
+    setNotification({ kind, message });
+    setTimeout(() => setNotification(null), 4000);
+  }
+
+  // BUG-06: Surface start errors in-component instead of failing silently
   async function handleStart() {
-    await api.post(`/sessions/${sessionId}/start`, {});
-    startStream();
+    try {
+      await api.post(`/sessions/${sessionId}/start`, {});
+      startStream();
+    } catch (err: any) {
+      notify("error", err.message || "Failed to start session");
+    }
+  }
+
+  async function handleViewDebrief() {
+    try {
+      await api.post(`/sessions/${sessionId}/complete`, {});
+      navigate(`/session/${sessionId}/debrief`);
+    } catch (err: any) {
+      notify("error", err.message || "Failed to complete session");
+    }
   }
 
   async function submitDecision(optionIndex: number) {
@@ -37,9 +72,13 @@ export default function SimulationRoomPage() {
         chosen_option_index: optionIndex,
       });
       setGate(null);
-      alert(`${result.is_correct ? "CORRECT" : "WRONG"}: ${result.rationale}`);
+      // BUG-09: Replace blocking alert() with non-blocking in-component notification
+      notify(
+        result.is_correct ? "success" : "error",
+        `${result.is_correct ? "CORRECT" : "WRONG"}: ${result.rationale}`
+      );
     } catch (err: any) {
-      alert(err.message);
+      notify("error", err.message || "Failed to submit decision");
     }
   }
 
@@ -52,18 +91,37 @@ export default function SimulationRoomPage() {
 
   return (
     <div className="min-h-screen bg-breach-bg flex flex-col">
+      {notification && (
+        <div
+          className={`fixed top-4 right-4 z-50 border rounded px-4 py-3 text-xs font-mono max-w-sm shadow-lg ${NOTIFICATION_COLORS[notification.kind]}`}
+        >
+          {notification.message}
+        </div>
+      )}
+
       <div className="border-b border-breach-border px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <span className="text-breach-accent font-bold text-sm uppercase tracking-widest">BREACH REPLAY</span>
           <span className="text-breach-muted text-xs">Session: {sessionId?.slice(0, 8)}...</span>
-          {isComplete && <span className="text-breach-green text-xs uppercase">SIMULATION COMPLETE</span>}
+          {isComplete && (
+            <span className="text-breach-green text-xs uppercase font-bold animate-pulse">SIMULATION COMPLETE</span>
+          )}
         </div>
-        <button
-          onClick={handleStart}
-          className="bg-breach-green hover:bg-green-600 text-black px-4 py-1.5 rounded text-xs uppercase tracking-widest transition-colors font-bold"
-        >
-          Start Stream
-        </button>
+        {isComplete ? (
+          <button
+            onClick={handleViewDebrief}
+            className="bg-breach-accent hover:bg-red-600 text-white px-4 py-1.5 rounded text-xs uppercase tracking-widest transition-colors font-bold animate-pulse shadow-[0_0_15px_rgba(239,68,68,0.5)]"
+          >
+            View Debrief Report
+          </button>
+        ) : (
+          <button
+            onClick={handleStart}
+            className="bg-breach-green hover:bg-green-600 text-black px-4 py-1.5 rounded text-xs uppercase tracking-widest transition-colors font-bold"
+          >
+            Start Stream
+          </button>
+        )}
       </div>
 
       <div className="flex flex-1 overflow-hidden">

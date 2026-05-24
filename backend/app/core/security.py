@@ -82,18 +82,52 @@ def sentry_before_send(event: dict, hint: dict) -> dict:
 async def create_refresh_token(user_id: str) -> str:
     token_id = str(uuid.uuid4())
     r = await get_redis()
-    await r.setex(f"rt:{token_id}", settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400, user_id)
+    ttl = settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400
+    pipe = r.pipeline()
+    pipe.setex(f"rt:{token_id}", ttl, user_id)
+    # Track all active tokens per user so we can revoke them all at once
+    pipe.sadd(f"user_sessions:{user_id}", token_id)
+    pipe.expire(f"user_sessions:{user_id}", ttl)
+    await pipe.execute()
     return token_id
 
 
 async def validate_refresh_token(token_id: str) -> Optional[str]:
     r = await get_redis()
-    return await r.get(f"rt:{token_id}")
+    user_id = await r.get(f"rt:{token_id}")
+    if user_id:
+        return user_id
+    # Token not found — check if it was recently revoked (replay attack detection, BR-SEC-03)
+    revoked_uid = await r.get(f"revoked:rt:{token_id}")
+    if revoked_uid:
+        # A revoked token was reused: this is an active compromise → nuke all sessions
+        await revoke_all_user_sessions(revoked_uid)
+    return None
 
 
 async def revoke_refresh_token(token_id: str) -> None:
     r = await get_redis()
-    await r.delete(f"rt:{token_id}")
+    user_id = await r.get(f"rt:{token_id}")
+    if not user_id:
+        return
+    # Keep a short-lived marker so replay of this exact token triggers a full purge
+    pipe = r.pipeline()
+    pipe.setex(f"revoked:rt:{token_id}", 120, user_id)  # 2-min replay window
+    pipe.delete(f"rt:{token_id}")
+    pipe.srem(f"user_sessions:{user_id}", token_id)
+    await pipe.execute()
+
+
+async def revoke_all_user_sessions(user_id: str) -> None:
+    """Revoke every refresh token for a user (password reset, detected replay attack)."""
+    r = await get_redis()
+    token_ids = await r.smembers(f"user_sessions:{user_id}")
+    if token_ids:
+        pipe = r.pipeline()
+        for tid in token_ids:
+            pipe.delete(f"rt:{tid}")
+        pipe.delete(f"user_sessions:{user_id}")
+        await pipe.execute()
 
 
 async def store_password_reset_token(user_id: str, token: str) -> None:

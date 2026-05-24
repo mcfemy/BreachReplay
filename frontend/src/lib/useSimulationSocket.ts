@@ -3,13 +3,19 @@ import { useSimStore } from "../store/simulation";
 
 const WS_BASE = import.meta.env.VITE_WS_URL || "ws://localhost:8000";
 
-export function useSimulationSocket(sessionId: string, userId: string) {
+export function useSimulationSocket(sessionId: string) {
   const ws = useRef<WebSocket | null>(null);
   const { addAlert, setGate, setComplete, addChat } = useSimStore();
 
   useEffect(() => {
-    const socket = new WebSocket(`${WS_BASE}/ws/session/${sessionId}?user_id=${userId}`);
+    const socket = new WebSocket(`${WS_BASE}/ws/session/${sessionId}`);
     ws.current = socket;
+
+    // First message must be an auth frame — token is never put in the URL (BR-SEC-01)
+    socket.onopen = () => {
+      const accessToken = localStorage.getItem("br_token") ?? "";
+      socket.send(JSON.stringify({ type: "auth", token: accessToken }));
+    };
 
     socket.onmessage = (event) => {
       const msg = JSON.parse(event.data);
@@ -34,7 +40,7 @@ export function useSimulationSocket(sessionId: string, userId: string) {
     return () => {
       socket.close();
     };
-  }, [sessionId, userId]);
+  }, [sessionId]);
 
   const sendChat = useCallback((text: string) => {
     ws.current?.send(JSON.stringify({ type: "chat", text }));
