@@ -174,11 +174,11 @@ def extract_scenario_from_document(document_text: str, _is_retry_attempt: bool =
         },
     )
     raw = message.content[0].text
-    start = raw.find("<extracted>") + len("<extracted>")
+    open_pos = raw.find("<extracted>")
     end = raw.find("</extracted>")
-    if start == -1 or end == -1:
+    if open_pos == -1 or end == -1:
         raise ValueError("Could not find <extracted> tags in Claude response")
-    return json.loads(raw[start:end].strip())
+    return json.loads(raw[open_pos + len("<extracted>"):end].strip())
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), before=_before_claude_retry)
@@ -225,8 +225,8 @@ def generate_debrief_report(
         },
     )
     raw = message.content[0].text
-    start = raw.find("<debrief>") + len("<debrief>")
+    open_pos = raw.find("<debrief>")
     end = raw.find("</debrief>")
-    if start == -1 or end == -1:
+    if open_pos == -1 or end == -1:
         raise ValueError("Could not find <debrief> tags in Claude response")
-    return json.loads(raw[start:end].strip())
+    return json.loads(raw[open_pos + len("<debrief>"):end].strip())

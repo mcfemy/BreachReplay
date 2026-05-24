@@ -17,7 +17,7 @@ from starlette.responses import JSONResponse, Response
 
 from app.api import api_router
 from app.core.config import settings
-from app.core.logging import set_request_context
+from app.core.logging import set_request_context, setup_logging
 from app.core.security import limiter, sentry_before_send
 from app.db.session import engine
 from app.websocket.handlers import simulation_ws_handler
@@ -34,6 +34,7 @@ if settings.SENTRY_DSN:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    setup_logging()
     yield
 
 

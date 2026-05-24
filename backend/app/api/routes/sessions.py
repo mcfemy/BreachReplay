@@ -15,9 +15,12 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
 def assert_org_access(session: SimulationSession, user: User) -> None:
-    """Raise 403 if the session does not belong to the user's organization."""
-    if not user.organization_id or session.organization_id != user.organization_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    """Raise 403 if the user has no relationship to this session."""
+    if session.host_user_id == user.id:
+        return
+    if user.organization_id and session.organization_id == user.organization_id:
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
 
 @router.post("", response_model=SessionOut, status_code=status.HTTP_201_CREATED)

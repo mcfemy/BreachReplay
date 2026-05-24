@@ -1,4 +1,5 @@
 import re
+import uuid
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -11,6 +12,8 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 from app.core.config import settings
+from app.core.logging import set_user_context
+from app.core.redis import get_redis
 from app.db.session import get_db
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -76,6 +79,38 @@ def sentry_before_send(event: dict, hint: dict) -> dict:
     return event
 
 
+async def create_refresh_token(user_id: str) -> str:
+    token_id = str(uuid.uuid4())
+    r = await get_redis()
+    await r.setex(f"rt:{token_id}", settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400, user_id)
+    return token_id
+
+
+async def validate_refresh_token(token_id: str) -> Optional[str]:
+    r = await get_redis()
+    return await r.get(f"rt:{token_id}")
+
+
+async def revoke_refresh_token(token_id: str) -> None:
+    r = await get_redis()
+    await r.delete(f"rt:{token_id}")
+
+
+async def store_password_reset_token(user_id: str, token: str) -> None:
+    r = await get_redis()
+    await r.setex(f"pwd_reset:{token}", settings.PASSWORD_RESET_EXPIRE_MINUTES * 60, user_id)
+
+
+async def validate_password_reset_token(token: str) -> Optional[str]:
+    r = await get_redis()
+    return await r.get(f"pwd_reset:{token}")
+
+
+async def delete_password_reset_token(token: str) -> None:
+    r = await get_redis()
+    await r.delete(f"pwd_reset:{token}")
+
+
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
@@ -112,6 +147,7 @@ async def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
+    set_user_context(str(user.id))
     return user
 
 
