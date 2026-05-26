@@ -1,7 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useSimStore } from "../store/simulation";
-
-const WS_BASE = import.meta.env.VITE_WS_URL || "ws://localhost:8000";
+import { WS_BASE } from "./config";
 
 interface SocketOptions {
   onDecisionResult?: (result: {

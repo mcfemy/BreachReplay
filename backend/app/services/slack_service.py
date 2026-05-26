@@ -43,7 +43,10 @@ def send_webhook_message(text: str, blocks: Optional[list] = None) -> bool:
 def verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool:
     """Verify a Slack request signature to prevent spoofed slash commands."""
     if not settings.SLACK_SIGNING_SECRET:
-        return True  # dev mode — skip verification
+        # Reject all Slack requests when no signing secret is configured — prevents
+        # open access to scenario data in deployments that haven't set up Slack.
+        logger.warning("SLACK_SIGNING_SECRET not configured — rejecting Slack request")
+        return False
     try:
         if abs(time.time() - int(timestamp)) > 300:
             return False  # replay attack window

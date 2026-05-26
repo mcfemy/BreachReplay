@@ -110,9 +110,11 @@ async def submit_decision(
     scenario = scenario_result.scalar_one_or_none()
 
     decision_tree = scenario.decision_tree or []
+    if not decision_tree:
+        raise HTTPException(status_code=400, detail="This scenario has no decision gates — re-ingest the source document to regenerate them")
     gate = next((g for g in decision_tree if g.get("id") == payload.decision_gate_id), None)
     if not gate:
-        raise HTTPException(status_code=404, detail="Decision gate not found")
+        raise HTTPException(status_code=404, detail=f"Decision gate '{payload.decision_gate_id}' not found in this scenario")
 
     is_correct = payload.chosen_option_index == gate["correct_index"]
     consequence = gate["consequence_if_wrong"] if not is_correct else gate.get("consequence_if_correct", "Good call.")
@@ -175,18 +177,24 @@ async def complete_session(
     host = host_result.scalar_one_or_none()
     if host and scenario:
         from app.services.email_service import send_debrief_ready_email
-        import asyncio as _asyncio
-        _asyncio.create_task(
-            asyncio.to_thread(
-                send_debrief_ready_email,
-                host.email,
-                session_id,
-                scenario.title,
-                session.team_score,
-                session.decisions_correct,
-                session.decisions_made,
-            )
-        )
+        import logging as _logging
+        _logger = _logging.getLogger(__name__)
+
+        async def _send_email_safe():
+            try:
+                await asyncio.to_thread(
+                    send_debrief_ready_email,
+                    host.email,
+                    session_id,
+                    scenario.title,
+                    session.team_score,
+                    session.decisions_correct,
+                    session.decisions_made,
+                )
+            except Exception as exc:
+                _logger.error("Failed to send debrief-ready email to %s for session %s: %s", host.email, session_id, exc)
+
+        asyncio.create_task(_send_email_safe())
 
     return SessionOut.model_validate(session)
 

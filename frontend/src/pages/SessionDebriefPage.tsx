@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { api } from "../lib/api";
+import { api, axiosInstance } from "../lib/api";
+import SessionReplayScrubber from "../components/SessionReplayScrubber";
 
 interface Decision {
   gate_id: string;
@@ -105,10 +106,38 @@ export default function SessionDebriefPage() {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
+  const [isTimeout, setIsTimeout] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
+  const [exporting, setExporting] = useState(false);
+
+  const handleExportPDF = async () => {
+    setExporting(true);
+    try {
+      const response = await axiosInstance.get(`/sessions/${sessionId}/debrief/pdf`, {
+        responseType: "blob",
+      });
+      const blob = new Blob([response.data], { type: "application/pdf" });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `BreachReplay_Debrief_${sessionId}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert("Failed to download PDF report. Please try again.");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   useEffect(() => {
-    // cancelled flag stops async callbacks after unmount (BUG-04)
     let cancelled = false;
+    setLoading(true);
+    setError("");
+    setIsTimeout(false);
+    setDebrief(null);
 
     async function load() {
       try {
@@ -116,7 +145,6 @@ export default function SessionDebriefPage() {
         if (cancelled) return;
         setSession(sessionData);
 
-        // Poll until the debrief report is ready (BUG-01 / BUG-04)
         let attempts = 0;
         while (attempts < MAX_POLL_ATTEMPTS) {
           if (cancelled) return;
@@ -127,7 +155,6 @@ export default function SessionDebriefPage() {
 
           if (cancelled) return;
 
-          // Backend returns {generating: true} while Claude is still running (BUG-01)
           if ("generating" in raw && raw.generating) {
             setGenerating(true);
             attempts++;
@@ -141,7 +168,8 @@ export default function SessionDebriefPage() {
           return;
         }
 
-        throw new Error("Debrief generation timed out — please refresh the page.");
+        setIsTimeout(true);
+        throw new Error("Debrief generation is taking longer than expected. The AI may still be working — click Retry to check again.");
       } catch (err: any) {
         if (cancelled) return;
         setError(err.message || "Failed to load debrief data");
@@ -153,7 +181,7 @@ export default function SessionDebriefPage() {
     return () => {
       cancelled = true;
     };
-  }, [sessionId]);
+  }, [sessionId, retryKey]);
 
   if (loading) {
     return (
@@ -178,12 +206,22 @@ export default function SessionDebriefPage() {
           <h2 className="text-lg font-bold text-breach-accent uppercase tracking-wider mb-2">AUDIT LOAD FAILURE</h2>
           <p className="text-sm text-breach-text">{error || "Critical error reading session data."}</p>
         </div>
-        <button
-          onClick={() => navigate("/scenarios")}
-          className="bg-breach-surface border border-breach-border hover:border-breach-blue text-breach-text px-6 py-2 rounded text-xs uppercase tracking-widest transition-colors font-bold"
-        >
-          Return to Library
-        </button>
+        <div className="flex gap-3">
+          {isTimeout && (
+            <button
+              onClick={() => setRetryKey((k) => k + 1)}
+              className="bg-breach-accent hover:bg-red-600 text-white px-6 py-2 rounded text-xs uppercase tracking-widest transition-colors font-bold"
+            >
+              Retry
+            </button>
+          )}
+          <button
+            onClick={() => navigate("/scenarios")}
+            className="bg-breach-surface border border-breach-border hover:border-breach-blue text-breach-text px-6 py-2 rounded text-xs uppercase tracking-widest transition-colors font-bold"
+          >
+            Return to Library
+          </button>
+        </div>
       </div>
     );
   }
@@ -201,12 +239,28 @@ export default function SessionDebriefPage() {
             <span className="text-breach-muted text-xs">/</span>
             <span className="text-xs text-breach-muted">Simulation Audit: {session.id.slice(0, 8)}...</span>
           </div>
-          <button
-            onClick={() => navigate("/scenarios")}
-            className="bg-breach-surface border border-breach-border hover:border-breach-blue text-breach-text px-4 py-1.5 rounded text-xs uppercase tracking-widest transition-colors"
-          >
-            Scenario Library
-          </button>
+          <div className="flex gap-3">
+            <button
+              onClick={handleExportPDF}
+              disabled={exporting}
+              className="bg-breach-accent hover:bg-red-600 disabled:bg-breach-accent/50 text-white px-4 py-1.5 rounded text-xs uppercase tracking-widest transition-colors flex items-center gap-2 font-bold"
+            >
+              {exporting ? (
+                <>
+                  <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                  Exporting...
+                </>
+              ) : (
+                <>📄 Export PDF Report</>
+              )}
+            </button>
+            <button
+              onClick={() => navigate("/scenarios")}
+              className="bg-breach-surface border border-breach-border hover:border-breach-blue text-breach-text px-4 py-1.5 rounded text-xs uppercase tracking-widest transition-colors"
+            >
+              Scenario Library
+            </button>
+          </div>
         </div>
 
         {/* Dashboard Grid Header */}
@@ -271,6 +325,10 @@ export default function SessionDebriefPage() {
             </p>
           </div>
         </div>
+
+        {debrief?.decisions && (
+          <SessionReplayScrubber decisions={debrief.decisions} />
+        )}
 
         {/* Decisions Timeline */}
         <div className="bg-breach-surface border border-breach-border rounded">

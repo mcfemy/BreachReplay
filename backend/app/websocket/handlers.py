@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from fastapi import WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from app.db.session import AsyncSessionLocal
@@ -7,6 +8,8 @@ from app.models.session import SimulationSession, SessionParticipant, SessionDec
 from app.models.scenario import Scenario
 from app.models.user import User
 from app.websocket.manager import manager, build_alert_event, build_decision_gate_event, build_system_event
+
+logger = logging.getLogger(__name__)
 
 
 async def simulation_ws_handler(websocket: WebSocket, session_id: str, user_id: str):
@@ -150,6 +153,21 @@ async def simulation_ws_handler(websocket: WebSocket, session_id: str, user_id: 
     except WebSocketDisconnect:
         manager.disconnect(session_id, websocket)
         await manager.remove_user_presence(session_id, user_id)
+        # Persist disconnected state so audit logs and admin dashboards reflect reality
+        try:
+            async with AsyncSessionLocal() as db:
+                p_res = await db.execute(
+                    select(SessionParticipant).where(
+                        SessionParticipant.session_id == session_id,
+                        SessionParticipant.user_id == user_id,
+                    )
+                )
+                participant = p_res.scalar_one_or_none()
+                if participant:
+                    participant.is_connected = False
+                    await db.commit()
+        except Exception:
+            pass  # non-fatal — presence broadcast already sent the correct in-memory state
 
 
 async def _stream_alerts(session_id: str, requester_id: str):
@@ -175,7 +193,14 @@ async def _stream_alerts(session_id: str, requester_id: str):
 
         gates_by_trigger = {}
         for gate in (scenario.decision_tree or []):
-            gates_by_trigger.setdefault(gate["trigger_timestamp"], gate)
+            ts = gate["trigger_timestamp"]
+            if ts in gates_by_trigger:
+                logger.warning(
+                    "Scenario %s has duplicate decision gate trigger_timestamp '%s' — gate '%s' will be skipped",
+                    session.scenario_id, ts, gate.get("id"),
+                )
+            else:
+                gates_by_trigger[ts] = gate
 
         total = len(alerts)
         speed = session.speed_multiplier or 1.0

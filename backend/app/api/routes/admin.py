@@ -242,10 +242,16 @@ async def get_compliance_analytics(
     users_res = await db.execute(select(User).where(User.organization_id == current_admin.organization_id))
     users = users_res.scalars().all()
 
+    # Build O(n) lookup: user_id -> sessions they participated in
+    user_session_map: dict[str, list] = {u.id: [] for u in users}
+    for s in sessions:
+        for p in s.participants:
+            if p.user_id in user_session_map:
+                user_session_map[p.user_id].append(s)
+
     analyst_performance = []
     for u in users:
-        # Find sessions they participated in
-        user_sessions = [s for s in sessions if any(p.user_id == u.id for p in s.participants)]
+        user_sessions = user_session_map[u.id]
         sessions_completed = len(user_sessions)
         avg_score = (
             round(sum(s.team_score or 0 for s in user_sessions) / sessions_completed, 1)
@@ -611,6 +617,32 @@ async def snapshot_scenario_version(
         "new_version": scenario.version,
         "snapshot_count": len(history),
     }
+
+
+@router.get("/task-failures")
+async def list_task_failures(
+    current_admin: User = Depends(require_admin),
+):
+    """Return recent Celery task failures stored in Redis. Admins only."""
+    import json
+    from app.core.redis import get_redis
+
+    r = await get_redis()
+    keys = await r.keys("task_failure:*")
+    if not keys:
+        return []
+
+    raw_values = await r.mget(*keys)
+    failures = []
+    for raw in raw_values:
+        if raw:
+            try:
+                failures.append(json.loads(raw))
+            except Exception:
+                pass
+
+    failures.sort(key=lambda f: f.get("timestamp", ""), reverse=True)
+    return failures
 
 
 @router.get("/tenants")

@@ -2,7 +2,7 @@ import asyncio
 import os
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, File, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import BaseModel, ConfigDict
@@ -11,7 +11,7 @@ from typing import List, Optional
 from app.db.session import get_db
 from app.models.user import User
 from app.models.breach_document import BreachDocument
-from app.core.security import get_current_user
+from app.core.security import get_current_user, limiter
 from app.pipeline.tasks import process_uploaded_document_task
 
 router = APIRouter(prefix="/scenarios", tags=["ingestion"])
@@ -38,6 +38,10 @@ async def upload_document(
     current_user: User = Depends(get_current_user),
 ):
     """Upload a breach disclosure PDF or text file for automated Claude scenario extraction."""
+    # Only ADMIN and OWNER roles may upload breach documents
+    if current_user.role not in ("admin", "owner"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only admins and owners can upload breach documents")
+
     # Enforce organization membership
     if not current_user.organization_id:
         raise HTTPException(status_code=400, detail="User must belong to an organization to upload documents")
@@ -135,7 +139,9 @@ async def upload_document(
 
 
 @router.get("/documents", response_model=List[BreachDocumentOut])
+@limiter.limit("60/minute")
 async def list_documents(
+    request: Request,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),

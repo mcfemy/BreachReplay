@@ -30,6 +30,24 @@ from app.pipeline.embeddings import generate_embedding, scenario_text
 logger = get_logger(__name__)
 redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
 
+_ALERT_REQUIRED = {"timestamp", "severity", "source_system", "description"}
+_GATE_REQUIRED = {"id", "trigger_timestamp", "context_summary", "options", "correct_index"}
+
+
+def _validate_extracted(extracted: dict) -> dict:
+    """Strip malformed alerts/gates so bad Claude output doesn't crash streaming."""
+    alerts = extracted.get("alert_sequence") or []
+    valid_alerts = [a for a in alerts if isinstance(a, dict) and _ALERT_REQUIRED.issubset(a)]
+    if len(valid_alerts) < len(alerts):
+        logger.warning("Dropped %d malformed alerts (missing required fields)", len(alerts) - len(valid_alerts))
+
+    gates = extracted.get("decision_tree") or []
+    valid_gates = [g for g in gates if isinstance(g, dict) and _GATE_REQUIRED.issubset(g)]
+    if len(valid_gates) < len(gates):
+        logger.warning("Dropped %d malformed decision gates (missing required fields)", len(gates) - len(valid_gates))
+
+    return {**extracted, "alert_sequence": valid_alerts, "decision_tree": valid_gates}
+
 
 def _store_task_failure(task_name: str, task_id: str, error: str) -> None:
     payload = {
@@ -94,7 +112,7 @@ def process_advisory_url(self, url: str, source_type: str = "cisa", source_refer
         if not text or len(text) < 200:
             raise ValueError(f"Insufficient content from {url}")
 
-        extracted = extract_scenario_from_document(text)
+        extracted = _validate_extracted(extract_scenario_from_document(text))
 
         if extracted.get("extraction_confidence", 0) < 0.4:
             return {"status": "rejected", "reason": "Low extraction confidence", "confidence": extracted.get("extraction_confidence")}
@@ -421,7 +439,7 @@ def process_uploaded_document_task(self, document_id: str):
                 raise ValueError("Parsed document has insufficient text content (< 200 characters)")
 
             # 2. Extract Scenario from document using Claude
-            extracted = extract_scenario_from_document(text)
+            extracted = _validate_extracted(extract_scenario_from_document(text))
 
             # 3. Create Scenario
             scenario_data = {
