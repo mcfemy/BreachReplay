@@ -17,6 +17,7 @@ celery==5.4.0
 redis==5.0.5
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
 python-multipart==0.0.9
 reportlab==4.2.0
 sendgrid==6.11.0
@@ -29,3 +30,6 @@ pytest==8.2.0
 pytest-asyncio==0.23.7
 aiosqlite==0.20.0
 fakeredis==2.21.1
+pypdf==4.2.0
+fastembed==0.3.6
+python-docx==1.1.2

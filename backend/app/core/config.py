@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     PASSWORD_RESET_EXPIRE_MINUTES: int = 15
     FRONTEND_URL: str = "http://localhost:5173"
 
+    SLACK_WEBHOOK_URL: Optional[str] = None
+    SLACK_SIGNING_SECRET: Optional[str] = None
+    SLACK_CHANNEL_ID: Optional[str] = None
+
     ENVIRONMENT: str = "development"
     DEBUG: bool = False
 

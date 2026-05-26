@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import String, Integer, Float, Boolean, DateTime, Text, JSON, Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB, ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import Vector
 from app.db.session import Base
 
 
@@ -43,6 +44,10 @@ class Scenario(Base):
 
     extraction_confidence: Mapped[float] = mapped_column(Float, nullable=True)
     review_notes: Mapped[str] = mapped_column(Text, nullable=True)
+    embedding: Mapped[list] = mapped_column(Vector(384), nullable=True)
+
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    version_history: Mapped[list] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
 
     play_count: Mapped[int] = mapped_column(Integer, default=0)
     avg_score: Mapped[float] = mapped_column(Float, nullable=True)

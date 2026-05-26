@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 
@@ -28,11 +28,16 @@ export default function ScenarioLibraryPage() {
   const [search, setSearch] = useState("");
   const [industry, setIndustry] = useState("");
   const [difficulty, setDifficulty] = useState("");
+  const [semantic, setSemantic] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigate = useNavigate();
 
+  // Debounced re-fetch on filter changes
   useEffect(() => {
-    fetchScenarios();
-  }, [search, industry, difficulty]);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => fetchScenarios(), semantic ? 0 : 300);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [search, industry, difficulty, semantic]);
 
   async function fetchScenarios() {
     setLoading(true);
@@ -41,12 +46,18 @@ export default function ScenarioLibraryPage() {
       if (search) params.set("search", search);
       if (industry) params.set("industry", industry);
       if (difficulty) params.set("difficulty", difficulty);
+      if (semantic && search) params.set("semantic", "true");
       const data = await api.get<Scenario[]>(`/scenarios?${params.toString()}`);
       setScenarios(data);
-    } catch {
+    } catch (err: any) {
+      setScenarios([]);
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleToggleSemantic() {
+    setSemantic((v) => !v);
   }
 
   async function launchScenario(scenarioId: string) {
@@ -64,17 +75,48 @@ export default function ScenarioLibraryPage() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-xl font-bold text-breach-text uppercase tracking-widest">Scenario Library</h1>
-            <p className="text-breach-muted text-xs mt-1">{scenarios.length} scenarios available</p>
+            <p className="text-breach-muted text-xs mt-1">
+              {loading
+                ? "Searching..."
+                : search
+                ? `${scenarios.length} result${scenarios.length !== 1 ? "s" : ""} for "${search}"`
+                : `${scenarios.length} scenarios available`}
+            </p>
           </div>
         </div>
 
+        {/* Search mode banner when AI is active */}
+        {semantic && (
+          <div className="mb-3 flex items-center gap-2 bg-breach-blue/10 border border-breach-blue/30 rounded px-3 py-2">
+            <span className="text-breach-blue text-[10px] font-bold uppercase tracking-widest">⬡ AI Semantic Search Active</span>
+            <span className="text-breach-muted text-[10px]">— describe a scenario in plain language and AI finds the closest match</span>
+            <button onClick={handleToggleSemantic} className="ml-auto text-[10px] text-breach-muted hover:text-breach-accent uppercase tracking-wider">✕ Disable</button>
+          </div>
+        )}
+
         <div className="flex gap-3 mb-6">
-          <input
-            placeholder="Search scenarios..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 bg-breach-surface border border-breach-border text-breach-text px-3 py-2 rounded text-sm focus:outline-none focus:border-breach-blue"
-          />
+          <div className="flex-1 relative">
+            <input
+              placeholder={semantic ? "Describe the breach, e.g. 'ransomware encrypting hospital backups'..." : "Search scenarios by title..."}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && fetchScenarios()}
+              className={`w-full bg-breach-surface border text-breach-text px-3 py-2 rounded text-sm focus:outline-none pr-32 transition-colors ${
+                semantic ? "border-breach-blue focus:border-breach-blue" : "border-breach-border focus:border-breach-blue"
+              }`}
+            />
+            <button
+              onClick={handleToggleSemantic}
+              title={semantic ? "Click to disable AI semantic search" : "Click to enable AI semantic search"}
+              className={`absolute right-2 top-1/2 -translate-y-1/2 px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider transition-all ${
+                semantic
+                  ? "bg-breach-blue text-black"
+                  : "bg-breach-surface border border-breach-border text-breach-muted hover:border-breach-blue hover:text-breach-blue"
+              }`}
+            >
+              {semantic ? "⬡ AI: ON" : "⬡ AI: OFF"}
+            </button>
+          </div>
           <select
             value={industry}
             onChange={(e) => setIndustry(e.target.value)}

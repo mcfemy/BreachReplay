@@ -1,0 +1,184 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: breachreplay
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: breachreplay-config
+  namespace: breachreplay
+data:
+  ENVIRONMENT: "production"
+  AWS_REGION: "us-east-1"
+  S3_BUCKET: "breachreplay-documents-prod"
+  CLAUDE_MODEL: "claude-sonnet-4-6"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: breachreplay-backend
+  namespace: breachreplay
+  labels:
+    app: breachreplay-backend
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: breachreplay-backend
+  template:
+    metadata:
+      labels:
+        app: breachreplay-backend
+    spec:
+      containers:
+      - name: backend
+        image: breachreplay-backend:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        envFrom:
+        - configMapRef:
+            name: breachreplay-config
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: database-url
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: jwt-secrets
+              key: secret-key
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: llm-credentials
+              key: anthropic-api-key
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: redis-credentials
+              key: redis-url
+        resources:
+          limits:
+            cpu: "1"
+            memory: 1Gi
+          requests:
+            cpu: "250m"
+            memory: 256Mi
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: breachreplay-backend-service
+  namespace: breachreplay
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8000
+    targetPort: 8000
+    protocol: TCP
+  selector:
+    app: breachreplay-backend
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: breachreplay-worker
+  namespace: breachreplay
+  labels:
+    app: breachreplay-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: breachreplay-worker
+  template:
+    metadata:
+      labels:
+        app: breachreplay-worker
+    spec:
+      containers:
+      - name: worker
+        image: breachreplay-worker:latest
+        imagePullPolicy: IfNotPresent
+        command: ["celery", "-A", "app.pipeline.celery_app", "worker", "--loglevel=info"]
+        envFrom:
+        - configMapRef:
+            name: breachreplay-config
+        env:
+        - name: SYNC_DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-credentials
+              key: sync-database-url
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: llm-credentials
+              key: anthropic-api-key
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: redis-credentials
+              key: redis-url
+        resources:
+          limits:
+            cpu: "2"
+            memory: 2Gi
+          requests:
+            cpu: "500m"
+            memory: 512Mi
+        livenessProbe:
+          exec:
+            command:
+              - celery
+              - -A
+              - app.pipeline.celery_app
+              - inspect
+              - ping
+              - -d
+              - celery@$HOSTNAME
+          initialDelaySeconds: 30
+          periodSeconds: 60
+          timeoutSeconds: 10
+          failureThreshold: 3
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: breachreplay-worker-hpa
+  namespace: breachreplay
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: breachreplay-worker
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80

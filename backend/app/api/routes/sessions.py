@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -7,7 +8,7 @@ from app.db.session import get_db
 from app.models.session import SimulationSession, SessionParticipant, SessionDecision
 from app.models.scenario import Scenario
 from app.models.user import User
-from app.schemas.session import SessionCreate, SessionOut, DecisionSubmit, DecisionResult
+from app.schemas.session import SessionCreate, SessionOut, DecisionSubmit, DecisionResult, ParticipantJoin, SessionParticipantOut
 from app.core.security import get_current_user
 from app.pipeline.tasks import generate_session_debrief
 from typing import List
@@ -166,6 +167,27 @@ async def complete_session(
         session.team_score = round((session.decisions_correct / session.decisions_made) * 100, 1)
     await db.commit()
     generate_session_debrief.delay(session_id)
+
+    # Fire debrief-ready email to session host (non-blocking)
+    scenario_result = await db.execute(select(Scenario).where(Scenario.id == session.scenario_id))
+    scenario = scenario_result.scalar_one_or_none()
+    host_result = await db.execute(select(User).where(User.id == session.host_user_id))
+    host = host_result.scalar_one_or_none()
+    if host and scenario:
+        from app.services.email_service import send_debrief_ready_email
+        import asyncio as _asyncio
+        _asyncio.create_task(
+            asyncio.to_thread(
+                send_debrief_ready_email,
+                host.email,
+                session_id,
+                scenario.title,
+                session.team_score,
+                session.decisions_correct,
+                session.decisions_made,
+            )
+        )
+
     return SessionOut.model_validate(session)
 
 
@@ -186,3 +208,131 @@ async def get_debrief(
         # Return a 200 with a sentinel so the frontend can poll without Axios treating it as error
         return {"generating": True}
     return session.debrief_report
+
+
+@router.post("/{session_id}/join", response_model=SessionParticipantOut, status_code=status.HTTP_201_CREATED)
+async def join_session(
+    session_id: str,
+    payload: ParticipantJoin,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Allows standard analysts or observers in the organization to claim a seat in a multiplayer simulation session."""
+    result = await db.execute(select(SimulationSession).where(SimulationSession.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    assert_org_access(session, current_user)
+    
+    if session.status in ("completed", "abandoned"):
+        raise HTTPException(status_code=400, detail=f"Cannot join a simulation that is already '{session.status}'")
+    
+    p_result = await db.execute(
+        select(SessionParticipant).where(
+            SessionParticipant.session_id == session_id,
+            SessionParticipant.user_id == current_user.id
+        )
+    )
+    participant = p_result.scalar_one_or_none()
+    
+    if payload.role == "incident_commander":
+        ic_result = await db.execute(
+            select(SessionParticipant).where(
+                SessionParticipant.session_id == session_id,
+                SessionParticipant.role == "incident_commander",
+                SessionParticipant.user_id != current_user.id,
+            )
+        )
+        if ic_result.scalars().first():
+            raise HTTPException(status_code=400, detail="Incident Commander seat is already occupied")
+
+    if participant:
+        participant.role = payload.role
+        participant.is_connected = True
+    else:
+        participant = SessionParticipant(
+            session_id=session_id,
+            user_id=current_user.id,
+            role=payload.role,
+            is_connected=True,
+        )
+        db.add(participant)
+    
+    await db.commit()
+    
+    user_name = current_user.full_name or current_user.email
+
+    from app.websocket.manager import manager, build_system_event
+    await manager.broadcast(
+        session_id,
+        build_system_event(
+            "participant_joined",
+            {
+                "user_id": current_user.id,
+                "name": user_name,
+                "role": payload.role,
+                "count": manager.session_size(session_id),
+            }
+        )
+    )
+    
+    return SessionParticipantOut.model_validate(participant)
+
+
+@router.get("/{session_id}/participants", response_model=List[SessionParticipantOut])
+async def list_participants(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List all registered participants and observer seats in a simulation session."""
+    result = await db.execute(select(SimulationSession).where(SimulationSession.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    assert_org_access(session, current_user)
+    
+    p_result = await db.execute(
+        select(SessionParticipant).where(SessionParticipant.session_id == session_id)
+    )
+    return [SessionParticipantOut.model_validate(p) for p in p_result.scalars().all()]
+
+
+@router.get("/{session_id}/debrief/pdf")
+async def get_debrief_pdf(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from sqlalchemy.orm import selectinload
+    from fastapi.responses import Response
+    from app.services.pdf_generator import generate_debrief_pdf
+
+    result = await db.execute(
+        select(SimulationSession)
+        .options(selectinload(SimulationSession.scenario))
+        .where(SimulationSession.id == session_id)
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    assert_org_access(session, current_user)
+    
+    if session.status != "completed":
+        raise HTTPException(status_code=400, detail="Session not yet completed")
+        
+    if not session.debrief_report:
+        raise HTTPException(status_code=400, detail="Debrief report has not been generated yet")
+        
+    pdf_bytes = await asyncio.to_thread(generate_debrief_pdf, session, session.debrief_report)
+    
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=BreachReplay_Debrief_{session_id}.pdf"
+        }
+    )
+
