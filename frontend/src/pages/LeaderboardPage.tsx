@@ -29,8 +29,6 @@ export default function LeaderboardPage() {
     staleTime: 60_000,
   });
 
-  const myEntry = entries.find((e) => e.display_name === (user?.full_name || user?.email?.split("@")[0]));
-
   return (
     <div className="min-h-screen bg-breach-bg p-6">
       <div className="max-w-2xl mx-auto">

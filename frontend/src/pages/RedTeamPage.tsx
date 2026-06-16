@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { axiosInstance } from "../lib/api";
@@ -47,6 +47,10 @@ interface MoveResult {
   session_status: string;
   outcome_message: string;
   final_score: number | null;
+  xp_earned?: number;
+  leveled_up?: boolean;
+  new_tier?: { label: string };
+  new_achievements?: string[];
 }
 
 interface Session {

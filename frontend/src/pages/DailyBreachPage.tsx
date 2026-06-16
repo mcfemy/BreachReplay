@@ -272,7 +272,7 @@ function DailyGame({
   const [countdown, setCountdown] = useState(content.decision_tree[0]?.countdown_seconds || 60);
   const [totalTime, setTotalTime] = useState(0);
   const [decisions, setDecisions] = useState<any[]>([]);
-  const [selectedOption, setSelectedOption] = useState<number | null>(null);
+  const [, setSelectedOption] = useState<number | null>(null);
   const [showResult, setShowResult] = useState(false);
   const [activePressure, setActivePressure] = useState<PressureInjection | null>(null);
   const [shownPressures, setShownPressures] = useState<Set<string>>(new Set());

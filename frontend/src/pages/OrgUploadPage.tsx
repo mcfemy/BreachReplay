@@ -103,8 +103,6 @@ export default function OrgUploadPage() {
   };
 
   const processingCount = docs.filter((d) => d.status === "processing").length;
-  const completedCount = docs.filter((d) => d.status === "completed").length;
-
   return (
     <div className="min-h-screen bg-breach-bg text-breach-text p-6">
       <div className="max-w-5xl mx-auto space-y-8">
