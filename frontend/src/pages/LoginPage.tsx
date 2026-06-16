@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/auth";
 
@@ -16,8 +16,8 @@ export default function LoginPage() {
     setError("");
     setLoading(true);
     try {
-      const data = await api.post<{ access_token: string; user: any }>("/auth/login", { email, password });
-      setAuth(data.access_token, data.user);
+      const data = await api.post<{ access_token: string; refresh_token: string; user: any }>("/auth/login", { email, password });
+      setAuth(data.access_token, data.refresh_token, data.user);
       navigate("/scenarios");
     } catch (err: any) {
       setError(err.message);
@@ -62,6 +62,12 @@ export default function LoginPage() {
           >
             {loading ? "Authenticating..." : "Access System"}
           </button>
+          <p className="text-center text-xs text-breach-muted">
+            No account?{" "}
+            <Link to="/register" className="text-breach-blue hover:underline">
+              Register here
+            </Link>
+          </p>
         </form>
       </div>
     </div>

@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sess
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 from app.core.config import settings
 
-engine_kwargs = {"echo": settings.DEBUG, "pool_pre_ping": True}
+engine_kwargs = {"echo": settings.DEBUG, "pool_pre_ping": True, "pool_recycle": 1800}
 if not settings.DATABASE_URL.startswith("sqlite"):
     engine_kwargs.update({"pool_size": 10, "max_overflow": 20})
 
@@ -21,7 +21,7 @@ AsyncSessionLocal = async_sessionmaker(
 )
 
 # Synchronous engine for Celery workers (avoids asyncio.run overhead)
-_sync_engine_kwargs: dict = {"pool_pre_ping": True}
+_sync_engine_kwargs: dict = {"pool_pre_ping": True, "pool_recycle": 1800}
 if not settings.SYNC_DATABASE_URL.startswith("sqlite"):
     _sync_engine_kwargs.update({"pool_size": 5, "max_overflow": 10})
 

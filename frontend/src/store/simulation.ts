@@ -13,6 +13,18 @@ export interface DecisionGate {
   gate_id: string;
   context_summary: string;
   options: { index: number; text: string }[];
+  countdown_seconds?: number;
+  urgency_level?: string;
+}
+
+export interface PressureInjection {
+  id: string;
+  trigger_timestamp: string;
+  type: "email" | "call" | "news" | "sms" | "slack";
+  from: string;
+  subject?: string;
+  body: string;
+  countdown_seconds?: number;
 }
 
 export interface Participant {
@@ -26,15 +38,17 @@ interface SimulationState {
   sessionId: string | null;
   alerts: Alert[];
   currentGate: DecisionGate | null;
+  activePressureInjection: PressureInjection | null;
   isPaused: boolean;
   isComplete: boolean;
   error: string | null;
   chatMessages: { user_id: string; name?: string; role?: string; text: string; ts: string }[];
   participants: Participant[];
-  votes: Record<string, number>; // user_id -> chosen_index
+  votes: Record<string, number>;
   setSession: (id: string) => void;
   addAlert: (alert: Alert) => void;
   setGate: (gate: DecisionGate | null) => void;
+  setActivePressureInjection: (inj: PressureInjection | null) => void;
   setPaused: (v: boolean) => void;
   setComplete: () => void;
   setError: (msg: string | null) => void;
@@ -50,6 +64,7 @@ export const useSimStore = create<SimulationState>((set) => ({
   sessionId: null,
   alerts: [],
   currentGate: null,
+  activePressureInjection: null,
   isPaused: false,
   isComplete: false,
   error: null,
@@ -59,6 +74,7 @@ export const useSimStore = create<SimulationState>((set) => ({
   setSession: (id) => set({ sessionId: id }),
   addAlert: (alert) => set((s) => ({ alerts: [...s.alerts, alert] })),
   setGate: (gate) => set({ currentGate: gate, isPaused: !!gate }),
+  setActivePressureInjection: (inj) => set({ activePressureInjection: inj }),
   setPaused: (v) => set({ isPaused: v }),
   setComplete: () => set({ isComplete: true }),
   setError: (msg) => set({ error: msg }),
@@ -79,6 +95,7 @@ export const useSimStore = create<SimulationState>((set) => ({
     sessionId: null,
     alerts: [],
     currentGate: null,
+    activePressureInjection: null,
     isPaused: false,
     isComplete: false,
     error: null,

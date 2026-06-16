@@ -619,6 +619,50 @@ async def snapshot_scenario_version(
     }
 
 
+@router.post("/pipeline/trigger")
+async def trigger_pipeline(
+    current_admin: User = Depends(require_admin),
+):
+    """Manually kick off all ingestion tasks immediately — no need to wait for the weekly schedule."""
+    from app.pipeline.tasks import (
+        ingest_cisa_advisories,
+        ingest_sec_8k_filings,
+        ingest_hhs_breaches,
+        ingest_rss_feeds,
+    )
+    from datetime import datetime, timezone
+
+    tasks = {
+        "cisa": ingest_cisa_advisories.delay(limit=10, days_back=90),
+        "sec_8k": ingest_sec_8k_filings.delay(days_back=30, limit=5),
+        "hhs": ingest_hhs_breaches.delay(min_individuals=10000, limit=5),
+        "rss": ingest_rss_feeds.delay(limit_per_feed=3),
+    }
+    return {
+        "triggered_at": datetime.now(timezone.utc).isoformat(),
+        "tasks": {name: t.id for name, t in tasks.items()},
+        "message": "All ingestion tasks queued. High-confidence extractions (≥0.70) will auto-approve into the scenario library.",
+    }
+
+
+@router.post("/scenarios/{scenario_id}/approve", response_model=ScenarioOut)
+async def approve_scenario(
+    scenario_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """Approve a draft/review scenario so it appears in the public scenario library."""
+    result = await db.execute(select(Scenario).where(Scenario.id == scenario_id))
+    scenario = result.scalar_one_or_none()
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+    if scenario.status == "approved":
+        raise HTTPException(status_code=400, detail="Scenario is already approved")
+    scenario.status = "approved"
+    await db.commit()
+    return ScenarioOut.model_validate(scenario)
+
+
 @router.get("/task-failures")
 async def list_task_failures(
     current_admin: User = Depends(require_admin),

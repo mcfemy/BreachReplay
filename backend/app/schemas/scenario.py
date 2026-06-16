@@ -124,5 +124,6 @@ class ScenarioOut(BaseModel):
 class ScenarioDetail(ScenarioOut):
     alert_sequence: Optional[Any]
     decision_tree: Optional[Any]
+    pressure_injections: Optional[Any]
     debrief_skeleton: Optional[Any]
     compression_ratio: float

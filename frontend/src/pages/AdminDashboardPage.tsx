@@ -156,6 +156,11 @@ export default function AdminDashboardPage() {
   const [exportingCSV, setExportingCSV] = useState(false);
   const [expandedVersionId, setExpandedVersionId] = useState<string | null>(null);
 
+  // Pipeline controls
+  const [triggeringPipeline, setTriggeringPipeline] = useState(false);
+  const [pipelineMessage, setPipelineMessage] = useState("");
+  const [approvingAll, setApprovingAll] = useState(false);
+
   useEffect(() => {
     loadTabData();
   }, [activeTab]);
@@ -297,6 +302,31 @@ export default function AdminDashboardPage() {
       setUploadError(err.message || "File upload failed.");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handleTriggerPipeline() {
+    setTriggeringPipeline(true);
+    setPipelineMessage("");
+    try {
+      const result = await api.post<{ triggered_at: string; message: string }>("/admin/pipeline/trigger", {});
+      setPipelineMessage(result.message);
+    } catch (err: any) {
+      setPipelineMessage(err.message || "Failed to trigger pipeline");
+    } finally {
+      setTriggeringPipeline(false);
+    }
+  }
+
+  async function handleApproveAll() {
+    setApprovingAll(true);
+    try {
+      await Promise.all(scenarios.map((s) => api.post(`/admin/scenarios/${s.id}/approve`, {})));
+      await loadTabData();
+    } catch (err: any) {
+      alert(err.message || "Failed to approve all");
+    } finally {
+      setApprovingAll(false);
     }
   }
 
@@ -494,7 +524,30 @@ export default function AdminDashboardPage() {
 
             {/* PANEL 3: SCENARIOS REVIEW CENTER */}
             {activeTab === "review" && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="space-y-4">
+                {/* Pipeline controls */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button
+                    onClick={handleTriggerPipeline}
+                    disabled={triggeringPipeline}
+                    className="bg-breach-blue hover:bg-blue-600 disabled:opacity-50 text-black px-4 py-2 rounded text-xs uppercase tracking-widest font-bold transition-colors"
+                  >
+                    {triggeringPipeline ? "Triggering..." : "⚡ Run Pipeline Now"}
+                  </button>
+                  {scenarios.length > 0 && (
+                    <button
+                      onClick={handleApproveAll}
+                      disabled={approvingAll}
+                      className="bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white px-4 py-2 rounded text-xs uppercase tracking-widest font-bold transition-colors"
+                    >
+                      {approvingAll ? "Approving..." : `✓ Approve All (${scenarios.length})`}
+                    </button>
+                  )}
+                  {pipelineMessage && (
+                    <p className="text-xs text-breach-blue font-mono">{pipelineMessage}</p>
+                  )}
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {scenarios.map((s) => (
                   <div key={s.id} className="bg-breach-surface border border-breach-border rounded p-4 hover:border-breach-blue transition-colors flex flex-col justify-between space-y-4">
                     <div>
@@ -518,6 +571,7 @@ export default function AdminDashboardPage() {
                     No scenarios currently require manual review. All uploaded disclosures are processed or published.
                   </div>
                 )}
+                </div>
               </div>
             )}
 

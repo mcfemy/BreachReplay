@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str
     CLAUDE_MODEL: str = "claude-sonnet-4-6"
 
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
@@ -21,7 +24,7 @@ class Settings(BaseSettings):
     S3_BUCKET: str = "breachreplay-documents"
 
     SENDGRID_API_KEY: Optional[str] = None
-    FROM_EMAIL: str = "noreply@breachreplay.io"
+    FROM_EMAIL: str = "noreply@breachreplay.com"
 
     SENTRY_DSN: Optional[str] = None
 
@@ -35,6 +38,10 @@ class Settings(BaseSettings):
     SLACK_WEBHOOK_URL: Optional[str] = None
     SLACK_SIGNING_SECRET: Optional[str] = None
     SLACK_CHANNEL_ID: Optional[str] = None
+
+    STRIPE_SECRET_KEY: Optional[str] = None
+    STRIPE_WEBHOOK_SECRET: Optional[str] = None
+    STRIPE_PRICE_ID_ENTERPRISE: Optional[str] = None
 
     ENVIRONMENT: str = "development"
     DEBUG: bool = False

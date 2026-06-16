@@ -45,6 +45,29 @@ DECISION_TREE = [
 
 
 @pytest.fixture(scope="session", autouse=True)
+def disable_rate_limiting():
+    """Disable slowapi rate limiter globally during test execution."""
+    from app.core.security import limiter
+    limiter.enabled = False
+
+
+@pytest.fixture(scope="session", autouse=True)
+def mock_celery_tasks():
+    """Globally mock Celery task enqueuing (.delay) to prevent attempts to connect to Redis broker."""
+    from unittest.mock import MagicMock
+    from app.pipeline.tasks import (
+        generate_session_debrief,
+        process_uploaded_document_task,
+        ingest_cisa_advisories,
+        process_advisory_url
+    )
+    generate_session_debrief.delay = MagicMock(return_value=MagicMock(id="mock-debrief-id"))
+    process_uploaded_document_task.delay = MagicMock(return_value=MagicMock(id="mock-ingestion-id"))
+    ingest_cisa_advisories.delay = MagicMock(return_value=MagicMock(id="mock-cisa-id"))
+    process_advisory_url.delay = MagicMock(return_value=MagicMock(id="mock-url-id"))
+
+
+@pytest.fixture(autouse=True)
 async def setup_redis():
     """Inject a shared FakeRedis instance so no real Redis is needed in tests."""
     import app.core.redis as redis_module

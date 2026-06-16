@@ -2,7 +2,7 @@ import asyncio
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Path, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, cast, Text, func
+from sqlalchemy import select, cast, Text, func, false as sa_false
 from typing import Any, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -39,10 +39,15 @@ async def list_scenarios(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _org_filter = (
+        (Scenario.owner_org_id == current_user.organization_id)
+        if current_user.organization_id
+        else sa_false()
+    )
     base_filter = (
         select(Scenario)
         .where(Scenario.status == "approved")
-        .where((Scenario.is_private == False) | (Scenario.owner_org_id == current_user.organization_id))
+        .where((Scenario.is_private == False) | _org_filter)
         .where(Scenario.alert_sequence != None)  # noqa: E711
         .where(cast(Scenario.alert_sequence, Text) != "[]")
     )

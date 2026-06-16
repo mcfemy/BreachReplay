@@ -45,3 +45,19 @@ class DecisionResult(BaseModel):
     nist_control_ref: str
     mitre_technique: str
     correct_index: int
+
+
+class ParticipantJoin(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: Literal["incident_commander", "forensic_analyst", "communications_lead", "soc_analyst", "observer", "threat_intel_analyst", "legal_compliance", "network_engineer"] = "soc_analyst"
+
+
+class SessionParticipantOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    session_id: str
+    user_id: str
+    role: str
+    joined_at: datetime
+    is_connected: bool

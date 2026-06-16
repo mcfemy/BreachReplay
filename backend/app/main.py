@@ -68,7 +68,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         local_ws = "ws://localhost:8000 ws://127.0.0.1:8000" if settings.DEBUG else ""
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            f"connect-src 'self' wss://breachreplay.io {local_ws}; "
+            f"connect-src 'self' wss://breachreplay.com {local_ws}; "
             "frame-ancestors 'none'"
         )
         return response
@@ -93,8 +93,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:5174",
-        "https://breachreplay.io",
-        "https://www.breachreplay.io",
+        "https://breachreplay.com",
+        "https://www.breachreplay.com",
     ],
     allow_credentials=True,
     allow_methods=["*"],

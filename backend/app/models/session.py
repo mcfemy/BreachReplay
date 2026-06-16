@@ -45,7 +45,7 @@ class SessionParticipant(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     session_id: Mapped[str] = mapped_column(String, ForeignKey("simulation_sessions.id"), nullable=False)
     user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False)
-    role: Mapped[str] = mapped_column(SAEnum("incident_commander", "forensic_analyst", "communications_lead", "soc_analyst", "observer", name="participant_role"), default="soc_analyst")
+    role: Mapped[str] = mapped_column(SAEnum("incident_commander", "forensic_analyst", "communications_lead", "soc_analyst", "observer", "threat_intel_analyst", "legal_compliance", "network_engineer", name="participant_role"), default="soc_analyst")
     joined_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     is_connected: Mapped[bool] = mapped_column(Boolean, default=True)
 

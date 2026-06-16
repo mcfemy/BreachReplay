@@ -17,15 +17,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    org_tier = postgresql.ENUM("starter", "team", "enterprise", "mssp", name="org_tier")
-    user_role = postgresql.ENUM("admin", "ciso", "analyst", "observer", name="user_role")
-    source_type = postgresql.ENUM("cisa", "sec_8k", "hhs", "verizon_dbir", "private", "manual", name="source_type")
-    industry_vertical = postgresql.ENUM("healthcare", "energy", "finance", "government", "technology", "retail", "education", "other", name="industry_vertical")
-    difficulty_level = postgresql.ENUM("awareness", "practitioner", "expert", name="difficulty_level")
-    scenario_status = postgresql.ENUM("draft", "review", "approved", "rejected", "archived", name="scenario_status")
-    session_status = postgresql.ENUM("waiting", "active", "paused", "completed", "abandoned", name="session_status")
-    session_mode = postgresql.ENUM("solo", "multiplayer", name="session_mode")
-    participant_role = postgresql.ENUM("incident_commander", "forensic_analyst", "communications_lead", "soc_analyst", "observer", name="participant_role")
+    org_tier = postgresql.ENUM("starter", "team", "enterprise", "mssp", name="org_tier", create_type=False)
+    user_role = postgresql.ENUM("admin", "ciso", "analyst", "observer", name="user_role", create_type=False)
+    source_type = postgresql.ENUM("cisa", "sec_8k", "hhs", "verizon_dbir", "private", "manual", name="source_type", create_type=False)
+    industry_vertical = postgresql.ENUM("healthcare", "energy", "finance", "government", "technology", "retail", "education", "other", name="industry_vertical", create_type=False)
+    difficulty_level = postgresql.ENUM("awareness", "practitioner", "expert", name="difficulty_level", create_type=False)
+    scenario_status = postgresql.ENUM("draft", "review", "approved", "rejected", "archived", name="scenario_status", create_type=False)
+    session_status = postgresql.ENUM("waiting", "active", "paused", "completed", "abandoned", name="session_status", create_type=False)
+    session_mode = postgresql.ENUM("solo", "multiplayer", name="session_mode", create_type=False)
+    participant_role = postgresql.ENUM("incident_commander", "forensic_analyst", "communications_lead", "soc_analyst", "observer", name="participant_role", create_type=False)
 
     bind = op.get_bind()
     for enum in (org_tier, user_role, source_type, industry_vertical, difficulty_level, scenario_status, session_status, session_mode, participant_role):

@@ -61,3 +61,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ token: null, refreshToken: null, user: null });
   },
 }));
+
+// Sync role/profile from DB on startup — prevents stale cached role blocking navigation
+const _startupToken = localStorage.getItem("br_token");
+if (_startupToken) {
+  axios.get<User>(`${API_BASE}/auth/me`, {
+    headers: { Authorization: `Bearer ${_startupToken}` },
+  }).then(({ data }) => {
+    localStorage.setItem("br_user", JSON.stringify(data));
+    useAuthStore.setState({ user: data });
+  }).catch(() => {});
+}

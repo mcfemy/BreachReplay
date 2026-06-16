@@ -109,6 +109,7 @@ export default function SessionDebriefPage() {
   const [isTimeout, setIsTimeout] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
   const [exporting, setExporting] = useState(false);
+  const [certDownloading, setCertDownloading] = useState(false);
 
   const handleExportPDF = async () => {
     setExporting(true);
@@ -129,6 +130,28 @@ export default function SessionDebriefPage() {
       alert("Failed to download PDF report. Please try again.");
     } finally {
       setExporting(false);
+    }
+  };
+
+  const handleDownloadCertificate = async () => {
+    setCertDownloading(true);
+    try {
+      const response = await axiosInstance.get(`/sessions/${sessionId}/certificate`, {
+        responseType: "blob",
+      });
+      const blob = new Blob([response.data], { type: "application/pdf" });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.setAttribute("download", `BreachReplay_Certificate_${sessionId?.slice(0, 8)}.pdf`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert("Failed to generate certificate. Please try again.");
+    } finally {
+      setCertDownloading(false);
     }
   };
 
@@ -240,6 +263,20 @@ export default function SessionDebriefPage() {
             <span className="text-xs text-breach-muted">Simulation Audit: {session.id.slice(0, 8)}...</span>
           </div>
           <div className="flex gap-3">
+            <button
+              onClick={handleDownloadCertificate}
+              disabled={certDownloading}
+              className="bg-purple-700 hover:bg-purple-600 disabled:bg-purple-700/50 text-white px-4 py-1.5 rounded text-xs uppercase tracking-widest transition-colors flex items-center gap-2 font-bold"
+            >
+              {certDownloading ? (
+                <>
+                  <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                  Generating...
+                </>
+              ) : (
+                <>🏅 Certificate</>
+              )}
+            </button>
             <button
               onClick={handleExportPDF}
               disabled={exporting}
@@ -390,6 +427,29 @@ export default function SessionDebriefPage() {
             )) ?? (
               <p className="text-xs text-breach-muted text-center py-4">No decisions recorded for this session.</p>
             )}
+          </div>
+        </div>
+
+        {/* Certificate Call-to-Action */}
+        <div className="bg-breach-surface border border-purple-800/40 rounded p-6 flex flex-col md:flex-row items-center justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-bold text-purple-300 uppercase tracking-wider mb-1">Completion Certificate</h3>
+            <p className="text-xs text-breach-muted max-w-xl leading-relaxed">
+              Download your signed certificate of completion — valid as tabletop exercise evidence for HIPAA, SOC 2, and PCI-DSS audits. Share on LinkedIn to demonstrate active IR readiness.
+            </p>
+          </div>
+          <div className="flex gap-3 shrink-0">
+            <button
+              onClick={handleDownloadCertificate}
+              disabled={certDownloading}
+              className="bg-purple-700 hover:bg-purple-600 disabled:bg-purple-700/50 text-white px-5 py-2 rounded text-xs uppercase tracking-widest transition-colors flex items-center gap-2 font-bold"
+            >
+              {certDownloading ? (
+                <><span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></span> Generating...</>
+              ) : (
+                <>🏅 Download Certificate</>
+              )}
+            </button>
           </div>
         </div>
 

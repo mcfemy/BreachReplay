@@ -16,8 +16,11 @@ from app.pipeline.tasks import process_uploaded_document_task
 
 router = APIRouter(prefix="/scenarios", tags=["ingestion"])
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/tmp/breachreplay_uploads")
+try:
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+except OSError:
+    pass
 
 
 class BreachDocumentOut(BaseModel):

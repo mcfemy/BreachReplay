@@ -94,7 +94,7 @@ export default function SessionMultiplayerLobbyPage() {
 
   // Connect to the WebSocket room using our custom hook; session-start navigation
   // is handled by the status polling below — no WS notification needed here.
-  const { startStream } = useSimulationSocket(sessionId!);
+  useSimulationSocket(sessionId!);
 
   // Reset store to clear any stale simulation state
   useEffect(() => {
@@ -153,8 +153,7 @@ export default function SessionMultiplayerLobbyPage() {
     setError("");
     try {
       await api.post(`/sessions/${sessionId}/start`, {});
-      startStream();
-      navigate(`/session/${sessionId}`);
+      navigate(`/session/${sessionId}/intro`);
     } catch (err: any) {
       setError(err.message || "Failed to start incident operations");
     }

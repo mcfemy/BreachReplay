@@ -63,7 +63,7 @@ export default function ScenarioLibraryPage() {
   async function launchScenario(scenarioId: string) {
     try {
       const session = await api.post<{ id: string }>("/sessions", { scenario_id: scenarioId, mode: "solo" });
-      navigate(`/session/${session.id}`);
+      navigate(`/session/${session.id}/intro`);
     } catch (err: any) {
       alert(err.message);
     }
@@ -83,6 +83,10 @@ export default function ScenarioLibraryPage() {
                 : `${scenarios.length} scenarios available`}
             </p>
           </div>
+          <div className="flex items-center gap-4 text-xs">
+            <a href="/pricing" className="text-breach-muted hover:text-breach-text transition-colors uppercase tracking-wider">Pricing</a>
+            <a href="/settings" className="text-breach-muted hover:text-breach-text transition-colors uppercase tracking-wider">Settings</a>
+          </div>
         </div>
 
         {/* Search mode banner when AI is active */}
@@ -93,6 +97,38 @@ export default function ScenarioLibraryPage() {
             <button onClick={handleToggleSemantic} className="ml-auto text-[10px] text-breach-muted hover:text-breach-accent uppercase tracking-wider">✕ Disable</button>
           </div>
         )}
+
+        {/* Feature spotlight cards */}
+        <div className="grid grid-cols-2 gap-3 mb-6">
+          <button
+            onClick={() => navigate("/daily")}
+            className="group relative overflow-hidden border border-orange-500/30 bg-orange-500/5 hover:bg-orange-500/10 rounded-xl p-4 text-left transition-all hover:border-orange-500/50"
+          >
+            <div className="flex items-start gap-3">
+              <span className="text-3xl">🔐</span>
+              <div>
+                <div className="text-xs text-orange-400 uppercase tracking-widest font-bold mb-0.5">Daily Breach</div>
+                <div className="text-sm font-bold text-white group-hover:text-orange-200 transition-colors">Today's Incident</div>
+                <div className="text-xs text-gray-500 mt-1">10 min · One shot · Global leaderboard</div>
+              </div>
+            </div>
+            <div className="absolute right-3 top-3 text-orange-600 group-hover:text-orange-400 transition-colors text-lg">→</div>
+          </button>
+          <button
+            onClick={() => navigate("/redteam")}
+            className="group relative overflow-hidden border border-red-500/30 bg-red-500/5 hover:bg-red-500/10 rounded-xl p-4 text-left transition-all hover:border-red-500/50"
+          >
+            <div className="flex items-start gap-3">
+              <span className="text-3xl">🔴</span>
+              <div>
+                <div className="text-xs text-red-400 uppercase tracking-widest font-bold mb-0.5">Red Team Mode</div>
+                <div className="text-sm font-bold text-white group-hover:text-red-200 transition-colors">Play the Attacker</div>
+                <div className="text-xs text-gray-500 mt-1">Choose TTPs · Evade blue team · Strike</div>
+              </div>
+            </div>
+            <div className="absolute right-3 top-3 text-red-600 group-hover:text-red-400 transition-colors text-lg">→</div>
+          </button>
+        </div>
 
         <div className="flex gap-3 mb-6">
           <div className="flex-1 relative">
@@ -128,6 +164,9 @@ export default function ScenarioLibraryPage() {
             <option value="finance">Finance</option>
             <option value="government">Government</option>
             <option value="technology">Technology</option>
+            <option value="hospitality">Hospitality</option>
+            <option value="supply_chain">Supply Chain</option>
+            <option value="critical_infrastructure">Critical Infrastructure</option>
           </select>
           <select
             value={difficulty}
@@ -142,33 +181,58 @@ export default function ScenarioLibraryPage() {
         </div>
 
         {loading ? (
-          <div className="text-breach-muted text-sm">Loading scenarios...</div>
+          <div className="flex flex-col items-center justify-center py-20 text-breach-muted">
+            <div className="w-8 h-8 border-2 border-breach-accent border-t-transparent rounded-full animate-spin mb-3"></div>
+            <span className="text-sm uppercase tracking-widest">Loading scenarios...</span>
+          </div>
+        ) : scenarios.length === 0 ? (
+          <div className="text-center py-20 text-breach-muted">
+            <div className="text-4xl mb-3">⚡</div>
+            <p className="text-sm uppercase tracking-widest">No scenarios match your filters</p>
+            <button onClick={() => { setSearch(""); setIndustry(""); setDifficulty(""); }} className="mt-4 text-xs text-breach-blue hover:underline">Clear filters</button>
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {scenarios.map((s) => (
-              <div key={s.id} className="bg-breach-surface border border-breach-border rounded p-4 hover:border-breach-blue transition-colors">
-                <div className="flex items-start justify-between mb-2">
-                  <span className="text-xs text-breach-muted uppercase tracking-wider">{s.source_type}</span>
-                  <span className={`text-xs font-bold uppercase ${SEVERITY_COLOR[s.difficulty] || "text-breach-muted"}`}>
+              <div key={s.id} className="bg-breach-surface border border-breach-border rounded p-4 hover:border-breach-blue transition-all flex flex-col">
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] text-breach-muted uppercase tracking-widest border border-breach-border px-1.5 py-0.5 rounded">
+                      {s.source_type.replace(/_/g, " ")}
+                    </span>
+                    {s.industry_vertical && (
+                      <span className="text-[9px] text-breach-blue uppercase tracking-widest border border-breach-blue/30 px-1.5 py-0.5 rounded">
+                        {s.industry_vertical.replace(/_/g, " ")}
+                      </span>
+                    )}
+                  </div>
+                  <span className={`text-[10px] font-bold uppercase tracking-wider ${SEVERITY_COLOR[s.difficulty] || "text-breach-muted"}`}>
                     {s.difficulty}
                   </span>
                 </div>
-                <h3 className="text-sm font-semibold text-breach-text mb-2 leading-snug">{s.title}</h3>
+                <h3 className="text-sm font-semibold text-breach-text mb-3 leading-snug flex-1">{s.title}</h3>
                 <div className="flex flex-wrap gap-1 mb-3">
-                  {s.mitre_techniques?.slice(0, 3).map((t) => (
-                    <span key={t} className="text-xs bg-breach-bg border border-breach-border px-1.5 py-0.5 rounded text-breach-muted">{t}</span>
+                  {s.mitre_techniques?.slice(0, 4).map((t) => (
+                    <span key={t} className="text-[9px] bg-breach-bg border border-breach-border px-1.5 py-0.5 rounded text-breach-muted font-mono">{t}</span>
                   ))}
+                  {(s.mitre_techniques?.length ?? 0) > 4 && (
+                    <span className="text-[9px] text-breach-muted">+{(s.mitre_techniques?.length ?? 0) - 4} more</span>
+                  )}
                 </div>
-                <div className="flex items-center justify-between text-xs text-breach-muted mb-3">
-                  <span>{s.estimated_minutes}m</span>
-                  <span>{s.industry_vertical || "—"}</span>
-                  <span>{s.play_count} plays</span>
+                <div className="flex items-center justify-between text-[10px] text-breach-muted mb-4 border-t border-breach-border/40 pt-3">
+                  <span className="flex items-center gap-1">⏱ {s.estimated_minutes}m</span>
+                  <span className="flex items-center gap-1">▶ {s.play_count} plays</span>
+                  {s.avg_score != null && (
+                    <span className={`flex items-center gap-1 font-bold ${s.avg_score >= 80 ? "text-green-400" : s.avg_score >= 60 ? "text-yellow-400" : "text-breach-accent"}`}>
+                      avg {s.avg_score.toFixed(0)}%
+                    </span>
+                  )}
                 </div>
                 <button
                   onClick={() => launchScenario(s.id)}
-                  className="w-full bg-breach-accent hover:bg-red-600 text-white py-1.5 rounded text-xs uppercase tracking-widest transition-colors"
+                  className="w-full bg-breach-accent hover:bg-red-600 text-white py-2 rounded text-xs uppercase tracking-widest transition-colors font-bold"
                 >
-                  Launch Simulation
+                  Launch Simulation →
                 </button>
               </div>
             ))}

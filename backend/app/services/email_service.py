@@ -161,6 +161,39 @@ live tabletop simulation session on BreachReplay.</p>
     return _send(to_email, subject, html)
 
 
+def send_team_invite_email_v2(
+    to_email: str,
+    inviter_name: str,
+    team_name: str,
+    join_url: str,
+) -> bool:
+    subject = f"{inviter_name} invited you to join '{team_name}' on BreachReplay"
+    body = f"""
+<h2>You've Been Invited to a Team</h2>
+<p><strong style="color:#f1f5f9;">{inviter_name}</strong> has invited you to join the
+<strong style="color:#f1f5f9;">{team_name}</strong> team on BreachReplay.</p>
+
+<div class="metric" style="border-color:#1e3a8a;">
+  <div class="metric-label">Team</div>
+  <div style="font-size:18px; font-weight:700; color:#93c5fd; margin-top:6px;">{team_name}</div>
+</div>
+
+<p style="font-size:13px; color:#94a3b8;">
+  BreachReplay is a live cybersecurity tabletop simulation platform. Your team competes
+  on real breach scenarios — Colonial Pipeline, SolarWinds, MGM — and earns XP toward a
+  shared team leaderboard.
+</p>
+
+<a class="cta" href="{join_url}">Join the Team →</a>
+
+<p style="font-size:11px; color:#475569;">
+  If you don't have a BreachReplay account, you'll be prompted to create one when you click the link.
+</p>
+"""
+    html = _HTML_WRAPPER.format(subject=subject, body=body, frontend_url=settings.FRONTEND_URL)
+    return _send(to_email, subject, html)
+
+
 def send_password_reset_email(to_email: str, reset_token: str) -> bool:
     subject = "BreachReplay — Password Reset Request"
     reset_url = f"{settings.FRONTEND_URL}/reset-password?token={reset_token}"

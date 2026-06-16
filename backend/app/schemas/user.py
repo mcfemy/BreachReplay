@@ -92,5 +92,10 @@ class ResetPasswordRequest(BaseModel):
         return v
 
 
+class UserUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    full_name: Optional[str] = Field(default=None, max_length=100)
+
+
 class MessageResponse(BaseModel):
     message: str

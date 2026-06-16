@@ -15,7 +15,7 @@ Changes:
 from alembic import op
 
 revision = "001_fix_user_role_enum"
-down_revision = None
+down_revision = "0002_indexes"
 branch_labels = None
 depends_on = None
 

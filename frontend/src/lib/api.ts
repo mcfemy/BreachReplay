@@ -99,7 +99,10 @@ axiosInstance.interceptors.response.use(
     }
 
     // Wrap error messages consistently for the app
-    const message = error.response?.data?.detail || error.message || "Request failed";
+    const detail = error.response?.data?.detail;
+    const message = Array.isArray(detail)
+      ? detail.map((d: any) => d.msg ?? String(d)).join("; ")
+      : detail || error.message || "Request failed";
     return Promise.reject(new Error(message));
   }
 );

@@ -34,10 +34,20 @@ from app.schemas.user import (
     UserCreate,
     UserLogin,
     UserOut,
+    UserUpdateRequest,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = get_logger(__name__)
+
+_DB_TO_API_ROLE = {"owner": "ciso", "viewer": "observer"}
+
+
+def _user_out(user: User) -> UserOut:
+    """Return a UserOut with DB-internal role aliases translated to Phase 3 schema names."""
+    out = UserOut.model_validate(user)
+    out.role = _DB_TO_API_ROLE.get(out.role, out.role)
+    return out
 
 
 async def _send_password_reset_email(email: str, reset_url: str) -> None:
@@ -84,7 +94,7 @@ async def register(request: Request, payload: UserCreate, db: AsyncSession = Dep
     return TokenOut(
         access_token=access_token,
         refresh_token=refresh_token,
-        user=UserOut.model_validate(user),
+        user=_user_out(user),
     )
 
 
@@ -102,7 +112,7 @@ async def login(request: Request, payload: UserLogin, db: AsyncSession = Depends
     return TokenOut(
         access_token=access_token,
         refresh_token=refresh_token,
-        user=UserOut.model_validate(user),
+        user=_user_out(user),
     )
 
 
@@ -123,7 +133,7 @@ async def refresh(request: Request, payload: RefreshRequest, db: AsyncSession = 
     return TokenOut(
         access_token=access_token,
         refresh_token=new_refresh_token,
-        user=UserOut.model_validate(user),
+        user=_user_out(user),
     )
 
 
@@ -168,4 +178,17 @@ async def reset_password(request: Request, payload: ResetPasswordRequest, db: As
 
 @router.get("/me", response_model=UserOut)
 async def me(current_user: User = Depends(get_current_user)):
-    return UserOut.model_validate(current_user)
+    return _user_out(current_user)
+
+
+@router.patch("/me", response_model=UserOut)
+async def update_me(
+    payload: UserUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if payload.full_name is not None:
+        current_user.full_name = payload.full_name
+    await db.commit()
+    await db.refresh(current_user)
+    return _user_out(current_user)

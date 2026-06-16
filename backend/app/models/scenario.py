@@ -22,7 +22,7 @@ class Scenario(Base):
     incident_date: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     incident_duration_hours: Mapped[float] = mapped_column(Float, nullable=True)
 
-    industry_vertical: Mapped[str] = mapped_column(SAEnum("healthcare", "energy", "finance", "government", "technology", "retail", "education", "other", name="industry_vertical"), nullable=True)
+    industry_vertical: Mapped[str] = mapped_column(SAEnum("healthcare", "energy", "finance", "government", "technology", "retail", "education", "hospitality", "supply_chain", "critical_infrastructure", "other", name="industry_vertical"), nullable=True)
     initial_access_vector: Mapped[str] = mapped_column(String(255), nullable=True)
     affected_asset_types: Mapped[list] = mapped_column(ARRAY(String).with_variant(JSON, "sqlite"), nullable=True)
 
@@ -36,6 +36,7 @@ class Scenario(Base):
 
     alert_sequence: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
     decision_tree: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
+    pressure_injections: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
     debrief_skeleton: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
 
     status: Mapped[str] = mapped_column(SAEnum("draft", "review", "approved", "rejected", "archived", name="scenario_status"), default="draft")

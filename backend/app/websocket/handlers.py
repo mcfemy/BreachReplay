@@ -8,6 +8,7 @@ from app.models.session import SimulationSession, SessionParticipant, SessionDec
 from app.models.scenario import Scenario
 from app.models.user import User
 from app.websocket.manager import manager, build_alert_event, build_decision_gate_event, build_system_event
+from app.pipeline.claude_client import generate_decision_commentary
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,18 @@ async def simulation_ws_handler(websocket: WebSocket, session_id: str, user_id: 
                 # Resume simulation alert flow
                 manager.resume_session(session_id)
 
+                # Fire AI facilitator commentary asynchronously (non-blocking)
+                asyncio.create_task(_broadcast_ai_commentary(
+                    session_id=session_id,
+                    scenario_title=scenario.title if scenario else "Unknown",
+                    gate_id=gate_id,
+                    team_choice=gate["options"][option_idx]["text"] if option_idx < len(gate["options"]) else "",
+                    correct_choice=gate["options"][gate["correct_index"]]["text"] if gate["options"] else "",
+                    is_correct=is_correct,
+                    mitre_technique=gate.get("mitre_technique", ""),
+                    nist_ref=gate.get("nist_control_ref", ""),
+                ))
+
             elif msg_type == "toggle_simulation_pause":
                 if role != "incident_commander":
                     await manager.send_personal(websocket, build_system_event("error", {"detail": "Only the Incident Commander can pause/resume simulations"}))
@@ -170,6 +183,34 @@ async def simulation_ws_handler(websocket: WebSocket, session_id: str, user_id: 
             pass  # non-fatal — presence broadcast already sent the correct in-memory state
 
 
+async def _broadcast_ai_commentary(
+    session_id: str,
+    scenario_title: str,
+    gate_id: str,
+    team_choice: str,
+    correct_choice: str,
+    is_correct: bool,
+    mitre_technique: str,
+    nist_ref: str,
+) -> None:
+    """Call Claude for real-world context and broadcast it as an AI facilitator chat message."""
+    try:
+        commentary = await asyncio.to_thread(
+            generate_decision_commentary,
+            scenario_title, gate_id, team_choice, correct_choice,
+            is_correct, mitre_technique, nist_ref,
+        )
+        if commentary:
+            await manager.broadcast(session_id, {
+                "type": "ai_commentary",
+                "gate_id": gate_id,
+                "text": commentary,
+                "is_correct": is_correct,
+            })
+    except Exception:
+        logger.exception("Failed to generate or broadcast AI commentary for session %s gate %s", session_id, gate_id)
+
+
 async def _stream_alerts(session_id: str, requester_id: str):
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(SimulationSession).where(SimulationSession.id == session_id))
@@ -202,6 +243,13 @@ async def _stream_alerts(session_id: str, requester_id: str):
             else:
                 gates_by_trigger[ts] = gate
 
+        # Index pressure injections by trigger timestamp
+        injections_by_trigger: dict = {}
+        for inj in (scenario.pressure_injections or []):
+            ts = inj.get("trigger_timestamp")
+            if ts:
+                injections_by_trigger.setdefault(ts, []).append(inj)
+
         total = len(alerts)
         speed = session.speed_multiplier or 1.0
 
@@ -219,9 +267,19 @@ async def _stream_alerts(session_id: str, requester_id: str):
                 # Broadcast standard alert
                 await manager.broadcast(session_id, build_alert_event(alert, i, total))
 
+                alert_ts = alert.get("timestamp")
+
+                # Fire pressure injections at this timestamp (before gate pause so they overlap)
+                for pressure_inj in injections_by_trigger.get(alert_ts, []):
+                    await manager.broadcast(session_id, {
+                        "type": "pressure_injection",
+                        "payload": pressure_inj,
+                    })
+                    await asyncio.sleep(1.0 / speed)
+
                 # Autopause simulation on decision gate
-                if alert.get("timestamp") in gates_by_trigger:
-                    gate = gates_by_trigger[alert["timestamp"]]
+                if alert_ts in gates_by_trigger:
+                    gate = gates_by_trigger[alert_ts]
                     manager.clear_votes(session_id)
                     await manager.broadcast(session_id, build_decision_gate_event(gate))
                     manager.pause_session(session_id)

@@ -1,0 +1,331 @@
+"""
+Certification Service.
+Checks eligibility for verifiable credentials and issues them when earned.
+"""
+import uuid
+from datetime import datetime
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
+
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+# ── Certification catalogue ────────────────────────────────────────────────────
+
+CERTIFICATIONS = {
+    "ir_fundamentals": {
+        "title": "Incident Response Fundamentals",
+        "subtitle": "Verified Completion · BreachReplay",
+        "tier": "bronze",
+        "color": "#cd7f32",
+        "icon": "🛡️",
+        "desc": "Demonstrated foundational skills in incident response by completing multiple cybersecurity scenarios.",
+        "criteria_display": "Complete 3 scenarios with 60%+ avg score",
+    },
+    "certified_analyst": {
+        "title": "BreachReplay Certified Analyst",
+        "subtitle": "Career Progression · BreachReplay",
+        "tier": "bronze",
+        "color": "#cd7f32",
+        "icon": "🔬",
+        "desc": "Achieved SOC Analyst career tier through consistent training and skill development.",
+        "criteria_display": "Reach SOC Analyst career tier (1,000 XP)",
+    },
+    "red_team_operator": {
+        "title": "Red Team Operator Level I",
+        "subtitle": "Offensive Security · BreachReplay",
+        "tier": "bronze",
+        "color": "#cd7f32",
+        "icon": "🔴",
+        "desc": "Demonstrated proficiency in adversarial simulation by completing multiple Red Team operations.",
+        "criteria_display": "Complete 2 Red Team operations",
+    },
+    "ransomware_defender": {
+        "title": "Ransomware Defense Specialist",
+        "subtitle": "Threat-Specific Mastery · BreachReplay",
+        "tier": "silver",
+        "color": "#c0c0c0",
+        "icon": "💊",
+        "desc": "Proven expertise in ransomware incident response and containment strategies.",
+        "criteria_display": "Complete 2 ransomware scenarios with 65%+ score",
+    },
+    "daily_champion": {
+        "title": "Daily Breach Champion",
+        "subtitle": "Consistency Award · BreachReplay",
+        "tier": "silver",
+        "color": "#c0c0c0",
+        "icon": "🔥",
+        "desc": "Demonstrated commitment to continuous learning with an exceptional Daily Breach streak.",
+        "criteria_display": "7-day Daily Breach streak",
+    },
+    "critical_infra_defender": {
+        "title": "Critical Infrastructure Defender",
+        "subtitle": "Scenario Mastery · BreachReplay",
+        "tier": "gold",
+        "color": "#ffd700",
+        "icon": "🛢️",
+        "desc": "Successfully navigated the Colonial Pipeline scenario, demonstrating expertise in critical infrastructure protection.",
+        "criteria_display": "Complete the Colonial Pipeline scenario",
+    },
+    "supply_chain_expert": {
+        "title": "Supply Chain Security Expert",
+        "subtitle": "Scenario Mastery · BreachReplay",
+        "tier": "gold",
+        "color": "#ffd700",
+        "icon": "🌐",
+        "desc": "Proven mastery of supply chain attack vectors through completion of the SolarWinds scenario.",
+        "criteria_display": "Complete the SolarWinds scenario",
+    },
+    "elite_operator": {
+        "title": "Elite Threat Hunter",
+        "subtitle": "Advanced Career · BreachReplay",
+        "tier": "platinum",
+        "color": "#e5e4e2",
+        "icon": "🎖️",
+        "desc": "Reached the Threat Hunter career tier — placing this analyst in the top tier of BreachReplay practitioners.",
+        "criteria_display": "Reach Threat Hunter career tier (15,000 XP)",
+    },
+}
+
+
+async def _cert_exists(db: AsyncSession, user_id: str, cert_key: str) -> bool:
+    result = await db.execute(
+        text("SELECT 1 FROM certifications WHERE user_id = :uid AND cert_key = :key"),
+        {"uid": user_id, "key": cert_key},
+    )
+    return result.fetchone() is not None
+
+
+async def _issue_cert(db: AsyncSession, user_id: str, cert_key: str) -> dict | None:
+    if cert_key not in CERTIFICATIONS:
+        return None
+    if await _cert_exists(db, user_id, cert_key):
+        return None
+
+    meta = CERTIFICATIONS[cert_key]
+    cert_id = str(uuid.uuid4())
+    token = uuid.uuid4().hex + uuid.uuid4().hex[:16]  # 48-char token
+    now = datetime.utcnow()
+
+    await db.execute(
+        text("""
+            INSERT INTO certifications (id, user_id, cert_key, cert_title, cert_tier, issued_at, verify_token)
+            VALUES (:id, :user_id, :cert_key, :cert_title, :cert_tier, :issued_at, :verify_token)
+            ON CONFLICT (user_id, cert_key) DO NOTHING
+        """),
+        {
+            "id": cert_id,
+            "user_id": user_id,
+            "cert_key": cert_key,
+            "cert_title": meta["title"],
+            "cert_tier": meta["tier"],
+            "issued_at": now,
+            "verify_token": token,
+        },
+    )
+    await db.commit()
+
+    logger.info("Issued cert '%s' to user %s", cert_key, user_id)
+    return {"cert_key": cert_key, "title": meta["title"], "tier": meta["tier"], "icon": meta["icon"]}
+
+
+async def check_and_award_certs(db: AsyncSession, user_id: str) -> list[dict]:
+    """
+    Run all eligibility checks for a user and issue any newly earned certs.
+    Returns list of newly issued cert dicts.
+    """
+    newly_issued: list[dict] = []
+
+    # ── 1. Incident Response Fundamentals ─────────────────────────────────────
+    if not await _cert_exists(db, user_id, "ir_fundamentals"):
+        row = await db.execute(
+            text("""
+                SELECT COUNT(*) as cnt, AVG(s.team_score) as avg_score
+                FROM simulation_sessions s
+                JOIN session_participants sp ON sp.session_id = s.id
+                WHERE sp.user_id = :uid AND s.status = 'completed'
+            """),
+            {"uid": user_id},
+        )
+        r = row.fetchone()
+        if r and (r.cnt or 0) >= 3 and (r.avg_score or 0) >= 60:
+            cert = await _issue_cert(db, user_id, "ir_fundamentals")
+            if cert:
+                newly_issued.append(cert)
+
+    # ── 2. Certified Analyst (SOC Analyst tier = 1000 XP) ─────────────────────
+    if not await _cert_exists(db, user_id, "certified_analyst"):
+        row = await db.execute(
+            text("SELECT xp_total FROM users WHERE id = :uid"), {"uid": user_id}
+        )
+        r = row.fetchone()
+        if r and (r.xp_total or 0) >= 1_000:
+            cert = await _issue_cert(db, user_id, "certified_analyst")
+            if cert:
+                newly_issued.append(cert)
+
+    # ── 3. Red Team Operator I ────────────────────────────────────────────────
+    if not await _cert_exists(db, user_id, "red_team_operator"):
+        row = await db.execute(
+            text("""
+                SELECT COUNT(*) as cnt
+                FROM red_team_sessions
+                WHERE user_id = :uid AND status != 'active'
+            """),
+            {"uid": user_id},
+        )
+        r = row.fetchone()
+        if r and (r.cnt or 0) >= 2:
+            cert = await _issue_cert(db, user_id, "red_team_operator")
+            if cert:
+                newly_issued.append(cert)
+
+    # ── 4. Ransomware Defense Specialist ──────────────────────────────────────
+    if not await _cert_exists(db, user_id, "ransomware_defender"):
+        row = await db.execute(
+            text("""
+                SELECT COUNT(*) as cnt, AVG(s.team_score) as avg_score
+                FROM simulation_sessions s
+                JOIN session_participants sp ON sp.session_id = s.id
+                JOIN scenarios sc ON sc.id = s.scenario_id
+                WHERE sp.user_id = :uid AND s.status = 'completed'
+                  AND (LOWER(sc.title) LIKE '%ransomware%'
+                       OR LOWER(sc.title) LIKE '%colonial%'
+                       OR LOWER(sc.title) LIKE '%wanna%')
+            """),
+            {"uid": user_id},
+        )
+        r = row.fetchone()
+        if r and (r.cnt or 0) >= 2 and (r.avg_score or 0) >= 65:
+            cert = await _issue_cert(db, user_id, "ransomware_defender")
+            if cert:
+                newly_issued.append(cert)
+
+    # ── 5. Daily Champion (7-day streak) ──────────────────────────────────────
+    if not await _cert_exists(db, user_id, "daily_champion"):
+        row = await db.execute(
+            text("""
+                SELECT current_streak FROM user_streaks WHERE user_id = :uid
+            """),
+            {"uid": user_id},
+        )
+        r = row.fetchone()
+        if r and (r.current_streak or 0) >= 7:
+            cert = await _issue_cert(db, user_id, "daily_champion")
+            if cert:
+                newly_issued.append(cert)
+
+    # ── 6. Critical Infrastructure Defender (Colonial Pipeline) ───────────────
+    if not await _cert_exists(db, user_id, "critical_infra_defender"):
+        row = await db.execute(
+            text("""
+                SELECT COUNT(*) as cnt
+                FROM simulation_sessions s
+                JOIN session_participants sp ON sp.session_id = s.id
+                JOIN scenarios sc ON sc.id = s.scenario_id
+                WHERE sp.user_id = :uid AND s.status = 'completed'
+                  AND LOWER(sc.title) LIKE '%colonial%'
+            """),
+            {"uid": user_id},
+        )
+        r = row.fetchone()
+        if r and (r.cnt or 0) >= 1:
+            cert = await _issue_cert(db, user_id, "critical_infra_defender")
+            if cert:
+                newly_issued.append(cert)
+
+    # ── 7. Supply Chain Expert (SolarWinds) ───────────────────────────────────
+    if not await _cert_exists(db, user_id, "supply_chain_expert"):
+        row = await db.execute(
+            text("""
+                SELECT COUNT(*) as cnt
+                FROM simulation_sessions s
+                JOIN session_participants sp ON sp.session_id = s.id
+                JOIN scenarios sc ON sc.id = s.scenario_id
+                WHERE sp.user_id = :uid AND s.status = 'completed'
+                  AND LOWER(sc.title) LIKE '%solar%'
+            """),
+            {"uid": user_id},
+        )
+        r = row.fetchone()
+        if r and (r.cnt or 0) >= 1:
+            cert = await _issue_cert(db, user_id, "supply_chain_expert")
+            if cert:
+                newly_issued.append(cert)
+
+    # ── 8. Elite Threat Hunter (15k XP) ──────────────────────────────────────
+    if not await _cert_exists(db, user_id, "elite_operator"):
+        row = await db.execute(
+            text("SELECT xp_total FROM users WHERE id = :uid"), {"uid": user_id}
+        )
+        r = row.fetchone()
+        if r and (r.xp_total or 0) >= 15_000:
+            cert = await _issue_cert(db, user_id, "elite_operator")
+            if cert:
+                newly_issued.append(cert)
+
+    return newly_issued
+
+
+async def get_user_certs(db: AsyncSession, user_id: str) -> list[dict]:
+    """Fetch all certifications for a user, enriched with catalogue metadata."""
+    result = await db.execute(
+        text("""
+            SELECT id, cert_key, cert_title, cert_tier, issued_at, verify_token
+            FROM certifications
+            WHERE user_id = :uid
+            ORDER BY issued_at ASC
+        """),
+        {"uid": user_id},
+    )
+    rows = result.fetchall()
+    out = []
+    for r in rows:
+        meta = CERTIFICATIONS.get(r.cert_key, {})
+        out.append({
+            "id": r.id,
+            "cert_key": r.cert_key,
+            "title": r.cert_title,
+            "subtitle": meta.get("subtitle", "Verified · BreachReplay"),
+            "tier": r.cert_tier,
+            "color": meta.get("color", "#6b7280"),
+            "icon": meta.get("icon", "🏅"),
+            "desc": meta.get("desc", ""),
+            "criteria_display": meta.get("criteria_display", ""),
+            "issued_at": r.issued_at.isoformat(),
+            "verify_url": f"/cert/{r.verify_token}",
+            "verify_token": r.verify_token,
+        })
+    return out
+
+
+async def verify_cert_by_token(db: AsyncSession, token: str) -> dict | None:
+    """Public verification — look up a cert by its token."""
+    result = await db.execute(
+        text("""
+            SELECT c.id, c.cert_key, c.cert_title, c.cert_tier, c.issued_at, c.verify_token,
+                   u.full_name, u.email
+            FROM certifications c
+            JOIN users u ON u.id = c.user_id
+            WHERE c.verify_token = :token
+        """),
+        {"token": token},
+    )
+    r = result.fetchone()
+    if not r:
+        return None
+
+    meta = CERTIFICATIONS.get(r.cert_key, {})
+    return {
+        "valid": True,
+        "title": r.cert_title,
+        "subtitle": meta.get("subtitle", "Verified · BreachReplay"),
+        "tier": r.cert_tier,
+        "color": meta.get("color", "#6b7280"),
+        "icon": meta.get("icon", "🏅"),
+        "desc": meta.get("desc", ""),
+        "issued_to": r.full_name or r.email.split("@")[0],
+        "issued_at": r.issued_at.isoformat(),
+        "verify_token": r.verify_token,
+    }

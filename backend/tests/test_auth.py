@@ -145,7 +145,7 @@ async def test_forgot_password_always_200(client):
 
     # Unknown email — must also return 200 (no enumeration)
     resp = await client.post("/api/v1/auth/forgot-password", json={
-        "email": "nobody@nowhere.invalid",
+        "email": "nobody@nowhere.com",
     })
     assert resp.status_code == 200
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useSimStore } from "../store/simulation";
+import type { PressureInjection } from "../store/simulation";
 import { WS_BASE } from "./config";
 
 interface SocketOptions {
@@ -11,6 +12,7 @@ interface SocketOptions {
     correct_index: number;
   }) => void;
   onNotification?: (kind: "success" | "error" | "info", message: string) => void;
+  onPressureInjection?: (inj: PressureInjection) => void;
 }
 
 export function useSimulationSocket(sessionId: string, options?: SocketOptions) {
@@ -18,6 +20,7 @@ export function useSimulationSocket(sessionId: string, options?: SocketOptions) 
   const {
     addAlert,
     setGate,
+    setActivePressureInjection,
     setComplete,
     addChat,
     setParticipants,
@@ -92,6 +95,12 @@ export function useSimulationSocket(sessionId: string, options?: SocketOptions) 
         case "participant_joined":
           upsertParticipant({ user_id: msg.user_id, name: msg.name, role: msg.role, online: true });
           break;
+        case "pressure_injection":
+          setActivePressureInjection(msg.payload as PressureInjection);
+          if (optionsRef.current?.onPressureInjection) {
+            optionsRef.current.onPressureInjection(msg.payload as PressureInjection);
+          }
+          break;
         case "decision_result":
           setGate(null);
           clearVotes();
@@ -105,6 +114,14 @@ export function useSimulationSocket(sessionId: string, options?: SocketOptions) 
             });
           }
           break;
+        case "ai_commentary":
+          addChat({
+            user_id: "ai_facilitator",
+            name: "AI Facilitator",
+            role: "ai_facilitator",
+            text: msg.text,
+          });
+          break;
         default:
           break;
       }
@@ -113,7 +130,7 @@ export function useSimulationSocket(sessionId: string, options?: SocketOptions) 
     return () => {
       socket.close();
     };
-  }, [sessionId, addAlert, setGate, setComplete, addChat, setParticipants, upsertParticipant, setVotes, clearVotes, setPaused]);
+  }, [sessionId, addAlert, setGate, setActivePressureInjection, setComplete, addChat, setParticipants, upsertParticipant, setVotes, clearVotes, setPaused]);
 
   const send = (payload: unknown) => {
     if (ws.current?.readyState === WebSocket.OPEN) {

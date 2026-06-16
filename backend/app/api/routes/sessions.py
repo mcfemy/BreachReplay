@@ -1,8 +1,9 @@
 import asyncio
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, desc
 from datetime import datetime
+from typing import List, Optional
 
 from app.db.session import get_db
 from app.models.session import SimulationSession, SessionParticipant, SessionDecision
@@ -11,7 +12,6 @@ from app.models.user import User
 from app.schemas.session import SessionCreate, SessionOut, DecisionSubmit, DecisionResult, ParticipantJoin, SessionParticipantOut
 from app.core.security import get_current_user
 from app.pipeline.tasks import generate_session_debrief
-from typing import List
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
@@ -23,6 +23,35 @@ def assert_org_access(session: SimulationSession, user: User) -> None:
     if user.organization_id and session.organization_id == user.organization_id:
         return
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+
+@router.get("", response_model=List[dict])
+async def list_my_sessions(
+    limit: int = Query(default=10, ge=1, le=50),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the current user's most recent sessions, newest first."""
+    result = await db.execute(
+        select(SimulationSession, Scenario.title)
+        .join(Scenario, SimulationSession.scenario_id == Scenario.id)
+        .where(SimulationSession.host_user_id == current_user.id)
+        .order_by(desc(SimulationSession.created_at))
+        .limit(limit)
+    )
+    rows = result.all()
+    return [
+        {
+            "id": s.id,
+            "scenario_title": title,
+            "status": s.status,
+            "team_score": s.team_score,
+            "decisions_correct": s.decisions_correct,
+            "decisions_made": s.decisions_made,
+            "started_at": s.started_at.isoformat() if s.started_at else s.created_at.isoformat(),
+        }
+        for s, title in rows
+    ]
 
 
 @router.post("", response_model=SessionOut, status_code=status.HTTP_201_CREATED)
@@ -168,6 +197,18 @@ async def complete_session(
     if session.decisions_made > 0:
         session.team_score = round((session.decisions_correct / session.decisions_made) * 100, 1)
     await db.commit()
+
+    # Update scenario play count and rolling avg score
+    scenario_result = await db.execute(select(Scenario).where(Scenario.id == session.scenario_id))
+    scenario = scenario_result.scalar_one_or_none()
+    if scenario:
+        prev_count = scenario.play_count or 0
+        prev_avg = float(scenario.avg_score or 0)
+        new_count = prev_count + 1
+        scenario.play_count = new_count
+        scenario.avg_score = round(((prev_avg * prev_count) + (session.team_score or 0)) / new_count, 1)
+        await db.commit()
+
     generate_session_debrief.delay(session_id)
 
     # Fire debrief-ready email to session host (non-blocking)
@@ -305,6 +346,48 @@ async def list_participants(
         select(SessionParticipant).where(SessionParticipant.session_id == session_id)
     )
     return [SessionParticipantOut.model_validate(p) for p in p_result.scalars().all()]
+
+
+@router.get("/{session_id}/certificate")
+async def get_certificate(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate a single-page completion certificate PDF for a completed session."""
+    from sqlalchemy.orm import selectinload
+    from fastapi.responses import Response
+    from app.services.pdf_generator import generate_certificate_pdf
+
+    result = await db.execute(
+        select(SimulationSession)
+        .options(selectinload(SimulationSession.scenario))
+        .where(SimulationSession.id == session_id)
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    assert_org_access(session, current_user)
+
+    if session.status != "completed":
+        raise HTTPException(status_code=400, detail="Session not yet completed")
+
+    participant_name = current_user.full_name or current_user.email or "Participant"
+    nist_controls = session.scenario.nist_controls if session.scenario else []
+    mitre_techniques = session.scenario.mitre_techniques if session.scenario else []
+
+    pdf_bytes = await asyncio.to_thread(
+        generate_certificate_pdf, session, participant_name, nist_controls, mitre_techniques
+    )
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f"attachment; filename=BreachReplay_Certificate_{session_id[:8]}.pdf"
+        }
+    )
 
 
 @router.get("/{session_id}/debrief/pdf")

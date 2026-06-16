@@ -1,10 +1,11 @@
 import io
 from datetime import datetime
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.pdfgen import canvas
+from reportlab.graphics.shapes import Drawing, Rect, Circle, Line, String as GString
 from app.models.session import SimulationSession
 
 
@@ -392,5 +393,164 @@ def generate_debrief_pdf(session: SimulationSession, debrief_report: dict) -> by
     # Build the document
     doc.build(story, canvasmaker=NumberedCanvas)
 
+    bio.seek(0)
+    return bio.getvalue()
+
+
+def generate_certificate_pdf(
+    session: SimulationSession,
+    participant_name: str,
+    nist_controls: list,
+    mitre_techniques: list,
+) -> bytes:
+    """
+    Generate a single-page landscape completion certificate suitable for sharing on LinkedIn
+    or submission as compliance evidence. Returns raw PDF bytes.
+    """
+    bio = io.BytesIO()
+
+    page_w, page_h = landscape(letter)  # 792 × 612
+
+    c = canvas.Canvas(bio, pagesize=landscape(letter))
+
+    # ── Background ─────────────────────────────────────────────────────────────
+    c.setFillColor(colors.HexColor('#0A0F1E'))
+    c.rect(0, 0, page_w, page_h, fill=1, stroke=0)
+
+    # Border — double-rule
+    c.setStrokeColor(colors.HexColor('#1E3A8A'))
+    c.setLineWidth(3)
+    c.rect(18, 18, page_w - 36, page_h - 36, fill=0, stroke=1)
+    c.setStrokeColor(colors.HexColor('#EF4444'))
+    c.setLineWidth(0.8)
+    c.rect(24, 24, page_w - 48, page_h - 48, fill=0, stroke=1)
+
+    # ── Header: BreachReplay brand ──────────────────────────────────────────────
+    c.setFillColor(colors.HexColor('#EF4444'))
+    c.setFont("Helvetica-Bold", 11)
+    c.drawCentredString(page_w / 2, page_h - 54, "BREACH REPLAY")
+
+    c.setFillColor(colors.HexColor('#64748B'))
+    c.setFont("Helvetica", 7)
+    c.drawCentredString(page_w / 2, page_h - 66, "Cybersecurity Incident Response Training Platform")
+
+    # Thin red separator
+    c.setStrokeColor(colors.HexColor('#EF4444'))
+    c.setLineWidth(0.5)
+    c.line(80, page_h - 74, page_w - 80, page_h - 74)
+
+    # ── Certificate title ───────────────────────────────────────────────────────
+    c.setFillColor(colors.HexColor('#F8FAFC'))
+    c.setFont("Helvetica", 11)
+    c.drawCentredString(page_w / 2, page_h - 100, "THIS IS TO CERTIFY THAT")
+
+    # Participant name
+    c.setFillColor(colors.HexColor('#EF4444'))
+    c.setFont("Helvetica-Bold", 28)
+    c.drawCentredString(page_w / 2, page_h - 136, participant_name)
+
+    # Underline name
+    name_w = c.stringWidth(participant_name, "Helvetica-Bold", 28)
+    half_w = min(name_w / 2 + 20, 180)
+    c.setStrokeColor(colors.HexColor('#EF4444'))
+    c.setLineWidth(1.2)
+    c.line(page_w / 2 - half_w, page_h - 144, page_w / 2 + half_w, page_h - 144)
+
+    c.setFillColor(colors.HexColor('#CBD5E1'))
+    c.setFont("Helvetica", 10)
+    c.drawCentredString(page_w / 2, page_h - 166, "HAS SUCCESSFULLY COMPLETED THE TABLETOP SIMULATION EXERCISE")
+
+    # ── Scenario block ──────────────────────────────────────────────────────────
+    c.setFillColor(colors.HexColor('#1E293B'))
+    c.roundRect(80, page_h - 240, page_w - 160, 56, 4, fill=1, stroke=0)
+
+    scenario_title = session.scenario.title if session.scenario else "Cybersecurity Incident Response"
+    c.setFillColor(colors.HexColor('#F8FAFC'))
+    c.setFont("Helvetica-Bold", 13)
+    c.drawCentredString(page_w / 2, page_h - 206, scenario_title[:72])
+
+    c.setFillColor(colors.HexColor('#94A3B8'))
+    c.setFont("Helvetica", 8)
+    completion_date = session.completed_at.strftime("%B %d, %Y") if session.completed_at else datetime.utcnow().strftime("%B %d, %Y")
+    c.drawCentredString(page_w / 2, page_h - 224, f"Completed: {completion_date}")
+
+    # ── Score + metrics row ─────────────────────────────────────────────────────
+    score = session.team_score if session.team_score is not None else 0
+    score_color = colors.HexColor('#10B981') if score >= 80 else (colors.HexColor('#F59E0B') if score >= 60 else colors.HexColor('#EF4444'))
+
+    col_w = (page_w - 160) / 3
+    cols = [80 + col_w * i + col_w / 2 for i in range(3)]
+
+    metrics = [
+        (f"{score:.0f}%", "NIST COMPLIANCE SCORE", score_color),
+        (f"{session.decisions_correct}/{session.decisions_made}", "CORRECT DECISIONS", colors.HexColor('#3B82F6')),
+        ("COMPLETED", "SIMULATION STATUS", colors.HexColor('#10B981')),
+    ]
+
+    for cx, (val, label, col) in zip(cols, metrics):
+        c.setFillColor(colors.HexColor('#0F172A'))
+        c.roundRect(cx - col_w / 2 + 8, page_h - 310, col_w - 16, 52, 3, fill=1, stroke=0)
+        c.setFillColor(col)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawCentredString(cx, page_h - 279, val)
+        c.setFillColor(colors.HexColor('#64748B'))
+        c.setFont("Helvetica", 6.5)
+        c.drawCentredString(cx, page_h - 291, label)
+
+    # ── NIST / MITRE tags ───────────────────────────────────────────────────────
+    y_tags = page_h - 330
+    c.setFillColor(colors.HexColor('#94A3B8'))
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(80, y_tags, "NIST CONTROLS EXERCISED:")
+    c.setFillColor(colors.HexColor('#3B82F6'))
+    c.setFont("Helvetica", 7)
+    nist_str = "  ".join((nist_controls or [])[:8]) or "NIST SP 800-61"
+    c.drawString(230, y_tags, nist_str[:110])
+
+    y_tags -= 14
+    c.setFillColor(colors.HexColor('#94A3B8'))
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(80, y_tags, "MITRE ATT&CK TECHNIQUES:")
+    c.setFillColor(colors.HexColor('#A78BFA'))
+    c.setFont("Helvetica", 7)
+    mitre_str = "  ".join((mitre_techniques or [])[:8]) or "T1566  T1078"
+    c.drawString(230, y_tags, mitre_str[:110])
+
+    # ── Compliance statement ────────────────────────────────────────────────────
+    c.setFillColor(colors.HexColor('#334155'))
+    c.setFont("Helvetica-Oblique", 7.5)
+    c.drawCentredString(
+        page_w / 2, page_h - 366,
+        "This certificate satisfies tabletop exercise requirements under NIST SP 800-61 Rev 2 and serves as"
+    )
+    c.drawCentredString(
+        page_w / 2, page_h - 376,
+        "evidence of incident response training for HIPAA, SOC 2, and PCI-DSS compliance programs."
+    )
+
+    # ── Separator ───────────────────────────────────────────────────────────────
+    c.setStrokeColor(colors.HexColor('#1E293B'))
+    c.setLineWidth(0.5)
+    c.line(80, page_h - 385, page_w - 80, page_h - 385)
+
+    # ── Signature block ─────────────────────────────────────────────────────────
+    sig_y = page_h - 415
+    sig_positions = [(180, "Platform Director"), (page_w / 2, "Session ID: " + session.id[:8]), (page_w - 180, "Training Administrator")]
+    for sx, label in sig_positions:
+        c.setStrokeColor(colors.HexColor('#334155'))
+        c.setLineWidth(0.5)
+        c.line(sx - 60, sig_y + 12, sx + 60, sig_y + 12)
+        c.setFillColor(colors.HexColor('#64748B'))
+        c.setFont("Helvetica", 6.5)
+        c.drawCentredString(sx, sig_y, label)
+
+    # ── Footer ──────────────────────────────────────────────────────────────────
+    c.setFillColor(colors.HexColor('#1E293B'))
+    c.setFont("Helvetica", 6)
+    c.drawCentredString(page_w / 2, 36, "Issued by BreachReplay  ·  breachreplay.com  ·  Powered by Claude AI")
+    c.setFillColor(colors.HexColor('#EF4444'))
+    c.drawCentredString(page_w / 2, 26, f"Certificate ID: {session.id}")
+
+    c.save()
     bio.seek(0)
     return bio.getvalue()
