@@ -1,8 +1,13 @@
 import asyncio
+import base64
+import io
+import secrets
 import uuid
 from datetime import datetime
 
 import httpx as _httpx
+import pyotp
+import qrcode
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy import select
@@ -10,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.redis import get_redis
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -29,6 +35,11 @@ from app.models.user import User
 from app.schemas.user import (
     ForgotPasswordRequest,
     LogoutRequest,
+    MFAEnableRequest,
+    MFARequiredResponse,
+    MFASetupResponse,
+    MFAStatusResponse,
+    MFAVerifyRequest,
     MessageResponse,
     RefreshRequest,
     ResetPasswordRequest,
@@ -100,13 +111,20 @@ async def register(request: Request, payload: UserCreate, db: AsyncSession = Dep
     )
 
 
-@router.post("/login", response_model=TokenOut)
+@router.post("/login")
 @limiter.limit("10/minute")
 async def login(request: Request, payload: UserLogin, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if user.mfa_enabled:
+        mfa_token = str(uuid.uuid4())
+        r = await get_redis()
+        await r.setex(f"mfa_pending:{mfa_token}", 300, str(user.id))
+        return MFARequiredResponse(mfa_required=True, mfa_token=mfa_token)
+
     user.last_login = datetime.utcnow()
     await db.commit()
     access_token = create_access_token({"sub": user.id})
@@ -467,3 +485,143 @@ async def github_callback(request: Request, code: str, db: AsyncSession = Depend
     return RedirectResponse(
         f"{settings.FRONTEND_URL}/auth/callback?access_token={access_token}&refresh_token={refresh_token}"
     )
+
+
+# ── MFA / TOTP ────────────────────────────────────────────────────────────────
+
+def _get_fernet():
+    from cryptography.fernet import Fernet
+    if settings.MFA_ENCRYPTION_KEY:
+        return Fernet(settings.MFA_ENCRYPTION_KEY.encode())
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+    from cryptography.hazmat.primitives import hashes
+    kdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b"breachreplay-mfa-v1",
+        info=b"totp-secret",
+    )
+    raw = kdf.derive(settings.SECRET_KEY.encode())
+    return Fernet(base64.urlsafe_b64encode(raw))
+
+
+def _encrypt_totp_secret(secret: str) -> str:
+    return _get_fernet().encrypt(secret.encode()).decode()
+
+
+def _decrypt_totp_secret(ciphertext: str) -> str:
+    return _get_fernet().decrypt(ciphertext.encode()).decode()
+
+
+def _generate_backup_codes() -> tuple[list[str], list[str]]:
+    plain = [secrets.token_hex(4).upper() for _ in range(8)]
+    hashed = [hash_password(c) for c in plain]
+    return plain, hashed
+
+
+def _verify_backup_code(plain: str, hashed_codes: list[str]) -> tuple[bool, list[str]]:
+    for i, h in enumerate(hashed_codes):
+        if verify_password(plain.upper(), h):
+            remaining = hashed_codes[:i] + hashed_codes[i + 1:]
+            return True, remaining
+    return False, hashed_codes
+
+
+@router.post("/mfa/setup", response_model=MFASetupResponse)
+async def mfa_setup(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a new TOTP secret + QR code. Does not enable MFA — call /mfa/enable to confirm."""
+    raw_secret = pyotp.random_base32()
+    uri = pyotp.totp.TOTP(raw_secret).provisioning_uri(
+        name=current_user.email, issuer_name="BreachReplay"
+    )
+    img = qrcode.make(uri)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_data_url = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+    plain_codes, hashed_codes = _generate_backup_codes()
+    result = await db.execute(select(User).where(User.id == current_user.id))
+    u = result.scalar_one()
+    u.totp_secret = _encrypt_totp_secret(raw_secret)
+    u.mfa_backup_codes = hashed_codes
+    await db.commit()
+
+    return MFASetupResponse(secret=raw_secret, qr_code=qr_data_url, backup_codes=plain_codes)
+
+
+@router.post("/mfa/enable", response_model=MessageResponse)
+async def mfa_enable(
+    payload: MFAEnableRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.totp_secret:
+        raise HTTPException(400, "Run /auth/mfa/setup first")
+    raw_secret = _decrypt_totp_secret(current_user.totp_secret)
+    if not pyotp.TOTP(raw_secret).verify(payload.code, valid_window=1):
+        raise HTTPException(400, "Invalid code — try again")
+    current_user.mfa_enabled = True
+    await db.commit()
+    return MessageResponse(message="MFA enabled successfully")
+
+
+@router.post("/mfa/verify", response_model=TokenOut)
+@limiter.limit("10/minute")
+async def mfa_verify(
+    request: Request, payload: MFAVerifyRequest, db: AsyncSession = Depends(get_db)
+):
+    """Exchange a pending MFA token + TOTP code for full access/refresh tokens."""
+    r = await get_redis()
+    user_id = await r.get(f"mfa_pending:{payload.mfa_token}")
+    if not user_id:
+        raise HTTPException(401, "MFA token expired or invalid")
+
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user or not user.is_active:
+        raise HTTPException(401, "User not found")
+    if not user.totp_secret:
+        raise HTTPException(400, "MFA not configured")
+
+    raw_secret = _decrypt_totp_secret(user.totp_secret)
+    totp = pyotp.TOTP(raw_secret)
+
+    if not totp.verify(payload.code, valid_window=1):
+        backup_codes = user.mfa_backup_codes or []
+        matched, remaining = _verify_backup_code(payload.code, backup_codes)
+        if not matched:
+            raise HTTPException(401, "Invalid code")
+        user.mfa_backup_codes = remaining
+
+    await r.delete(f"mfa_pending:{payload.mfa_token}")
+    user.last_login = datetime.utcnow()
+    access_token = create_access_token({"sub": user.id})
+    refresh_token = await create_refresh_token(str(user.id))
+    await db.commit()
+    return TokenOut(access_token=access_token, refresh_token=refresh_token, user=_user_out(user))
+
+
+@router.post("/mfa/disable", response_model=MessageResponse)
+async def mfa_disable(
+    payload: MFAEnableRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if not current_user.mfa_enabled or not current_user.totp_secret:
+        raise HTTPException(400, "MFA is not enabled")
+    raw_secret = _decrypt_totp_secret(current_user.totp_secret)
+    if not pyotp.TOTP(raw_secret).verify(payload.code, valid_window=1):
+        raise HTTPException(400, "Invalid code")
+    current_user.mfa_enabled = False
+    current_user.totp_secret = None
+    current_user.mfa_backup_codes = None
+    await db.commit()
+    return MessageResponse(message="MFA disabled")
+
+
+@router.get("/mfa/status", response_model=MFAStatusResponse)
+async def mfa_status(current_user: User = Depends(get_current_user)):
+    return MFAStatusResponse(mfa_enabled=current_user.mfa_enabled)

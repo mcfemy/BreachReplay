@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     GITHUB_CLIENT_ID: Optional[str] = None
     GITHUB_CLIENT_SECRET: Optional[str] = None
 
+    # MFA/TOTP: optional Fernet key for encrypting TOTP secrets at rest.
+    # If unset, the key is derived from SECRET_KEY via HKDF.
+    MFA_ENCRYPTION_KEY: Optional[str] = None
+
     AI_PREFER_GEMINI: bool = False
 
     STRIPE_SECRET_KEY: Optional[str] = None

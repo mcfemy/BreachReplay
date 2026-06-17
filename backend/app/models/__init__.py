@@ -9,6 +9,7 @@ from app.models.daily_challenge import DailyChallenge, DailyAttempt, UserStreak
 from app.models.red_team import RedTeamSession, RedTeamMove
 from app.models.certification import Certification
 from app.models.team import Team, TeamMember
+from app.models.saml_config import OrganizationSAMLConfig
 
 __all__ = [
     "Base",
@@ -28,4 +29,5 @@ __all__ = [
     "Certification",
     "Team",
     "TeamMember",
+    "OrganizationSAMLConfig",
 ]

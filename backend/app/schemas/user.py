@@ -51,6 +51,7 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     organization_id: Optional[str]
+    mfa_enabled: bool = False
     created_at: datetime
 
 
@@ -99,3 +100,31 @@ class UserUpdateRequest(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+
+# ── MFA / TOTP Schemas ────────────────────────────────────────────────────────
+
+class MFASetupResponse(BaseModel):
+    secret: str
+    qr_code: str  # data URL: data:image/png;base64,...
+    backup_codes: list[str]  # returned once; store them safely
+
+
+class MFAEnableRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(min_length=6, max_length=8)
+
+
+class MFAVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mfa_token: str = Field(min_length=1, max_length=128)
+    code: str = Field(min_length=6, max_length=8)
+
+
+class MFARequiredResponse(BaseModel):
+    mfa_required: bool = True
+    mfa_token: str
+
+
+class MFAStatusResponse(BaseModel):
+    mfa_enabled: bool

@@ -27,5 +27,10 @@ class User(Base):
     microsoft_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True, index=True)
     github_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True, index=True)
 
+    # MFA / TOTP
+    totp_secret: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    mfa_backup_codes: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+
     organization: Mapped["Organization"] = relationship("Organization", back_populates="users")
     session_participants: Mapped[list["SessionParticipant"]] = relationship("SessionParticipant", back_populates="user")

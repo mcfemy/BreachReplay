@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { axiosInstance } from "../lib/api";
 import { useAuthStore } from "../store/auth";
@@ -152,6 +153,201 @@ function CertCard({ cert }: { cert: Cert }) {
           </a>
         </div>
       </div>
+    </div>
+  );
+}
+
+type MFAStep = "idle" | "setup" | "confirm" | "backup_codes" | "disable";
+
+interface MFASetupData {
+  secret: string;
+  qr_code: string;
+  backup_codes: string[];
+}
+
+function MFASection() {
+  const queryClient = useQueryClient();
+  const [step, setStep] = useState<MFAStep>("idle");
+  const [setupData, setSetupData] = useState<MFASetupData | null>(null);
+  const [code, setCode] = useState("");
+  const [error, setError] = useState("");
+
+  const { data: mfaStatus } = useQuery<{ mfa_enabled: boolean }>({
+    queryKey: ["mfa-status"],
+    queryFn: () => axiosInstance.get("/auth/mfa/status").then((r) => r.data),
+  });
+
+  const setupMutation = useMutation({
+    mutationFn: () => axiosInstance.post("/auth/mfa/setup").then((r) => r.data),
+    onSuccess: (data: MFASetupData) => {
+      setSetupData(data);
+      setStep("confirm");
+      setCode("");
+      setError("");
+    },
+  });
+
+  const enableMutation = useMutation({
+    mutationFn: (c: string) => axiosInstance.post("/auth/mfa/enable", { code: c }).then((r) => r.data),
+    onSuccess: () => {
+      setStep("backup_codes");
+      queryClient.invalidateQueries({ queryKey: ["mfa-status"] });
+    },
+    onError: (err: any) => setError(err?.response?.data?.detail || "Invalid code"),
+  });
+
+  const disableMutation = useMutation({
+    mutationFn: (c: string) => axiosInstance.post("/auth/mfa/disable", { code: c }).then((r) => r.data),
+    onSuccess: () => {
+      setStep("idle");
+      setCode("");
+      queryClient.invalidateQueries({ queryKey: ["mfa-status"] });
+    },
+    onError: (err: any) => setError(err?.response?.data?.detail || "Invalid code"),
+  });
+
+  const enabled = mfaStatus?.mfa_enabled ?? false;
+
+  return (
+    <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
+      <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-3">Security — Two-Factor Authentication</h2>
+
+      {step === "idle" && (
+        <div className="flex items-center justify-between">
+          <div>
+            <div className={`text-sm font-semibold ${enabled ? "text-green-400" : "text-gray-400"}`}>
+              {enabled ? "🔒 MFA Enabled" : "MFA Disabled"}
+            </div>
+            <div className="text-[10px] text-breach-muted mt-0.5">
+              {enabled
+                ? "Your account is protected with an authenticator app."
+                : "Add an extra layer of security with an authenticator app."}
+            </div>
+          </div>
+          {enabled ? (
+            <button
+              onClick={() => { setStep("disable"); setCode(""); setError(""); }}
+              className="text-xs px-3 py-1.5 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 transition-colors"
+            >
+              Disable
+            </button>
+          ) : (
+            <button
+              onClick={() => { setupMutation.mutate(); setStep("setup"); }}
+              disabled={setupMutation.isPending}
+              className="text-xs px-3 py-1.5 rounded border border-breach-border text-breach-muted hover:text-breach-text hover:border-green-500/40 transition-colors disabled:opacity-50"
+            >
+              {setupMutation.isPending ? "Loading..." : "Enable MFA"}
+            </button>
+          )}
+        </div>
+      )}
+
+      {step === "setup" && (
+        <div className="flex justify-center py-4">
+          <div className="w-6 h-6 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
+
+      {step === "confirm" && setupData && (
+        <div className="space-y-4">
+          <p className="text-xs text-breach-muted">
+            Scan this QR code with <strong className="text-breach-text">Google Authenticator</strong>,{" "}
+            <strong className="text-breach-text">Authy</strong>, or any TOTP app, then enter the 6-digit code to confirm.
+          </p>
+          <div className="flex justify-center">
+            <img src={setupData.qr_code} alt="TOTP QR Code" className="w-40 h-40 rounded border border-breach-border" />
+          </div>
+          <details className="text-[10px] text-breach-muted">
+            <summary className="cursor-pointer hover:text-breach-text">Can't scan? Enter secret manually</summary>
+            <code className="block mt-1 break-all bg-breach-bg px-2 py-1 rounded text-xs">{setupData.secret}</code>
+          </details>
+          <div>
+            <label className="block text-xs text-breach-muted uppercase tracking-wider mb-1">Verify code</label>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              placeholder="000000"
+              maxLength={6}
+              className="w-full bg-breach-bg border border-breach-border text-breach-text px-3 py-2 rounded text-sm focus:outline-none focus:border-breach-blue text-center tracking-widest"
+              autoFocus
+            />
+          </div>
+          {error && <p className="text-breach-accent text-xs">{error}</p>}
+          <div className="flex gap-2">
+            <button
+              onClick={() => enableMutation.mutate(code)}
+              disabled={enableMutation.isPending || code.length < 6}
+              className="flex-1 bg-green-600 hover:bg-green-500 text-white py-2 rounded text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              {enableMutation.isPending ? "Activating..." : "Activate MFA"}
+            </button>
+            <button
+              onClick={() => { setStep("idle"); setSetupData(null); setError(""); }}
+              className="px-3 py-2 rounded border border-breach-border text-breach-muted hover:text-breach-text text-sm transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === "backup_codes" && setupData && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-green-400 text-sm font-semibold">
+            <span>✓</span> MFA enabled successfully
+          </div>
+          <div className="bg-breach-bg border border-yellow-500/30 rounded p-3">
+            <p className="text-xs font-bold text-yellow-400 mb-2">Save your backup codes — they will NOT be shown again</p>
+            <div className="grid grid-cols-2 gap-1">
+              {setupData.backup_codes.map((c, i) => (
+                <code key={i} className="text-xs bg-black/30 px-2 py-1 rounded text-breach-text font-mono">{c}</code>
+              ))}
+            </div>
+            <p className="text-[9px] text-breach-muted mt-2">Each code can be used once. Store them in a password manager.</p>
+          </div>
+          <button
+            onClick={() => { setStep("idle"); setSetupData(null); }}
+            className="w-full text-xs px-3 py-2 rounded border border-breach-border text-breach-muted hover:text-breach-text transition-colors"
+          >
+            Done
+          </button>
+        </div>
+      )}
+
+      {step === "disable" && (
+        <div className="space-y-3">
+          <p className="text-xs text-breach-muted">Enter your current authenticator code to disable MFA.</p>
+          <input
+            type="text"
+            inputMode="numeric"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="000000"
+            maxLength={6}
+            className="w-full bg-breach-bg border border-breach-border text-breach-text px-3 py-2 rounded text-sm focus:outline-none focus:border-breach-blue text-center tracking-widest"
+            autoFocus
+          />
+          {error && <p className="text-breach-accent text-xs">{error}</p>}
+          <div className="flex gap-2">
+            <button
+              onClick={() => disableMutation.mutate(code)}
+              disabled={disableMutation.isPending || code.length < 6}
+              className="flex-1 bg-red-600 hover:bg-red-500 text-white py-2 rounded text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              {disableMutation.isPending ? "Disabling..." : "Disable MFA"}
+            </button>
+            <button
+              onClick={() => { setStep("idle"); setError(""); }}
+              className="px-3 py-2 rounded border border-breach-border text-breach-muted hover:text-breach-text text-sm transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -390,6 +586,10 @@ export default function UserProfilePage() {
             </div>
           </div>
         </div>
+
+        {/* Security */}
+        <MFASection />
+
       </div>
     </div>
   );
