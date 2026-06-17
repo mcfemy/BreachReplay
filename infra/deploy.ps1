@@ -38,8 +38,9 @@ Pop-Location
 
 # ── Copy files to EC2 ────────────────────────────────────────────────────────
 Write-Host "==> Uploading backend..."
-# Use scp to copy backend source (excludes __pycache__ via .gitignore but scp doesn't filter)
-# We copy specific dirs rather than everything to keep it fast
+# Fix permissions first — Docker containers run as root and leave directories non-writable
+ssh $SSH_OPTS.Split(" ") $SSH_TARGET "sudo chmod -R u+w /home/ec2-user/breachreplay/ 2>/dev/null || true"
+
 $REMOTE = "${SSH_TARGET}:/home/ec2-user/breachreplay"
 
 scp $SSH_OPTS.Split(" ") -r "$ROOT\backend" "${SSH_TARGET}:/home/ec2-user/breachreplay/"
