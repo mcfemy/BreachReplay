@@ -204,7 +204,7 @@ async def google_login():
         raise HTTPException(503, "Google OAuth not configured")
     params = {
         "client_id": settings.GOOGLE_CLIENT_ID,
-        "redirect_uri": f"{settings.FRONTEND_URL}/auth/google/callback",
+        "redirect_uri": f"{settings.FRONTEND_URL}/api/v1/auth/google/callback",
         "response_type": "code",
         "scope": "openid email profile",
         "access_type": "offline",
@@ -227,7 +227,7 @@ async def google_callback(request: Request, code: str, db: AsyncSession = Depend
                 "code": code,
                 "client_id": settings.GOOGLE_CLIENT_ID,
                 "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                "redirect_uri": f"{settings.FRONTEND_URL}/auth/google/callback",
+                "redirect_uri": f"{settings.FRONTEND_URL}/api/v1/auth/google/callback",
                 "grant_type": "authorization_code",
             },
         )
