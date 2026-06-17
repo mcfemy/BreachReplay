@@ -196,6 +196,10 @@ async def update_me(
     return _user_out(current_user)
 
 
+def _build_redirect_url(provider: str) -> str:
+    return f"{settings.FRONTEND_URL}/api/v1/auth/{provider}/callback"
+
+
 # ── Google OAuth SSO ───────────────────────────────────────────────────────────
 
 @router.get("/google")
@@ -204,7 +208,7 @@ async def google_login():
         raise HTTPException(503, "Google OAuth not configured")
     params = {
         "client_id": settings.GOOGLE_CLIENT_ID,
-        "redirect_uri": f"{settings.FRONTEND_URL}/api/v1/auth/google/callback",
+        "redirect_uri": _build_redirect_url("google"),
         "response_type": "code",
         "scope": "openid email profile",
         "access_type": "offline",
@@ -219,7 +223,6 @@ async def google_callback(request: Request, code: str, db: AsyncSession = Depend
     if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
         raise HTTPException(503, "Google OAuth not configured")
 
-    # Exchange code for tokens
     async with _httpx.AsyncClient() as client_http:
         token_resp = await client_http.post(
             "https://oauth2.googleapis.com/token",
@@ -227,7 +230,7 @@ async def google_callback(request: Request, code: str, db: AsyncSession = Depend
                 "code": code,
                 "client_id": settings.GOOGLE_CLIENT_ID,
                 "client_secret": settings.GOOGLE_CLIENT_SECRET,
-                "redirect_uri": f"{settings.FRONTEND_URL}/api/v1/auth/google/callback",
+                "redirect_uri": _build_redirect_url("google"),
                 "grant_type": "authorization_code",
             },
         )
@@ -239,7 +242,6 @@ async def google_callback(request: Request, code: str, db: AsyncSession = Depend
     if not id_token_str:
         raise HTTPException(400, "No id_token in Google response")
 
-    # Verify the ID token
     try:
         from google.oauth2 import id_token as google_id_token
         from google.auth.transport import requests as google_requests
@@ -255,21 +257,18 @@ async def google_callback(request: Request, code: str, db: AsyncSession = Depend
     email = idinfo.get("email")
     full_name = idinfo.get("name")
 
-    # Find or create user
     result = await db.execute(select(User).where(User.google_id == google_id))
     user = result.scalar_one_or_none()
 
     if not user:
-        # Check if email already exists (link accounts)
         result = await db.execute(select(User).where(User.email == email))
         user = result.scalar_one_or_none()
         if user:
             user.google_id = google_id
         else:
-            # Create new user
             user = User(
                 email=email,
-                hashed_password=hash_password(str(uuid.uuid4())),  # random password
+                hashed_password=hash_password(str(uuid.uuid4())),
                 full_name=full_name,
                 google_id=google_id,
             )
@@ -281,7 +280,190 @@ async def google_callback(request: Request, code: str, db: AsyncSession = Depend
     refresh_token = await create_refresh_token(str(user.id))
     await db.commit()
 
-    # Redirect to frontend with tokens as query params (frontend stores them)
+    return RedirectResponse(
+        f"{settings.FRONTEND_URL}/auth/callback?access_token={access_token}&refresh_token={refresh_token}"
+    )
+
+
+# ── Microsoft (Azure AD / Entra ID) OAuth SSO ─────────────────────────────────
+
+@router.get("/microsoft")
+async def microsoft_login():
+    if not settings.MICROSOFT_CLIENT_ID:
+        raise HTTPException(503, "Microsoft OAuth not configured")
+    import urllib.parse
+    params = {
+        "client_id": settings.MICROSOFT_CLIENT_ID,
+        "redirect_uri": _build_redirect_url("microsoft"),
+        "response_type": "code",
+        "response_mode": "query",
+        "scope": "openid email profile",
+    }
+    base = f"https://login.microsoftonline.com/{settings.MICROSOFT_TENANT_ID}/oauth2/v2.0/authorize"
+    url = base + "?" + urllib.parse.urlencode(params)
+    return RedirectResponse(url)
+
+
+@router.get("/microsoft/callback")
+@limiter.limit("20/minute")
+async def microsoft_callback(request: Request, code: str, db: AsyncSession = Depends(get_db)):
+    if not settings.MICROSOFT_CLIENT_ID or not settings.MICROSOFT_CLIENT_SECRET:
+        raise HTTPException(503, "Microsoft OAuth not configured")
+
+    async with _httpx.AsyncClient() as client_http:
+        token_resp = await client_http.post(
+            f"https://login.microsoftonline.com/{settings.MICROSOFT_TENANT_ID}/oauth2/v2.0/token",
+            data={
+                "client_id": settings.MICROSOFT_CLIENT_ID,
+                "client_secret": settings.MICROSOFT_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": _build_redirect_url("microsoft"),
+                "grant_type": "authorization_code",
+            },
+        )
+    if token_resp.status_code != 200:
+        raise HTTPException(400, "Microsoft token exchange failed")
+
+    token_data = token_resp.json()
+    id_token_str = token_data.get("id_token")
+    if not id_token_str:
+        raise HTTPException(400, "No id_token in Microsoft response")
+
+    # Decode claims from the signed id_token (trusted source — received via HTTPS from Microsoft)
+    try:
+        from jose import jwt as jose_jwt
+        claims = jose_jwt.get_unverified_claims(id_token_str)
+    except Exception:
+        raise HTTPException(400, "Invalid Microsoft token")
+
+    microsoft_id = claims.get("oid") or claims.get("sub")
+    email = claims.get("email") or claims.get("preferred_username")
+    full_name = claims.get("name")
+
+    if not microsoft_id or not email:
+        raise HTTPException(400, "Could not extract identity from Microsoft token")
+
+    result = await db.execute(select(User).where(User.microsoft_id == microsoft_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+        if user:
+            user.microsoft_id = microsoft_id
+        else:
+            user = User(
+                email=email,
+                hashed_password=hash_password(str(uuid.uuid4())),
+                full_name=full_name,
+                microsoft_id=microsoft_id,
+            )
+            db.add(user)
+            await db.flush()
+
+    user.last_login = datetime.utcnow()
+    access_token = create_access_token({"sub": user.id})
+    refresh_token = await create_refresh_token(str(user.id))
+    await db.commit()
+
+    return RedirectResponse(
+        f"{settings.FRONTEND_URL}/auth/callback?access_token={access_token}&refresh_token={refresh_token}"
+    )
+
+
+# ── GitHub OAuth SSO ───────────────────────────────────────────────────────────
+
+@router.get("/github")
+async def github_login():
+    if not settings.GITHUB_CLIENT_ID:
+        raise HTTPException(503, "GitHub OAuth not configured")
+    import urllib.parse
+    params = {
+        "client_id": settings.GITHUB_CLIENT_ID,
+        "redirect_uri": _build_redirect_url("github"),
+        "scope": "read:user user:email",
+    }
+    url = "https://github.com/login/oauth/authorize?" + urllib.parse.urlencode(params)
+    return RedirectResponse(url)
+
+
+@router.get("/github/callback")
+@limiter.limit("20/minute")
+async def github_callback(request: Request, code: str, db: AsyncSession = Depends(get_db)):
+    if not settings.GITHUB_CLIENT_ID or not settings.GITHUB_CLIENT_SECRET:
+        raise HTTPException(503, "GitHub OAuth not configured")
+
+    async with _httpx.AsyncClient() as client_http:
+        token_resp = await client_http.post(
+            "https://github.com/login/oauth/access_token",
+            data={
+                "client_id": settings.GITHUB_CLIENT_ID,
+                "client_secret": settings.GITHUB_CLIENT_SECRET,
+                "code": code,
+                "redirect_uri": _build_redirect_url("github"),
+            },
+            headers={"Accept": "application/json"},
+        )
+    if token_resp.status_code != 200:
+        raise HTTPException(400, "GitHub token exchange failed")
+
+    gh_access_token = token_resp.json().get("access_token")
+    if not gh_access_token:
+        raise HTTPException(400, "No access_token in GitHub response")
+
+    async with _httpx.AsyncClient() as client_http:
+        user_resp = await client_http.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"Bearer {gh_access_token}", "Accept": "application/json"},
+        )
+    if user_resp.status_code != 200:
+        raise HTTPException(400, "Failed to fetch GitHub user info")
+
+    gh_user = user_resp.json()
+    github_id = str(gh_user.get("id"))
+    full_name = gh_user.get("name") or gh_user.get("login")
+    email = gh_user.get("email")
+
+    # GitHub users may keep email private — fetch from emails endpoint
+    if not email:
+        async with _httpx.AsyncClient() as client_http:
+            emails_resp = await client_http.get(
+                "https://api.github.com/user/emails",
+                headers={"Authorization": f"Bearer {gh_access_token}", "Accept": "application/json"},
+            )
+        if emails_resp.status_code == 200:
+            primary = next(
+                (e["email"] for e in emails_resp.json() if e.get("primary") and e.get("verified")),
+                None,
+            )
+            email = primary
+
+    if not email:
+        raise HTTPException(400, "Could not retrieve a verified email from GitHub")
+
+    result = await db.execute(select(User).where(User.github_id == github_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+        if user:
+            user.github_id = github_id
+        else:
+            user = User(
+                email=email,
+                hashed_password=hash_password(str(uuid.uuid4())),
+                full_name=full_name,
+                github_id=github_id,
+            )
+            db.add(user)
+            await db.flush()
+
+    user.last_login = datetime.utcnow()
+    access_token = create_access_token({"sub": user.id})
+    refresh_token = await create_refresh_token(str(user.id))
+    await db.commit()
+
     return RedirectResponse(
         f"{settings.FRONTEND_URL}/auth/callback?access_token={access_token}&refresh_token={refresh_token}"
     )
