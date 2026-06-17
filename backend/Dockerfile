@@ -3,7 +3,7 @@ FROM python:3.12-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc libpq-dev libxml2-dev libxmlsec1-dev libxmlsec1-openssl pkg-config && rm -rf /var/lib/apt/lists/* \
+    gcc libpq-dev && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1001 appuser
 
 COPY requirements.txt .
