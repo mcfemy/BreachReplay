@@ -35,3 +35,5 @@ pypdf==4.2.0
 fastembed==0.3.6
 python-docx==1.1.2
 stripe==9.12.0
+google-auth==2.29.0
+google-auth-oauthlib==1.2.0

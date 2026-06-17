@@ -156,6 +156,13 @@ export default function CertificatePage() {
             >
               Copy Link
             </button>
+            <a
+              href={`${import.meta.env.VITE_API_URL || '/api/v1'}/certs/download/${cert.verify_token}`}
+              download
+              className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-white/5 border border-white/10 text-gray-400 hover:text-white text-xs font-bold transition-colors"
+            >
+              ↓ Download PDF
+            </a>
           </div>
         </div>
 

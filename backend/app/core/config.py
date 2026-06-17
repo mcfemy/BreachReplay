@@ -39,9 +39,16 @@ class Settings(BaseSettings):
     SLACK_SIGNING_SECRET: Optional[str] = None
     SLACK_CHANNEL_ID: Optional[str] = None
 
+    GOOGLE_CLIENT_ID: Optional[str] = None
+    GOOGLE_CLIENT_SECRET: Optional[str] = None
+    AI_PREFER_GEMINI: bool = False
+
     STRIPE_SECRET_KEY: Optional[str] = None
     STRIPE_WEBHOOK_SECRET: Optional[str] = None
     STRIPE_PRICE_ID_ENTERPRISE: Optional[str] = None
+    STRIPE_PUBLISHABLE_KEY: Optional[str] = None
+
+    SIEM_WEBHOOK_TIMEOUT: int = 5
 
     ENVIRONMENT: str = "development"
     DEBUG: bool = False

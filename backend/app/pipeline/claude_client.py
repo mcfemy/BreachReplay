@@ -286,16 +286,25 @@ def extract_scenario_from_document(document_text: str) -> dict:
     safe_text = _sanitize_document(document_text)
     prompt_text = EXTRACTION_PROMPT.format(document_text=safe_text)
 
-    try:
-        raw = _extract_via_claude(prompt_text)
-        logger.info("Scenario extraction used provider=claude")
-    except Exception as exc:
-        if _gemini_model is not None:
-            logger.warning("Claude unavailable (%s), falling back to Gemini for extraction", type(exc).__name__)
+    if settings.AI_PREFER_GEMINI and _gemini_model is not None:
+        try:
             raw = _call_gemini(prompt_text, _gemini_model, max_tokens=8192)
-            logger.info("Scenario extraction used provider=gemini")
-        else:
-            raise
+            logger.info("Scenario extraction used provider=gemini (preferred)")
+        except Exception as exc:
+            logger.warning("Gemini extraction failed (%s), falling back to Claude", type(exc).__name__)
+            raw = _extract_via_claude(prompt_text)
+            logger.info("Scenario extraction used provider=claude (fallback)")
+    else:
+        try:
+            raw = _extract_via_claude(prompt_text)
+            logger.info("Scenario extraction used provider=claude")
+        except Exception as exc:
+            if _gemini_model is not None:
+                logger.warning("Claude unavailable (%s), falling back to Gemini", type(exc).__name__)
+                raw = _call_gemini(prompt_text, _gemini_model, max_tokens=8192)
+                logger.info("Scenario extraction used provider=gemini")
+            else:
+                raise
 
     return _extract_tagged_json(raw, "extracted")
 
@@ -324,23 +333,41 @@ def generate_decision_commentary(
         f"(2) name the specific MITRE technique or NIST control at play and its operational significance. "
         f"Be specific, urgent, and educational. No preamble. Just the 2 sentences."
     )
-    try:
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=180,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return message.content[0].text.strip()
-    except Exception as exc:
-        if _gemini_flash is not None:
-            logger.warning("Claude Haiku unavailable (%s), falling back to Gemini Flash for commentary", type(exc).__name__)
+    if settings.AI_PREFER_GEMINI and _gemini_flash is not None:
+        try:
+            result = _call_gemini(prompt, _gemini_flash, max_tokens=180).strip()
+            logger.info("Decision commentary used provider=gemini-flash (preferred)")
+            return result
+        except Exception as exc:
+            logger.warning("Gemini Flash commentary failed (%s), falling back to Claude Haiku", type(exc).__name__)
             try:
-                return _call_gemini(prompt, _gemini_flash, max_tokens=180).strip()
-            except Exception as gemini_exc:
-                logger.warning("Gemini Flash commentary failed: %s", gemini_exc)
-        else:
-            logger.warning("AI commentary generation failed: %s", exc)
-        return ""
+                message = client.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=180,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                return message.content[0].text.strip()
+            except Exception as haiku_exc:
+                logger.warning("Claude Haiku commentary fallback also failed: %s", haiku_exc)
+                return ""
+    else:
+        try:
+            message = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=180,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return message.content[0].text.strip()
+        except Exception as exc:
+            if _gemini_flash is not None:
+                logger.warning("Claude Haiku unavailable (%s), falling back to Gemini Flash for commentary", type(exc).__name__)
+                try:
+                    return _call_gemini(prompt, _gemini_flash, max_tokens=180).strip()
+                except Exception as gemini_exc:
+                    logger.warning("Gemini Flash commentary failed: %s", gemini_exc)
+            else:
+                logger.warning("AI commentary generation failed: %s", exc)
+            return ""
 
 
 def generate_debrief_report(
@@ -365,15 +392,24 @@ def generate_debrief_report(
         control_gaps=json.dumps(control_gaps, indent=2),
     )
 
-    try:
-        raw = _debrief_via_claude(prompt_text)
-        logger.info("Debrief report used provider=claude")
-    except Exception as exc:
-        if _gemini_model is not None:
-            logger.warning("Claude unavailable (%s), falling back to Gemini for debrief", type(exc).__name__)
+    if settings.AI_PREFER_GEMINI and _gemini_model is not None:
+        try:
             raw = _call_gemini(prompt_text, _gemini_model, max_tokens=8192)
-            logger.info("Debrief report used provider=gemini")
-        else:
-            raise
+            logger.info("Debrief report used provider=gemini (preferred)")
+        except Exception as exc:
+            logger.warning("Gemini debrief failed (%s), falling back to Claude", type(exc).__name__)
+            raw = _debrief_via_claude(prompt_text)
+            logger.info("Debrief report used provider=claude (fallback)")
+    else:
+        try:
+            raw = _debrief_via_claude(prompt_text)
+            logger.info("Debrief report used provider=claude")
+        except Exception as exc:
+            if _gemini_model is not None:
+                logger.warning("Claude unavailable (%s), falling back to Gemini for debrief", type(exc).__name__)
+                raw = _call_gemini(prompt_text, _gemini_model, max_tokens=8192)
+                logger.info("Debrief report used provider=gemini")
+            else:
+                raise
 
     return _extract_tagged_json(raw, "debrief")

@@ -2,7 +2,9 @@ import asyncio
 import uuid
 from datetime import datetime
 
+import httpx as _httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -192,3 +194,94 @@ async def update_me(
     await db.commit()
     await db.refresh(current_user)
     return _user_out(current_user)
+
+
+# ── Google OAuth SSO ───────────────────────────────────────────────────────────
+
+@router.get("/google")
+async def google_login():
+    if not settings.GOOGLE_CLIENT_ID:
+        raise HTTPException(503, "Google OAuth not configured")
+    params = {
+        "client_id": settings.GOOGLE_CLIENT_ID,
+        "redirect_uri": f"{settings.FRONTEND_URL}/auth/google/callback",
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+    }
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + "&".join(f"{k}={v}" for k, v in params.items())
+    return RedirectResponse(url)
+
+
+@router.get("/google/callback")
+@limiter.limit("20/minute")
+async def google_callback(request: Request, code: str, db: AsyncSession = Depends(get_db)):
+    if not settings.GOOGLE_CLIENT_ID or not settings.GOOGLE_CLIENT_SECRET:
+        raise HTTPException(503, "Google OAuth not configured")
+
+    # Exchange code for tokens
+    async with _httpx.AsyncClient() as client_http:
+        token_resp = await client_http.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": settings.GOOGLE_CLIENT_ID,
+                "client_secret": settings.GOOGLE_CLIENT_SECRET,
+                "redirect_uri": f"{settings.FRONTEND_URL}/auth/google/callback",
+                "grant_type": "authorization_code",
+            },
+        )
+    if token_resp.status_code != 200:
+        raise HTTPException(400, "Google token exchange failed")
+
+    token_data = token_resp.json()
+    id_token_str = token_data.get("id_token")
+    if not id_token_str:
+        raise HTTPException(400, "No id_token in Google response")
+
+    # Verify the ID token
+    try:
+        from google.oauth2 import id_token as google_id_token
+        from google.auth.transport import requests as google_requests
+        idinfo = google_id_token.verify_oauth2_token(
+            id_token_str,
+            google_requests.Request(),
+            settings.GOOGLE_CLIENT_ID,
+        )
+    except ValueError:
+        raise HTTPException(400, "Invalid Google token")
+
+    google_id = idinfo["sub"]
+    email = idinfo.get("email")
+    full_name = idinfo.get("name")
+
+    # Find or create user
+    result = await db.execute(select(User).where(User.google_id == google_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        # Check if email already exists (link accounts)
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+        if user:
+            user.google_id = google_id
+        else:
+            # Create new user
+            user = User(
+                email=email,
+                hashed_password=hash_password(str(uuid.uuid4())),  # random password
+                full_name=full_name,
+                google_id=google_id,
+            )
+            db.add(user)
+            await db.flush()
+
+    user.last_login = datetime.utcnow()
+    access_token = create_access_token({"sub": user.id})
+    refresh_token = await create_refresh_token(str(user.id))
+    await db.commit()
+
+    # Redirect to frontend with tokens as query params (frontend stores them)
+    return RedirectResponse(
+        f"{settings.FRONTEND_URL}/auth/callback?access_token={access_token}&refresh_token={refresh_token}"
+    )

@@ -329,3 +329,136 @@ async def verify_cert_by_token(db: AsyncSession, token: str) -> dict | None:
         "issued_at": r.issued_at.isoformat(),
         "verify_token": r.verify_token,
     }
+
+
+def generate_cert_pdf(cert_data: dict) -> bytes:
+    """Generate a professional A4 landscape PDF certificate and return raw bytes."""
+    from io import BytesIO
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.units import cm
+
+    # Page dimensions: A4 landscape = 842 x 595 pt
+    width, height = landscape(A4)
+
+    # Parse tier accent colour → RGB floats
+    tier_hex_map = {
+        "bronze": "#cd7f32",
+        "silver": "#c0c0c0",
+        "gold": "#ffd700",
+        "platinum": "#e5e4e2",
+    }
+    hex_color = tier_hex_map.get(cert_data.get("tier", "bronze"), cert_data.get("color", "#cd7f32"))
+    hex_color = hex_color.lstrip("#")
+    accent_r = int(hex_color[0:2], 16) / 255.0
+    accent_g = int(hex_color[2:4], 16) / 255.0
+    accent_b = int(hex_color[4:6], 16) / 255.0
+
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=landscape(A4))
+
+    # ── Background: dark navy ────────────────────────────────────────────────────
+    c.setFillColorRGB(0x0D / 255, 0x11 / 255, 0x17 / 255)
+    c.rect(0, 0, width, height, fill=1, stroke=0)
+
+    # ── Left accent strip (2 cm wide) ────────────────────────────────────────────
+    strip_w = 2 * cm
+    c.setFillColorRGB(accent_r, accent_g, accent_b)
+    c.rect(0, 0, strip_w, height, fill=1, stroke=0)
+
+    # Content starts after the strip, with padding
+    left = strip_w + 1.5 * cm
+    right_margin = 1.5 * cm
+    center_x = (left + (width - right_margin)) / 2
+
+    # ── BREACHREPLAY wordmark ─────────────────────────────────────────────────────
+    c.setFont("Helvetica-Bold", 24)
+    c.setFillColorRGB(1, 1, 1)
+    c.drawString(left, height - 2.5 * cm, "BREACHREPLAY")
+
+    # ── Subtitle below wordmark ───────────────────────────────────────────────────
+    c.setFont("Helvetica", 10)
+    c.setFillColorRGB(0.6, 0.6, 0.6)
+    c.drawString(left, height - 3.3 * cm, "CERTIFICATE OF ACHIEVEMENT")
+
+    # ── Horizontal rule ───────────────────────────────────────────────────────────
+    rule_y = height - 4.0 * cm
+    c.setStrokeColorRGB(accent_r, accent_g, accent_b)
+    c.setLineWidth(1.2)
+    c.line(left, rule_y, width - right_margin, rule_y)
+
+    # ── Cert icon (text placeholder) ─────────────────────────────────────────────
+    icon_text = cert_data.get("icon", "")
+    icon_y = height - 6.5 * cm
+    c.setFont("Helvetica-Bold", 32)
+    c.setFillColorRGB(accent_r, accent_g, accent_b)
+    # Emoji may not render in Helvetica — draw a styled badge instead
+    tier_label = (cert_data.get("tier", "bronze")).upper()
+    c.drawCentredString(center_x, icon_y, f"[ {tier_label} ]")
+
+    # ── Awarded to ────────────────────────────────────────────────────────────────
+    c.setFont("Helvetica", 11)
+    c.setFillColorRGB(0.55, 0.55, 0.55)
+    c.drawCentredString(center_x, icon_y - 1.3 * cm, "Awarded to")
+
+    c.setFont("Helvetica-Bold", 22)
+    c.setFillColorRGB(1, 1, 1)
+    c.drawCentredString(center_x, icon_y - 2.3 * cm, cert_data.get("issued_to", ""))
+
+    # ── Certificate title ─────────────────────────────────────────────────────────
+    c.setFont("Helvetica-Bold", 28)
+    c.setFillColorRGB(1, 1, 1)
+    c.drawCentredString(center_x, icon_y - 3.6 * cm, cert_data.get("title", ""))
+
+    # ── Subtitle ──────────────────────────────────────────────────────────────────
+    c.setFont("Helvetica", 12)
+    c.setFillColorRGB(0.6, 0.6, 0.6)
+    c.drawCentredString(center_x, icon_y - 4.5 * cm, cert_data.get("subtitle", ""))
+
+    # ── Description (word-wrapped) ────────────────────────────────────────────────
+    desc = cert_data.get("desc", "")
+    c.setFont("Helvetica", 10)
+    c.setFillColorRGB(0.5, 0.5, 0.5)
+    max_chars = 90
+    desc_y = icon_y - 5.5 * cm
+    if len(desc) > max_chars:
+        # Simple two-line split at word boundary near midpoint
+        split_idx = desc.rfind(" ", 0, max_chars)
+        if split_idx == -1:
+            split_idx = max_chars
+        c.drawCentredString(center_x, desc_y, desc[:split_idx].strip())
+        c.drawCentredString(center_x, desc_y - 0.5 * cm, desc[split_idx:].strip())
+        desc_y -= 0.5 * cm
+    else:
+        c.drawCentredString(center_x, desc_y, desc)
+
+    # ── Issue date ────────────────────────────────────────────────────────────────
+    issued_at = cert_data.get("issued_at", "")
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(issued_at)
+        issued_str = dt.strftime("%B %d, %Y")
+    except Exception:
+        issued_str = issued_at
+
+    date_y = desc_y - 1.2 * cm
+    c.setFont("Helvetica", 10)
+    c.setFillColorRGB(0.6, 0.6, 0.6)
+    c.drawCentredString(center_x, date_y, f"Issued: {issued_str}")
+
+    # ── Verify URL ────────────────────────────────────────────────────────────────
+    verify_token = cert_data.get("verify_token", "")
+    verify_url = f"breachreplay.com/cert/{verify_token}"
+    url_y = date_y - 0.8 * cm
+    c.setFont("Helvetica", 9)
+    c.setFillColorRGB(0.4, 0.4, 0.4)
+    c.drawCentredString(center_x, url_y, f"Verify at: {verify_url}")
+
+    # ── Verified Authentic badge ──────────────────────────────────────────────────
+    badge_y = url_y - 0.9 * cm
+    c.setFont("Helvetica-Bold", 9)
+    c.setFillColorRGB(0.0, 0.75, 0.4)
+    c.drawCentredString(center_x, badge_y, "✓  VERIFIED AUTHENTIC")
+
+    c.save()
+    return buf.getvalue()

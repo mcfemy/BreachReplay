@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.routes import auth, scenarios, sessions, admin, ingestion, slack, billing, daily, redteam, profile, certs, orgs, teams
+from app.api.routes import auth, scenarios, sessions, admin, ingestion, slack, billing, daily, redteam, profile, certs, orgs, teams, siem
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
@@ -15,3 +15,4 @@ api_router.include_router(profile.router)
 api_router.include_router(certs.router)
 api_router.include_router(orgs.router)
 api_router.include_router(teams.router)
+api_router.include_router(siem.router)

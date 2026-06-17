@@ -16,6 +16,7 @@ interface AuthState {
   refreshToken: string | null;
   setAuth: (token: string, refreshToken: string, user: User) => void;
   setToken: (token: string, refreshToken: string) => void;
+  setTokens: (accessToken: string, refreshToken: string) => void;
   logout: () => Promise<void>;
 }
 
@@ -44,6 +45,12 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     localStorage.setItem("br_token", token);
     localStorage.setItem("br_refresh_token", refreshToken);
     set({ token, refreshToken });
+  },
+
+  setTokens: (accessToken, refreshToken) => {
+    localStorage.setItem("br_token", accessToken);
+    localStorage.setItem("br_refresh_token", refreshToken);
+    set({ token: accessToken, refreshToken });
   },
 
   logout: async () => {

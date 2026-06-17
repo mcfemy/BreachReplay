@@ -9,6 +9,7 @@ from app.models.scenario import Scenario
 from app.models.user import User
 from app.websocket.manager import manager, build_alert_event, build_decision_gate_event, build_system_event
 from app.pipeline.claude_client import generate_decision_commentary
+from app.services.siem_service import send_alert_to_siem, send_decision_to_siem
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,20 @@ async def simulation_ws_handler(websocket: WebSocket, session_id: str, user_id: 
                 # Resume simulation alert flow
                 manager.resume_session(session_id)
 
+                # Dispatch gate decision to org's SIEM (fire-and-forget)
+                _siem_org_id = session.organization_id or session.host_user_id
+                _siem_decision = {
+                    "gate_id": gate_id,
+                    "chosen_option_text": gate["options"][option_idx]["text"] if option_idx < len(gate["options"]) else "",
+                    "is_correct": is_correct,
+                    "score_impact": 1 if is_correct else -1,
+                }
+                asyncio.create_task(send_decision_to_siem(
+                    _siem_org_id,
+                    _siem_decision,
+                    scenario.title if scenario else "Unknown",
+                ))
+
                 # Fire AI facilitator commentary asynchronously (non-blocking)
                 asyncio.create_task(_broadcast_ai_commentary(
                     session_id=session_id,
@@ -224,6 +239,9 @@ async def _stream_alerts(session_id: str, requester_id: str):
             return
 
         alerts = scenario.alert_sequence or []
+        siem_org_id = session.organization_id or session.host_user_id
+        scenario_title = scenario.title or "Unknown Scenario"
+
         if not alerts:
             await manager.broadcast(
                 session_id,
@@ -266,6 +284,9 @@ async def _stream_alerts(session_id: str, requester_id: str):
 
                 # Broadcast standard alert
                 await manager.broadcast(session_id, build_alert_event(alert, i, total))
+
+                # Dispatch alert to org's SIEM (fire-and-forget — never blocks simulation)
+                asyncio.create_task(send_alert_to_siem(siem_org_id, alert, scenario_title))
 
                 alert_ts = alert.get("timestamp")
 

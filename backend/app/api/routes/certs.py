@@ -2,6 +2,7 @@
 Certification endpoints — issue, list, and publicly verify credentials.
 """
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
@@ -13,6 +14,7 @@ from app.services.cert_service import (
     check_and_award_certs,
     get_user_certs,
     verify_cert_by_token,
+    generate_cert_pdf,
 )
 
 router = APIRouter(prefix="/certs", tags=["certifications"])
@@ -56,3 +58,22 @@ async def verify_certificate(token: str, db: AsyncSession = Depends(get_db)):
     if not result:
         raise HTTPException(status_code=404, detail="Certificate not found or invalid")
     return result
+
+
+@router.get("/download/{token}")
+async def download_certificate_pdf(token: str, db: AsyncSession = Depends(get_db)):
+    """Download a PDF certificate by verify token — no auth required (public link)."""
+    cert_data = await verify_cert_by_token(db, token)
+    if not cert_data:
+        raise HTTPException(status_code=404, detail="Certificate not found or invalid")
+
+    pdf_bytes = generate_cert_pdf(cert_data)
+
+    safe_title = cert_data.get("title", "Certificate").replace(" ", "-")
+    filename = f"BreachReplay-Certificate-{safe_title}.pdf"
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
