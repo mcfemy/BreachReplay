@@ -6,18 +6,22 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from tenacity import retry, stop_after_attempt, wait_exponential, RetryCallState, retry_if_exception
 
-# ── Gemini fallback setup ──────────────────────────────────────────────────────
+# ── Gemini setup (google-genai SDK) ───────────────────────────────────────────
 try:
-    import google.generativeai as _genai
+    from google import genai as _genai
+    from google.genai import types as _genai_types
     if settings.GEMINI_API_KEY:
-        _genai.configure(api_key=settings.GEMINI_API_KEY)
-        _gemini_model = _genai.GenerativeModel(settings.GEMINI_MODEL)
-        _gemini_flash = _genai.GenerativeModel("gemini-2.5-flash")
+        _gemini_client = _genai.Client(api_key=settings.GEMINI_API_KEY)
+        _gemini_model = settings.GEMINI_MODEL        # model name string
+        _gemini_flash = "gemini-2.5-flash"           # model name string
     else:
+        _gemini_client = None
         _gemini_model = None
         _gemini_flash = None
 except ImportError:
     _genai = None
+    _genai_types = None
+    _gemini_client = None
     _gemini_model = None
     _gemini_flash = None
 
@@ -70,12 +74,13 @@ def _extract_tagged_json(raw: str, tag: str) -> dict:
     return json.loads(content)
 
 
-def _call_gemini(prompt: str, model, max_tokens: int = 8192) -> str:
-    if model is None:
+def _call_gemini(prompt: str, model: str, max_tokens: int = 8192) -> str:
+    if _gemini_client is None or model is None:
         raise RuntimeError("Gemini not configured — set GEMINI_API_KEY in .env")
-    response = model.generate_content(
-        prompt,
-        generation_config=_genai.types.GenerationConfig(max_output_tokens=max_tokens),
+    response = _gemini_client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=_genai_types.GenerateContentConfig(max_output_tokens=max_tokens),
     )
     return response.text
 
