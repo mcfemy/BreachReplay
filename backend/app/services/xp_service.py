@@ -158,7 +158,7 @@ async def unlock_achievement(db: AsyncSession, user_id: str, key: str) -> bool:
 
     from sqlalchemy import text
     await db.execute(
-        text("UPDATE users SET achievements = :a::jsonb WHERE id = :id"),
+        text("UPDATE users SET achievements = CAST(:a AS jsonb) WHERE id = :id"),
         {"a": __import__("json").dumps(current), "id": user_id}
     )
 

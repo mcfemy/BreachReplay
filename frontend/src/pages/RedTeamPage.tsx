@@ -326,6 +326,7 @@ export default function RedTeamPage() {
   const [moveLog, setMoveLog] = useState<MoveResult[]>([]);
   const [blueAlerts, setBlueAlerts] = useState<string[]>([]);
   const [xpToast, setXpToast] = useState<{ xp: number; leveledUp: boolean; newTierLabel: string | null; achievements: string[] } | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
 
   const { data: scenarios, isLoading } = useQuery<Scenario[]>({
     queryKey: ["redteam-scenarios"],
@@ -354,6 +355,7 @@ export default function RedTeamPage() {
         .then((r) => r.data),
     onSuccess: (data: MoveResult) => {
       setExecutingMove(null);
+      setMoveError(null);
       setLastResult(data);
       setStealthScore(data.stealth_score);
       setImpactScore(data.impact_score);
@@ -375,11 +377,15 @@ export default function RedTeamPage() {
         }
       }
     },
-    onError: () => setExecutingMove(null),
+    onError: (err: Error) => {
+      setExecutingMove(null);
+      setMoveError(err.message || "Move failed — try again.");
+    },
   });
 
   const handleExecuteMove = (move: Move) => {
     if (!session || executingMove) return;
+    setMoveError(null);
     setExecutingMove(move.tactic);
     moveMutation.mutate({ tactic: move.tactic, phase: currentPhase });
   };
@@ -596,6 +602,18 @@ export default function RedTeamPage() {
                   </div>
                   <div className="text-xs text-gray-600">{availableMoves.length} moves available</div>
                 </div>
+
+                {moveError && (
+                  <div className="border border-red-500/40 bg-red-500/10 rounded-lg p-3 flex items-center justify-between gap-3">
+                    <p className="text-sm text-red-300">⚠ {moveError}</p>
+                    <button
+                      onClick={() => { setPageState("selector"); setSession(null); setMoveLog([]); setBlueAlerts([]); setStealthScore(100); setImpactScore(0); setLastResult(null); setSessionStatus("active"); setMoveError(null); }}
+                      className="shrink-0 text-xs px-3 py-1.5 rounded-lg border border-red-500/40 text-red-300 hover:bg-red-500/20 transition-colors"
+                    >
+                      New Operation
+                    </button>
+                  </div>
+                )}
 
                 {availableMoves.length === 0 ? (
                   <div className="text-center py-12 text-gray-600">
