@@ -13,6 +13,7 @@ interface CertVerification {
   issued_to: string;
   issued_at: string;
   verify_token: string;
+  mastery_pct: number | null;
 }
 
 const TIER_STYLE: Record<string, { glow: string; bg: string; border: string; text: string; label: string }> = {
@@ -112,6 +113,13 @@ export default function CertificatePage() {
 
           {/* Description */}
           <p className="text-xs text-gray-400 leading-relaxed mb-6">{cert.desc}</p>
+
+          {/* Mastery percentage */}
+          {cert.mastery_pct != null && (
+            <div className="text-[10px] text-gray-500 mb-4">
+              <span className="font-bold" style={{ color: style.text }}>{cert.mastery_pct}%</span> technique mastery
+            </div>
+          )}
 
           {/* Verification badge */}
           <div className="flex items-center justify-center gap-2 mb-6">

@@ -42,6 +42,7 @@ class Scenario(Base):
 
     status: Mapped[str] = mapped_column(SAEnum("draft", "review", "approved", "rejected", "archived", name="scenario_status"), default="draft")
     is_private: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_capstone: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     owner_org_id: Mapped[str] = mapped_column(String, nullable=True)
 
     extraction_confidence: Mapped[float] = mapped_column(Float, nullable=True)

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
 from app.core.logging import get_logger
+from app.services import mastery_service
 
 logger = get_logger(__name__)
 
@@ -89,6 +90,52 @@ CERTIFICATIONS = {
 }
 
 
+async def _average_mastery_pct(db: AsyncSession, user_id: str) -> float | None:
+    """
+    Average accuracy_pct across all techniques tracked in compute_user_mastery.
+    Returns None if the user has zero tracked techniques (nothing to average).
+    """
+    mastery = await mastery_service.compute_user_mastery(db, user_id)
+    if not mastery:
+        return None
+    total = sum(entry["accuracy_pct"] for entry in mastery.values())
+    return round(total / len(mastery), 1)
+
+
+async def _meets_mastery_threshold(db: AsyncSession, user_id: str, min_accuracy_pct: float = 70) -> bool:
+    """
+    True if the user's average technique-mastery accuracy (across all techniques
+    they've touched) is >= min_accuracy_pct. A user with zero tracked techniques has
+    nothing to be confident about, so this returns False, not True, for them.
+    """
+    avg = await _average_mastery_pct(db, user_id)
+    if avg is None:
+        return False
+    return avg >= min_accuracy_pct
+
+
+async def _is_first_attempt_for_scenario(db: AsyncSession, user_id: str, scenario_id: str, session_id: str) -> bool:
+    """
+    True if `session_id` is chronologically the user's first-ever SimulationSession
+    for `scenario_id` (ordered by started_at, falling back to created_at for sessions
+    that never had started_at populated). Used to gate capstone scenarios so only a
+    player's first attempt counts toward certification eligibility.
+    """
+    result = await db.execute(
+        text("""
+            SELECT s.id
+            FROM simulation_sessions s
+            JOIN session_participants sp ON sp.session_id = s.id
+            WHERE sp.user_id = :uid AND s.scenario_id = :sid
+            ORDER BY COALESCE(s.started_at, s.created_at) ASC, s.created_at ASC
+            LIMIT 1
+        """),
+        {"uid": user_id, "sid": scenario_id},
+    )
+    r = result.fetchone()
+    return r is not None and r.id == session_id
+
+
 async def _cert_exists(db: AsyncSession, user_id: str, cert_key: str) -> bool:
     result = await db.execute(
         text("SELECT 1 FROM certifications WHERE user_id = :uid AND cert_key = :key"),
@@ -138,21 +185,39 @@ async def check_and_award_certs(db: AsyncSession, user_id: str) -> list[dict]:
     newly_issued: list[dict] = []
 
     # ── 1. Incident Response Fundamentals ─────────────────────────────────────
+    # Flagship cert: requires 3 completed scenarios averaging 60%+ score (existing
+    # criterion, unchanged) AND now also requires >=70% average technique mastery
+    # (new, additive — makes the credential mean something beyond raw completion).
+    # Capstone-flagged scenarios (is_capstone=True) only count toward the 3-scenario
+    # tally on the player's chronologically first attempt at that scenario, so
+    # replaying a capstone until you get lucky can't farm this cert.
     if not await _cert_exists(db, user_id, "ir_fundamentals"):
         row = await db.execute(
             text("""
-                SELECT COUNT(*) as cnt, AVG(s.team_score) as avg_score
+                SELECT s.id, s.scenario_id, s.team_score, sc.is_capstone
                 FROM simulation_sessions s
                 JOIN session_participants sp ON sp.session_id = s.id
+                JOIN scenarios sc ON sc.id = s.scenario_id
                 WHERE sp.user_id = :uid AND s.status = 'completed'
             """),
             {"uid": user_id},
         )
-        r = row.fetchone()
-        if r and (r.cnt or 0) >= 3 and (r.avg_score or 0) >= 60:
-            cert = await _issue_cert(db, user_id, "ir_fundamentals")
-            if cert:
-                newly_issued.append(cert)
+        rows = row.fetchall()
+
+        eligible_scores: list[float] = []
+        for r in rows:
+            if r.is_capstone:
+                is_first = await _is_first_attempt_for_scenario(db, user_id, r.scenario_id, r.id)
+                if not is_first:
+                    continue
+            eligible_scores.append(r.team_score or 0)
+
+        if len(eligible_scores) >= 3:
+            avg_score = sum(eligible_scores) / len(eligible_scores)
+            if avg_score >= 60 and await _meets_mastery_threshold(db, user_id, 70):
+                cert = await _issue_cert(db, user_id, "ir_fundamentals")
+                if cert:
+                    newly_issued.append(cert)
 
     # ── 2. Certified Analyst (SOC Analyst tier = 1000 XP) ─────────────────────
     if not await _cert_exists(db, user_id, "certified_analyst"):
@@ -280,6 +345,12 @@ async def get_user_certs(db: AsyncSession, user_id: str) -> list[dict]:
         {"uid": user_id},
     )
     rows = result.fetchall()
+
+    # Mastery percentage is a live, computed-at-view-time stat (not stored on the
+    # cert row) — same average-accuracy calc used to gate new ir_fundamentals
+    # issuance. Computed once per call and reused across all of the user's certs.
+    mastery_pct = await _average_mastery_pct(db, user_id)
+
     out = []
     for r in rows:
         meta = CERTIFICATIONS.get(r.cert_key, {})
@@ -296,6 +367,7 @@ async def get_user_certs(db: AsyncSession, user_id: str) -> list[dict]:
             "issued_at": r.issued_at.isoformat(),
             "verify_url": f"/cert/{r.verify_token}",
             "verify_token": r.verify_token,
+            "mastery_pct": mastery_pct,
         })
     return out
 
@@ -304,7 +376,7 @@ async def verify_cert_by_token(db: AsyncSession, token: str) -> dict | None:
     """Public verification — look up a cert by its token."""
     result = await db.execute(
         text("""
-            SELECT c.id, c.cert_key, c.cert_title, c.cert_tier, c.issued_at, c.verify_token,
+            SELECT c.id, c.user_id, c.cert_key, c.cert_title, c.cert_tier, c.issued_at, c.verify_token,
                    u.full_name, u.email
             FROM certifications c
             JOIN users u ON u.id = c.user_id
@@ -317,6 +389,7 @@ async def verify_cert_by_token(db: AsyncSession, token: str) -> dict | None:
         return None
 
     meta = CERTIFICATIONS.get(r.cert_key, {})
+    mastery_pct = await _average_mastery_pct(db, r.user_id)
     return {
         "valid": True,
         "title": r.cert_title,
@@ -328,6 +401,7 @@ async def verify_cert_by_token(db: AsyncSession, token: str) -> dict | None:
         "issued_to": r.full_name or r.email.split("@")[0],
         "issued_at": r.issued_at.isoformat(),
         "verify_token": r.verify_token,
+        "mastery_pct": mastery_pct,
     }
 
 
