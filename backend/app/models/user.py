@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import String, Boolean, DateTime, Integer, ForeignKey, Enum as SAEnum
+from sqlalchemy import String, Boolean, DateTime, Integer, ForeignKey, Enum as SAEnum, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from app.db.session import Base
@@ -19,7 +19,7 @@ class User(Base):
     organization_id: Mapped[str] = mapped_column(String, ForeignKey("organizations.id"), nullable=True)
     xp_total: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     career_tier: Mapped[str] = mapped_column(String(50), default="recruit", server_default="recruit")
-    achievements: Mapped[list] = mapped_column(JSONB, default=list, server_default="[]")
+    achievements: Mapped[list] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list, server_default="[]")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -30,7 +30,7 @@ class User(Base):
     # MFA / TOTP
     totp_secret: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
-    mfa_backup_codes: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    mfa_backup_codes: Mapped[Optional[list]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
 
     organization: Mapped["Organization"] = relationship("Organization", back_populates="users")
     session_participants: Mapped[list["SessionParticipant"]] = relationship("SessionParticipant", back_populates="user")

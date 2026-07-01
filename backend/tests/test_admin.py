@@ -176,21 +176,21 @@ async def test_list_audit_logs_success(client, admin_user, db):
 
 # ─── Ingestion Upload Tests ───────────────────────────────────────────────────
 
-async def test_upload_document_unsupported_format(client, test_user):
+async def test_upload_document_unsupported_format(client, admin_user):
     """Upload endpoint blocks non-pdf/txt formats."""
     file_content = b"fake executable content"
     files = {"file": ("malicious.exe", BytesIO(file_content), "application/octet-stream")}
 
     response = await client.post(
         "/api/v1/scenarios/upload-document",
-        headers=auth_headers(test_user["token"]),
+        headers=auth_headers(admin_user["token"]),
         files=files,
     )
     assert response.status_code == 400
-    assert "Only .pdf and .txt file formats are supported" in response.json()["detail"]
+    assert "Only .pdf, .txt, and .docx file formats are supported" in response.json()["detail"]
 
 
-async def test_upload_document_success(client, test_user, db):
+async def test_upload_document_success(client, admin_user, db):
     """Upload endpoint stores files, registers db state and queues celery background extraction."""
     file_content = b"fake pdf content"
     files = {"file": ("test_breach.pdf", BytesIO(file_content), "application/pdf")}
@@ -200,7 +200,7 @@ async def test_upload_document_success(client, test_user, db):
 
         response = await client.post(
             "/api/v1/scenarios/upload-document",
-            headers=auth_headers(test_user["token"]),
+            headers=auth_headers(admin_user["token"]),
             files=files,
         )
         assert response.status_code == 201

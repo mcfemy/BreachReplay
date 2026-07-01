@@ -13,7 +13,7 @@ def auth_headers(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-async def test_s3_upload_document_success(client, test_user, db):
+async def test_s3_upload_document_success(client, admin_user, db):
     """Test that setting AWS environment variables triggers an S3 upload using boto3."""
     file_content = b"mock pdf content for S3 upload"
     files = {"file": ("test_breach_s3.pdf", BytesIO(file_content), "application/pdf")}
@@ -29,7 +29,7 @@ async def test_s3_upload_document_success(client, test_user, db):
         with patch("boto3.client", return_value=mock_s3_client) as mock_boto:
             response = await client.post(
                 "/api/v1/scenarios/upload-document",
-                headers=auth_headers(test_user["token"]),
+                headers=auth_headers(admin_user["token"]),
                 files=files,
             )
             assert response.status_code == 201
@@ -53,7 +53,7 @@ async def test_s3_upload_document_success(client, test_user, db):
             assert doc.file_key.startswith("s3://prod-breach-bucket/uploads/")
 
 
-async def test_s3_upload_fails_falls_back_to_local(client, test_user, db):
+async def test_s3_upload_fails_falls_back_to_local(client, admin_user, db):
     """Test that if S3 upload raises an error, it gracefully falls back to local storage."""
     file_content = b"mock pdf content for fallback"
     files = {"file": ("test_fallback.pdf", BytesIO(file_content), "application/pdf")}
@@ -67,7 +67,7 @@ async def test_s3_upload_fails_falls_back_to_local(client, test_user, db):
         with patch("boto3.client", side_effect=Exception("S3 Connection Timeout")):
             response = await client.post(
                 "/api/v1/scenarios/upload-document",
-                headers=auth_headers(test_user["token"]),
+                headers=auth_headers(admin_user["token"]),
                 files=files,
             )
             assert response.status_code == 201
@@ -82,7 +82,7 @@ async def test_s3_upload_fails_falls_back_to_local(client, test_user, db):
             assert "uploads" in doc.file_key
 
 
-async def test_billing_quota_upload_limit_starter_tier(client, test_user, db):
+async def test_billing_quota_upload_limit_starter_tier(client, admin_user, db):
     """Test that starter tier organizations are blocked with 402 if they exceed 3 custom uploads."""
     # Seed 3 existing uploads
     for i in range(3):
@@ -91,8 +91,8 @@ async def test_billing_quota_upload_limit_starter_tier(client, test_user, db):
             filename=f"doc_{i}.pdf",
             file_key=f"uploads/doc_{i}.pdf",
             status="completed",
-            organization_id=test_user["org"].id,
-            uploaded_by_user_id=test_user["user"].id
+            organization_id=admin_user["org"].id,
+            uploaded_by_user_id=admin_user["user"].id
         )
         db.add(doc)
     await db.commit()
@@ -103,7 +103,7 @@ async def test_billing_quota_upload_limit_starter_tier(client, test_user, db):
     
     response = await client.post(
         "/api/v1/scenarios/upload-document",
-        headers=auth_headers(test_user["token"]),
+        headers=auth_headers(admin_user["token"]),
         files=files,
     )
     assert response.status_code == 402
