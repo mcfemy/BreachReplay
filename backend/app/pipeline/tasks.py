@@ -25,6 +25,7 @@ from app.pipeline.ingestion import (
     fetch_cisa_kev_text,
 )
 from app.pipeline.embeddings import generate_embedding, scenario_text
+from app.services.mastery_service import compute_session_mitre_coverage_sync
 
 
 logger = get_logger(__name__)
@@ -305,6 +306,7 @@ def _build_fallback_debrief(
     decisions: list,
     control_gaps: list,
     scenario,
+    mitre_coverage: dict,
 ) -> dict:
     """
     Rule-based debrief generated from session data alone — used when Claude API is unavailable.
@@ -362,10 +364,6 @@ def _build_fallback_debrief(
                 "remediation": f"Review and practice {ctrl} procedures. Schedule a targeted tabletop focused on this control.",
             })
 
-    mitre_techniques = scenario.mitre_techniques or []
-    techniques_exercised = [t for t in mitre_techniques[:len(mitre_techniques) // 2 + 1]]
-    techniques_missed = [t for t in mitre_techniques[len(mitre_techniques) // 2 + 1:]]
-
     remediation = []
     if score < 80:
         remediation.append({"priority": "high", "action": "Schedule a follow-up tabletop exercise focused on the decision gates where errors occurred", "owner": "Incident Commander", "due_days": 30})
@@ -379,10 +377,7 @@ def _build_fallback_debrief(
         "performance_rating": rating,
         "decisions": enriched_decisions,
         "nist_gaps": nist_gaps,
-        "mitre_coverage": {
-            "techniques_exercised": techniques_exercised,
-            "techniques_missed": techniques_missed,
-        },
+        "mitre_coverage": mitre_coverage,
         "remediation_checklist": remediation,
         "compliance_evidence": {
             "frameworks_exercised": scenario.regulatory_frameworks or ["NIST SP 800-61"],
@@ -445,6 +440,7 @@ def _generate_debrief_sync(session_id: str) -> None:
                 "Claude debrief generation failed for session %s (%s) — using fallback report",
                 session_id, type(claude_err).__name__,
             )
+            mitre_coverage = compute_session_mitre_coverage_sync(decisions_raw, scenario)
             report = _build_fallback_debrief(
                 score=session.team_score or 0,
                 correct=session.decisions_correct,
@@ -452,6 +448,7 @@ def _generate_debrief_sync(session_id: str) -> None:
                 decisions=decisions,
                 control_gaps=control_gaps,
                 scenario=scenario,
+                mitre_coverage=mitre_coverage,
             )
 
         session.debrief_report = report

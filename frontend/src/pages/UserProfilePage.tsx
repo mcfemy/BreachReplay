@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { axiosInstance } from "../lib/api";
+import { axiosInstance, api } from "../lib/api";
 import { useAuthStore } from "../store/auth";
 
 interface CareerTier {
@@ -152,6 +152,183 @@ function CertCard({ cert }: { cert: Cert }) {
             Share
           </a>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Mastery (Phase 1 — Competency & Mastery Engine) ────────────────────────────
+
+interface TechniqueMasteryEntry {
+  attempts: number;
+  correct: number;
+  accuracy_pct: number;
+  source: "blue" | "red" | "both";
+}
+
+interface NistMasteryEntry {
+  attempts: number;
+  correct: number;
+  accuracy_pct: number;
+}
+
+interface WeakestTechnique extends TechniqueMasteryEntry {
+  technique_id: string;
+}
+
+interface MasteryData {
+  technique_mastery: Record<string, TechniqueMasteryEntry>;
+  nist_mastery: Record<string, NistMasteryEntry>;
+  weakest_techniques: WeakestTechnique[];
+}
+
+function accuracyBarColor(pct: number): string {
+  if (pct >= 75) return "bg-green-400";
+  if (pct >= 50) return "bg-breach-yellow";
+  return "bg-breach-accent";
+}
+
+function accuracyTextColor(pct: number): string {
+  if (pct >= 75) return "text-green-400";
+  if (pct >= 50) return "text-breach-yellow";
+  return "text-breach-accent";
+}
+
+function MasteryBar({
+  label,
+  attempts,
+  correct,
+  accuracyPct,
+  isRedTeam,
+}: {
+  label: string;
+  attempts: number;
+  correct: number;
+  accuracyPct: number;
+  isRedTeam: boolean;
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between text-[10px] mb-1">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="font-mono text-breach-text truncate">{label}</span>
+          {isRedTeam && (
+            <span className="shrink-0 text-[8px] font-black uppercase tracking-wider px-1 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/30">
+              Red Team
+            </span>
+          )}
+        </div>
+        <span className={`shrink-0 font-bold ${accuracyTextColor(accuracyPct)}`}>
+          {accuracyPct}% <span className="text-breach-muted font-normal">({correct}/{attempts})</span>
+        </span>
+      </div>
+      <div className="w-full bg-breach-bg rounded-full h-1.5 overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all ${accuracyBarColor(accuracyPct)}`}
+          style={{ width: `${Math.min(100, accuracyPct)}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function MasterySection() {
+  const { data: mastery, isLoading } = useQuery<MasteryData>({
+    queryKey: ["my-mastery"],
+    queryFn: () => api.get<MasteryData>("/mastery/me"),
+  });
+
+  if (isLoading) {
+    return (
+      <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
+        <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-3">Competency &amp; Mastery</h2>
+        <div className="flex justify-center py-6">
+          <div className="w-6 h-6 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      </div>
+    );
+  }
+
+  const techniqueEntries = Object.entries(mastery?.technique_mastery ?? {});
+  const nistEntries = Object.entries(mastery?.nist_mastery ?? {});
+  const weakest = mastery?.weakest_techniques ?? [];
+
+  if (!mastery || (techniqueEntries.length === 0 && nistEntries.length === 0)) {
+    return (
+      <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
+        <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-3">Competency &amp; Mastery</h2>
+        <div className="text-center py-8">
+          <div className="text-3xl mb-2">🎯</div>
+          <div className="text-xs text-breach-muted mb-1">No mastery data yet</div>
+          <div className="text-[10px] text-gray-600">Complete a blue-team scenario or a Red Team operation to build your technique profile</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
+      <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-1">Competency &amp; Mastery</h2>
+      <p className="text-[9px] text-gray-600 mb-4">Aggregated from every decision gate you've answered and every Red Team move you've executed</p>
+
+      {weakest.length > 0 && (
+        <div className="mb-5">
+          <div className="text-[9px] text-breach-muted uppercase tracking-widest mb-2">Weakest Techniques — Focus Here</div>
+          <div className="space-y-2.5">
+            {weakest.map((t) => (
+              <MasteryBar
+                key={t.technique_id}
+                label={t.technique_id}
+                attempts={t.attempts}
+                correct={t.correct}
+                accuracyPct={t.accuracy_pct}
+                isRedTeam={t.source === "red" || t.source === "both"}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        {techniqueEntries.length > 0 && (
+          <div>
+            <div className="text-[9px] text-breach-muted uppercase tracking-widest mb-2">MITRE ATT&amp;CK Technique Accuracy</div>
+            <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+              {techniqueEntries
+                .sort((a, b) => a[1].accuracy_pct - b[1].accuracy_pct)
+                .map(([techniqueId, stats]) => (
+                  <MasteryBar
+                    key={techniqueId}
+                    label={techniqueId}
+                    attempts={stats.attempts}
+                    correct={stats.correct}
+                    accuracyPct={stats.accuracy_pct}
+                    isRedTeam={stats.source === "red" || stats.source === "both"}
+                  />
+                ))}
+            </div>
+          </div>
+        )}
+
+        {nistEntries.length > 0 && (
+          <div>
+            <div className="text-[9px] text-breach-muted uppercase tracking-widest mb-2">NIST Control Accuracy</div>
+            <div className="space-y-2.5 max-h-64 overflow-y-auto pr-1">
+              {nistEntries
+                .sort((a, b) => a[1].accuracy_pct - b[1].accuracy_pct)
+                .map(([control, stats]) => (
+                  <MasteryBar
+                    key={control}
+                    label={control}
+                    attempts={stats.attempts}
+                    correct={stats.correct}
+                    accuracyPct={stats.accuracy_pct}
+                    isRedTeam={false}
+                  />
+                ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -586,6 +763,9 @@ export default function UserProfilePage() {
             </div>
           </div>
         </div>
+
+        {/* Competency & Mastery */}
+        <MasterySection />
 
         {/* Security */}
         <MFASection />
