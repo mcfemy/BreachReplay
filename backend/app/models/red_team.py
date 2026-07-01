@@ -26,6 +26,10 @@ class RedTeamSession(Base):
     noise_generated: Mapped[int] = mapped_column(Integer, default=0)  # false positives created
     dwell_time_minutes: Mapped[int] = mapped_column(Integer, default=0)
 
+    # Facts discovered so far this operation (e.g. unpatched services, AD posture) —
+    # gates whether later moves can succeed instead of a plain dice roll
+    environment_state: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=dict)
+
     # Scoring
     stealth_score: Mapped[int] = mapped_column(Integer, default=100)  # starts at 100, drops when detected
     impact_score: Mapped[int] = mapped_column(Integer, default=0)     # rises with objectives achieved

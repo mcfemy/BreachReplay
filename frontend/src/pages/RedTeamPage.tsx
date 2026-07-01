@@ -51,6 +51,7 @@ interface MoveResult {
   leveled_up?: boolean;
   new_tier?: { label: string };
   new_achievements?: string[];
+  environment_state?: Record<string, boolean | string>;
 }
 
 interface Session {
@@ -65,7 +66,18 @@ interface Session {
   available_moves: Move[];
   objective: string;
   intel_brief: string;
+  environment_state?: Record<string, boolean | string>;
 }
+
+// Human-readable labels for facts a Discovery move can reveal — keeps the raw
+// backend keys (e.g. "unpatched_smb") out of the player-facing Intel panel.
+const ENV_FACT_LABELS: Record<string, string> = {
+  network_mapped: "Network topology mapped",
+  unpatched_smb: "Unpatched SMB service found (MS17-010)",
+  unpatched_print_spooler: "Unpatched Print Spooler found (CVE-2021-34527)",
+  ad_path_mapped: "AD attack path mapped",
+  protected_users_enabled: "Protected Users group status known",
+};
 
 type PageState = "selector" | "briefing" | "playing" | "endscreen";
 
@@ -145,6 +157,29 @@ function KillChain({ phases, current }: { phases: string[]; current: string }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+function IntelPanel({ facts }: { facts: Record<string, boolean | string> }) {
+  const keys = Object.keys(facts);
+  return (
+    <div>
+      <div className="text-xs text-gray-600 uppercase tracking-widest mb-2">Intel Gathered</div>
+      {keys.length === 0 ? (
+        <p className="text-[11px] text-gray-700">
+          Nothing confirmed yet — run Discovery moves to learn facts about the target that unlock later moves.
+        </p>
+      ) : (
+        <div className="space-y-1">
+          {keys.map((k) => (
+            <div key={k} className="flex items-start gap-1.5 text-[11px] text-gray-400">
+              <span className="text-green-500">✓</span>
+              <span>{ENV_FACT_LABELS[k] || k}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -327,6 +362,7 @@ export default function RedTeamPage() {
   const [blueAlerts, setBlueAlerts] = useState<string[]>([]);
   const [xpToast, setXpToast] = useState<{ xp: number; leveledUp: boolean; newTierLabel: string | null; achievements: string[] } | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
+  const [environmentState, setEnvironmentState] = useState<Record<string, boolean | string>>({});
 
   const { data: scenarios, isLoading } = useQuery<Scenario[]>({
     queryKey: ["redteam-scenarios"],
@@ -340,6 +376,7 @@ export default function RedTeamPage() {
       setSession(data);
       setAvailableMoves(data.available_moves || []);
       setCurrentPhase(data.current_phase);
+      setEnvironmentState(data.environment_state || {});
       setPageState("briefing");
     },
   });
@@ -361,6 +398,7 @@ export default function RedTeamPage() {
       setImpactScore(data.impact_score);
       setPhasesCompleted(data.phases_completed);
       setCurrentPhase(data.current_phase);
+      setEnvironmentState(data.environment_state || {});
       setMoveLog((prev) => [...prev, data]);
       if (data.detected) {
         setBlueAlerts((prev) => [...prev, data.blue_team_response]);
@@ -407,6 +445,7 @@ export default function RedTeamPage() {
     setCurrentPhase(phase);
     axiosInstance.get(`/redteam/sessions/${session!.session_id}`).then((r) => {
       const moves = r.data.available_moves || [];
+      setEnvironmentState(r.data.environment_state || {});
       // Filter by phase from backend response - re-fetch
       axiosInstance.get("/redteam/scenarios").then(() => {
         // available moves are phase-specific; use what backend said
@@ -535,6 +574,8 @@ export default function RedTeamPage() {
               <div className="text-xs text-gray-600 uppercase tracking-widest mb-2">Kill Chain</div>
               <KillChain phases={phasesCompleted} current={currentPhase} />
             </div>
+
+            <IntelPanel facts={environmentState} />
 
             {/* Phase switcher */}
             <div>

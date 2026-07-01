@@ -113,7 +113,8 @@ PHASE_MOVES: dict[str, list[dict]] = {
          "description": "Exploit unpatched Print Spooler service for SYSTEM-level code execution",
          "stealth": 6, "impact": 9, "detection_risk": 0.35,
          "success_consequence": "SYSTEM shell obtained via Print Spooler exploit. Patch was never applied.",
-         "fail_consequence": "Patch was applied. Exploit crashes the spooler — blue team notices."},
+         "fail_consequence": "Patch was applied. Exploit crashes the spooler — blue team notices.",
+         "requires": {"unpatched_print_spooler": True}},
     ],
     "defense_evasion": [
         {"tactic": "Disable or Modify Tools", "technique_id": "T1562.001", "tool": "Group Policy",
@@ -148,13 +149,15 @@ PHASE_MOVES: dict[str, list[dict]] = {
         {"tactic": "Network Service Discovery", "technique_id": "T1046", "tool": "nmap",
          "description": "Scan the internal network to map live hosts, open ports, and services",
          "stealth": 3, "impact": 6, "detection_risk": 0.65,
-         "success_consequence": "Full network map obtained. OT historian at 10.40.0.12 identified.",
-         "fail_consequence": "Port scan detected by IDS. Your source IP is now blacklisted internally."},
+         "success_consequence": "Full network map obtained. OT historian at 10.40.0.12 identified. The scan also flags two unpatched services still exposed on the network.",
+         "fail_consequence": "Port scan detected by IDS. Your source IP is now blacklisted internally.",
+         "reveals": {"network_mapped": True, "unpatched_smb": True, "unpatched_print_spooler": True}},
         {"tactic": "Account Discovery — Domain Account", "technique_id": "T1087.002", "tool": "BloodHound",
          "description": "Run BloodHound to map AD attack paths and identify shortest path to DA",
          "stealth": 7, "impact": 8, "detection_risk": 0.25,
-         "success_consequence": "BloodHound reveals a direct path to Domain Admin through 2 hops.",
-         "fail_consequence": "LDAP query volume triggers anomaly detection. DC logs the enumeration."},
+         "success_consequence": "BloodHound reveals a direct path to Domain Admin through 2 hops, and shows the Protected Users security group was never enabled.",
+         "fail_consequence": "LDAP query volume triggers anomaly detection. DC logs the enumeration.",
+         "reveals": {"ad_path_mapped": True, "protected_users_enabled": False}},
     ],
     "lateral_movement": [
         {"tactic": "Remote Services — RDP", "technique_id": "T1021.001", "tool": "mstsc / xfreerdp",
@@ -166,12 +169,14 @@ PHASE_MOVES: dict[str, list[dict]] = {
          "description": "Use harvested NTLM hashes to authenticate without cracking — no password needed",
          "stealth": 7, "impact": 8, "detection_risk": 0.30,
          "success_consequence": "PtH successful. Moved laterally to 6 targets without triggering lockouts.",
-         "fail_consequence": "Protected Users security group blocks NTLM auth for privileged accounts."},
+         "fail_consequence": "Protected Users security group blocks NTLM auth for privileged accounts.",
+         "requires": {"protected_users_enabled": False}},
         {"tactic": "Exploitation of Remote Services", "technique_id": "T1210", "tool": "EternalBlue (MS17-010)",
          "description": "Exploit unpatched SMB vulnerability to move laterally without credentials",
          "stealth": 3, "impact": 10, "detection_risk": 0.70,
          "success_consequence": "EternalBlue succeeds on 3 unpatched legacy servers — SYSTEM access on each.",
-         "fail_consequence": "All systems patched. Exploit attempt generates massive IDS alert."},
+         "fail_consequence": "All systems patched. Exploit attempt generates massive IDS alert.",
+         "requires": {"unpatched_smb": True}},
     ],
     "collection": [
         {"tactic": "Data from Local System", "technique_id": "T1005", "tool": "PowerShell",
@@ -339,6 +344,7 @@ async def start_red_team_session(
         "current_phase": session.current_phase,
         "stealth_score": session.stealth_score,
         "impact_score": session.impact_score,
+        "environment_state": session.environment_state or {},
         "available_moves": PHASE_MOVES.get("initial_access", []),
         "objective": "Gain a foothold inside the target network.",
         "intel_brief": (
@@ -379,24 +385,43 @@ async def execute_move(
     if not move_def:
         raise HTTPException(status_code=400, detail="Unknown tactic for this phase")
 
-    # Determine success and detection
-    # Success probability based on current stealth (higher stealth = better execution)
+    # Determine detection (unchanged — being detected is more likely when stealth is low)
     stealth_factor = session.stealth_score / 100
-    base_success = 0.70 + (stealth_factor * 0.20)
-    succeeded = random.random() < base_success
-
     detection_roll = random.random()
-    # Being detected is more likely when stealth is low
     adjusted_detection_risk = move_def["detection_risk"] * (1 + (1 - stealth_factor))
     detected = detection_roll < adjusted_detection_risk
+
+    # Determine success. Discovery has genuine recon uncertainty, so it keeps a
+    # probabilistic roll. Every other phase is deterministic: success depends on
+    # whether the environment facts this move needs were actually confirmed via
+    # Discovery, not chance — no more "click execute and hope."
+    requires = move_def.get("requires", {})
+    missing_intel: list[str] = []
+    if payload.phase == "discovery":
+        base_success = 0.70 + (stealth_factor * 0.20)
+        succeeded = random.random() < base_success
+    else:
+        env = session.environment_state or {}
+        missing_intel = [k for k, v in requires.items() if env.get(k) != v]
+        succeeded = not missing_intel
 
     # Calculate deltas
     if succeeded:
         impact_delta = move_def["impact"]
         consequence = move_def["success_consequence"]
+        if payload.phase == "discovery":
+            reveals = move_def.get("reveals", {})
+            if reveals:
+                # Reassign (not mutate) so SQLAlchemy detects the JSONB change
+                session.environment_state = {**(session.environment_state or {}), **reveals}
     else:
         impact_delta = 0
         consequence = move_def["fail_consequence"]
+        if missing_intel:
+            consequence = (
+                f"{consequence} You never confirmed this via reconnaissance — "
+                f"Discovery would have told you: {', '.join(missing_intel)}."
+            )
 
     stealth_delta = 0
     if detected:
@@ -506,6 +531,7 @@ async def execute_move(
         "stealth_delta": stealth_delta,
         "impact_score": new_impact,
         "impact_delta": impact_delta,
+        "environment_state": session.environment_state or {},
         "phases_completed": phases_done,
         "current_phase": payload.phase,
         "suggested_next_phase": next_phase if succeeded else payload.phase,
@@ -554,6 +580,7 @@ async def get_session(
         "status": session.status,
         "final_score": session.final_score,
         "blue_team_detections": session.blue_team_detections or [],
+        "environment_state": session.environment_state or {},
         "available_moves": available_moves,
         "move_count": len(session.moves) if session.moves else 0,
     }
