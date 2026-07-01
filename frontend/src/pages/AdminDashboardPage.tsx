@@ -115,6 +115,20 @@ interface Recommendation {
   gap_coverage: number;
 }
 
+interface TechniqueGap {
+  technique_id: string;
+  avg_accuracy_pct: number;
+  members_below_50pct: number;
+  members_tracked: number;
+}
+
+interface TeamSkillGap {
+  team_id: string;
+  team_name: string;
+  member_count: number;
+  technique_gaps: TechniqueGap[];
+}
+
 interface ComplianceAnalytics {
   organization_name: string;
   organization_tier: string;
@@ -129,6 +143,7 @@ interface ComplianceAnalytics {
   calibrations: Calibration[];
   compliance_evidence: EvidenceLog[];
   private_scenarios: PrivateScenario[];
+  team_skill_gaps: TeamSkillGap[];
 }
 
 
@@ -1026,6 +1041,61 @@ export default function AdminDashboardPage() {
                     </table>
                   </div>
                 </div>
+
+                {/* 3b. Team Skill Gaps — per-team average member mastery per MITRE technique */}
+                {complianceData.team_skill_gaps.length > 0 && (
+                  <div className="bg-breach-surface border border-breach-border rounded">
+                    <div className="px-6 py-4 border-b border-breach-border">
+                      <h3 className="text-xs font-bold text-breach-text uppercase tracking-wider font-mono">
+                        Team Skill Gaps
+                      </h3>
+                      <p className="text-[9px] text-breach-muted mt-0.5">Average member mastery per MITRE technique, weakest first</p>
+                    </div>
+                    <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {complianceData.team_skill_gaps.map((team) => (
+                        <div key={team.team_id} className="bg-breach-bg border border-breach-border rounded p-4 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-xs text-breach-text">{team.team_name}</span>
+                            <span className="text-[9px] text-breach-muted font-mono">{team.member_count} member{team.member_count !== 1 ? "s" : ""}</span>
+                          </div>
+                          {team.technique_gaps.length === 0 ? (
+                            <p className="text-[10px] text-breach-muted italic">No mastery data recorded yet for this team.</p>
+                          ) : (
+                            <div className="space-y-2">
+                              {team.technique_gaps.map((gap) => (
+                                <div key={gap.technique_id}>
+                                  <div className="flex items-center justify-between text-[10px] mb-1">
+                                    <span className="font-mono text-breach-text">{gap.technique_id}</span>
+                                    <span className={`font-mono font-bold ${
+                                      gap.avg_accuracy_pct >= 75 ? "text-green-400" :
+                                      gap.avg_accuracy_pct >= 50 ? "text-breach-yellow" : "text-breach-accent"
+                                    }`}>
+                                      {gap.avg_accuracy_pct}%
+                                    </span>
+                                  </div>
+                                  <div className="w-full bg-breach-surface rounded-full h-1.5 overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full transition-all ${
+                                        gap.avg_accuracy_pct >= 75 ? "bg-green-400" :
+                                        gap.avg_accuracy_pct >= 50 ? "bg-breach-yellow" : "bg-breach-accent"
+                                      }`}
+                                      style={{ width: `${gap.avg_accuracy_pct}%` }}
+                                    />
+                                  </div>
+                                  {gap.members_below_50pct > 0 && (
+                                    <div className="text-[9px] text-breach-accent mt-0.5">
+                                      {gap.members_below_50pct} of {gap.members_tracked} members below 50% mastery
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* 4. Scenario Calibration & Evidence Log row */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

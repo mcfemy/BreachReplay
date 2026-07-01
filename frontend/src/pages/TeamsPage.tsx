@@ -50,6 +50,8 @@ const RANK_BADGE = (rank: number) => {
 export default function TeamsPage() {
   const qc = useQueryClient();
   const currentUserId = useAuthStore((s) => s.user?.id);
+  const currentUserRole = useAuthStore((s) => s.user?.role);
+  const isOrgAdmin = currentUserRole === "admin" || currentUserRole === "ciso";
   const [view, setView] = useState<"teams" | "leaderboard">("teams");
   const [newTeamName, setNewTeamName] = useState("");
   const [createError, setCreateError] = useState("");
@@ -58,6 +60,10 @@ export default function TeamsPage() {
   const [leaveError, setLeaveError] = useState<Record<string, string>>({});
   const [inviteEmail, setInviteEmail] = useState<Record<string, string>>({});
   const [inviteMsg, setInviteMsg] = useState<Record<string, string>>({});
+  const [assignTarget, setAssignTarget] = useState<string | null>(null);
+  const [assignTechnique, setAssignTechnique] = useState<Record<string, string>>({});
+  const [assignDueDate, setAssignDueDate] = useState<Record<string, string>>({});
+  const [assignMsg, setAssignMsg] = useState<Record<string, string>>({});
 
   const { data: teams = [], isLoading: teamsLoading } = useQuery<TeamOut[]>({
     queryKey: ["teams"],
@@ -103,6 +109,22 @@ export default function TeamsPage() {
   const syncMutation = useMutation({
     mutationFn: async (teamId: string) => (await axiosInstance.post(`/teams/${teamId}/sync-xp`)).data,
     onSuccess: () => qc.invalidateQueries({ queryKey: ["teams"] }),
+  });
+
+  const assignMutation = useMutation({
+    mutationFn: async ({ teamId, targetTechniqueId, dueDate }: { teamId: string; targetTechniqueId: string; dueDate: string }) =>
+      (await axiosInstance.post("/admin/assignments", {
+        team_id: teamId,
+        target_technique_id: targetTechniqueId,
+        due_date: dueDate ? new Date(dueDate).toISOString() : null,
+      })).data,
+    onSuccess: (_data, { teamId }) => {
+      setAssignMsg((prev) => ({ ...prev, [teamId]: "Training assigned to team." }));
+      setAssignTechnique((prev) => ({ ...prev, [teamId]: "" }));
+      setAssignDueDate((prev) => ({ ...prev, [teamId]: "" }));
+    },
+    onError: (err: any, { teamId }) =>
+      setAssignMsg((prev) => ({ ...prev, [teamId]: err?.response?.data?.detail || err?.message || "Failed to assign training" })),
   });
 
   const inviteMutation = useMutation({
@@ -317,6 +339,61 @@ export default function TeamsPage() {
                                 <p className={`text-[9px] mt-1.5 ${inviteMsg[team.id].startsWith("Invite sent") ? "text-green-400" : "text-red-400"}`}>
                                   {inviteMsg[team.id]}
                                 </p>
+                              )}
+                            </div>
+                          )}
+                          {/* Assign Training — visible to team captains and org admins only */}
+                          {(isOrgAdmin || team.members.some(m => m.user_id === currentUserId && m.role === "captain")) && (
+                            <div className="px-5 py-3 border-t border-breach-border/50 bg-breach-bg/20">
+                              {assignTarget === team.id ? (
+                                <div className="space-y-2">
+                                  <div className="text-[9px] text-breach-muted uppercase tracking-widest font-bold mb-1">Assign Training — MITRE Technique</div>
+                                  <div className="flex gap-2">
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. T1003"
+                                      value={assignTechnique[team.id] || ""}
+                                      onChange={e => setAssignTechnique(prev => ({ ...prev, [team.id]: e.target.value }))}
+                                      maxLength={50}
+                                      className="flex-1 bg-breach-bg border border-breach-border rounded px-3 py-1.5 text-xs text-breach-text placeholder-breach-muted/50 focus:border-breach-blue focus:outline-none"
+                                    />
+                                    <input
+                                      type="date"
+                                      value={assignDueDate[team.id] || ""}
+                                      onChange={e => setAssignDueDate(prev => ({ ...prev, [team.id]: e.target.value }))}
+                                      className="bg-breach-bg border border-breach-border rounded px-2 py-1.5 text-xs text-breach-text focus:border-breach-blue focus:outline-none"
+                                    />
+                                    <button
+                                      onClick={() => {
+                                        const technique = assignTechnique[team.id]?.trim();
+                                        if (!technique) return;
+                                        assignMutation.mutate({ teamId: team.id, targetTechniqueId: technique, dueDate: assignDueDate[team.id] || "" });
+                                      }}
+                                      disabled={!assignTechnique[team.id]?.trim() || assignMutation.isPending}
+                                      className="bg-breach-accent hover:bg-red-600 disabled:bg-breach-accent/40 text-white px-3 py-1.5 rounded text-[10px] uppercase font-bold tracking-wider transition-colors"
+                                    >
+                                      Assign
+                                    </button>
+                                    <button
+                                      onClick={() => setAssignTarget(null)}
+                                      className="text-[10px] text-breach-muted hover:text-breach-text uppercase tracking-wider px-2"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                  {assignMsg[team.id] && (
+                                    <p className={`text-[9px] ${assignMsg[team.id].startsWith("Training assigned") ? "text-green-400" : "text-red-400"}`}>
+                                      {assignMsg[team.id]}
+                                    </p>
+                                  )}
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => setAssignTarget(team.id)}
+                                  className="text-[10px] bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 px-3 py-1.5 rounded uppercase font-bold tracking-wider hover:bg-yellow-500/20 transition-colors"
+                                >
+                                  🎯 Assign Training
+                                </button>
                               )}
                             </div>
                           )}

@@ -11,6 +11,7 @@ from app.models.certification import Certification
 from app.models.team import Team, TeamMember
 from app.models.saml_config import OrganizationSAMLConfig
 from app.models.knowledge_check import KnowledgeCheck, UserKnowledgeCheckAttempt
+from app.models.content_assignment import ContentAssignment
 
 __all__ = [
     "Base",
@@ -33,4 +34,5 @@ __all__ = [
     "OrganizationSAMLConfig",
     "KnowledgeCheck",
     "UserKnowledgeCheckAttempt",
+    "ContentAssignment",
 ]

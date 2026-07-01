@@ -9,10 +9,13 @@ from app.db.session import get_db
 from app.models.user import User
 from app.models.audit_log import AuditLog
 from app.models.scenario import Scenario
+from app.models.team import Team, TeamMember
+from app.models.content_assignment import ContentAssignment
 from app.schemas.user import UserOut
 from app.schemas.scenario import ScenarioOut
 from app.core.security import require_admin, get_current_user
 from app.services.audit import log_action
+from app.services import mastery_service
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -450,6 +453,72 @@ async def get_compliance_analytics(
     recommendations.sort(key=lambda r: r["gap_coverage"], reverse=True)
     recommendations = recommendations[:5]
 
+    # 10. Team Skill Gaps — per-team average member mastery per MITRE technique,
+    # surfaced as "Team X is weak on technique Y". Batch-fetch teams + members
+    # (one query each) rather than querying per team in a loop; mastery is computed
+    # once per distinct user (a user may sit on more than one team) and reused.
+    teams_res = await db.execute(
+        select(Team).where(Team.organization_id == current_admin.organization_id)
+    )
+    org_teams = teams_res.scalars().all()
+
+    team_skill_gaps = []
+    if org_teams:
+        team_ids = [t.id for t in org_teams]
+        members_res = await db.execute(
+            select(TeamMember).where(TeamMember.team_id.in_(team_ids))
+        )
+        all_members = members_res.scalars().all()
+
+        members_by_team: dict[str, list[str]] = {t.id: [] for t in org_teams}
+        for m in all_members:
+            if m.team_id in members_by_team:
+                members_by_team[m.team_id].append(m.user_id)
+
+        distinct_user_ids = {m.user_id for m in all_members}
+        mastery_by_user = {
+            uid: await mastery_service.compute_user_mastery(db, uid) for uid in distinct_user_ids
+        }
+
+        for team in org_teams:
+            member_ids = members_by_team.get(team.id, [])
+            if not member_ids:
+                team_skill_gaps.append({
+                    "team_id": team.id,
+                    "team_name": team.name,
+                    "member_count": 0,
+                    "technique_gaps": [],
+                })
+                continue
+
+            # Aggregate accuracy_pct per technique across this team's members.
+            technique_totals: dict[str, list[float]] = {}
+            for uid in member_ids:
+                user_mastery = mastery_by_user.get(uid, {})
+                for technique_id, entry in user_mastery.items():
+                    technique_totals.setdefault(technique_id, []).append(entry["accuracy_pct"])
+
+            technique_gaps = []
+            for technique_id, pct_list in technique_totals.items():
+                avg_accuracy = round(sum(pct_list) / len(pct_list), 1)
+                below_threshold = sum(1 for p in pct_list if p < 50.0)
+                technique_gaps.append({
+                    "technique_id": technique_id,
+                    "avg_accuracy_pct": avg_accuracy,
+                    "members_below_50pct": below_threshold,
+                    "members_tracked": len(pct_list),
+                })
+            # Weakest techniques first (lowest average accuracy) — this is the
+            # actionable "Team X is weak on Y" ordering.
+            technique_gaps.sort(key=lambda g: g["avg_accuracy_pct"])
+
+            team_skill_gaps.append({
+                "team_id": team.id,
+                "team_name": team.name,
+                "member_count": len(member_ids),
+                "technique_gaps": technique_gaps[:5],
+            })
+
     return {
         "organization_name": org_name,
         "organization_tier": org_tier,
@@ -464,6 +533,7 @@ async def get_compliance_analytics(
         "calibrations": calibrations,
         "compliance_evidence": compliance_evidence,
         "private_scenarios": private_scenarios,
+        "team_skill_gaps": team_skill_gaps,
     }
 
 
@@ -720,4 +790,116 @@ async def list_tenants(
             "created_at": o.created_at.isoformat(),
         }
         for o in orgs
+    ]
+
+
+class ContentAssignmentPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    team_id: Optional[str] = None
+    user_id: Optional[str] = None
+    scenario_id: Optional[str] = None
+    target_technique_id: Optional[str] = Field(default=None, max_length=50)
+    due_date: Optional[datetime] = None
+
+
+@router.post("/assignments", status_code=status.HTTP_201_CREATED)
+async def create_assignment(
+    payload: ContentAssignmentPayload,
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """Assign a scenario (or a target MITRE technique) to a team or an individual
+    user within the admin's organization. Exactly one target (team_id/user_id) and
+    exactly one payload (scenario_id/target_technique_id) must be provided."""
+
+    if bool(payload.team_id) == bool(payload.user_id):
+        raise HTTPException(status_code=400, detail="Provide exactly one of team_id or user_id")
+    if bool(payload.scenario_id) == bool(payload.target_technique_id):
+        raise HTTPException(status_code=400, detail="Provide exactly one of scenario_id or target_technique_id")
+
+    if payload.team_id:
+        team_res = await db.execute(
+            select(Team).where(Team.id == payload.team_id, Team.organization_id == current_admin.organization_id)
+        )
+        if not team_res.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Team not found in your organization")
+
+    if payload.user_id:
+        user_res = await db.execute(
+            select(User).where(User.id == payload.user_id, User.organization_id == current_admin.organization_id)
+        )
+        if not user_res.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="User not found in your organization")
+
+    if payload.scenario_id:
+        # Only allow assigning scenarios this org can actually see: public (non-private)
+        # scenarios, or private scenarios owned by the admin's own org — same visibility
+        # rule already used for scenario_coverage in get_compliance_analytics. A plain
+        # Scenario.id lookup (as approve_scenario does) would let an admin assign another
+        # org's private scenario, which is not acceptable here since assignments are
+        # pushed directly to a team/user's recommended list.
+        scenario_res = await db.execute(
+            select(Scenario).where(
+                Scenario.id == payload.scenario_id,
+                (Scenario.is_private == False) | (Scenario.owner_org_id == current_admin.organization_id),  # noqa: E712
+            )
+        )
+        if not scenario_res.scalar_one_or_none():
+            raise HTTPException(status_code=404, detail="Scenario not found")
+
+    assignment = ContentAssignment(
+        organization_id=current_admin.organization_id,
+        assigned_by_user_id=current_admin.id,
+        team_id=payload.team_id,
+        user_id=payload.user_id,
+        scenario_id=payload.scenario_id,
+        target_technique_id=payload.target_technique_id,
+        due_date=payload.due_date,
+    )
+    db.add(assignment)
+    await db.commit()
+
+    return {
+        "id": assignment.id,
+        "organization_id": assignment.organization_id,
+        "assigned_by_user_id": assignment.assigned_by_user_id,
+        "team_id": assignment.team_id,
+        "user_id": assignment.user_id,
+        "scenario_id": assignment.scenario_id,
+        "target_technique_id": assignment.target_technique_id,
+        "due_date": assignment.due_date.isoformat() if assignment.due_date else None,
+        "created_at": assignment.created_at.isoformat(),
+    }
+
+
+@router.get("/assignments")
+async def list_assignments(
+    team_id: Optional[str] = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """List content assignments for the admin's organization, optionally filtered by team_id."""
+    query = select(ContentAssignment).where(
+        ContentAssignment.organization_id == current_admin.organization_id
+    )
+    if team_id:
+        query = query.where(ContentAssignment.team_id == team_id)
+    query = query.order_by(ContentAssignment.created_at.desc())
+
+    result = await db.execute(query)
+    assignments = result.scalars().all()
+
+    return [
+        {
+            "id": a.id,
+            "organization_id": a.organization_id,
+            "assigned_by_user_id": a.assigned_by_user_id,
+            "team_id": a.team_id,
+            "user_id": a.user_id,
+            "scenario_id": a.scenario_id,
+            "target_technique_id": a.target_technique_id,
+            "due_date": a.due_date.isoformat() if a.due_date else None,
+            "created_at": a.created_at.isoformat(),
+        }
+        for a in assignments
     ]
