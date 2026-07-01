@@ -30,6 +30,8 @@ class SimulationSession(Base):
     debrief_pdf_key: Mapped[str] = mapped_column(String(500), nullable=True)
     debrief_generated_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
+    investigation_log: Mapped[list] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

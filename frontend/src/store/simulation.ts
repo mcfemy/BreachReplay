@@ -34,6 +34,22 @@ export interface Participant {
   online: boolean;
 }
 
+export interface HiddenIOC {
+  timestamp?: string;
+  severity?: string;
+  source_system?: string;
+  rule_id?: string;
+  description?: string;
+  raw_log?: string;
+  matches_on?: Record<string, string>;
+}
+
+export interface InvestigationResult {
+  query: { field: string; value: string };
+  matches: HiddenIOC[];
+  server_time: string;
+}
+
 interface SimulationState {
   sessionId: string | null;
   alerts: Alert[];
@@ -45,6 +61,7 @@ interface SimulationState {
   chatMessages: { user_id: string; name?: string; role?: string; text: string; ts: string }[];
   participants: Participant[];
   votes: Record<string, number>;
+  investigationResults: InvestigationResult[];
   setSession: (id: string) => void;
   addAlert: (alert: Alert) => void;
   setGate: (gate: DecisionGate | null) => void;
@@ -57,6 +74,7 @@ interface SimulationState {
   upsertParticipant: (p: Participant) => void;
   setVotes: (votes: Record<string, number>) => void;
   clearVotes: () => void;
+  addInvestigationResult: (result: InvestigationResult) => void;
   reset: () => void;
 }
 
@@ -71,6 +89,7 @@ export const useSimStore = create<SimulationState>((set) => ({
   chatMessages: [],
   participants: [],
   votes: {},
+  investigationResults: [],
   setSession: (id) => set({ sessionId: id }),
   addAlert: (alert) => set((s) => ({ alerts: [...s.alerts, alert] })),
   setGate: (gate) => set({ currentGate: gate, isPaused: !!gate }),
@@ -91,6 +110,7 @@ export const useSimStore = create<SimulationState>((set) => ({
   }),
   setVotes: (votes) => set({ votes }),
   clearVotes: () => set({ votes: {} }),
+  addInvestigationResult: (result) => set((s) => ({ investigationResults: [...s.investigationResults, result] })),
   reset: () => set({
     sessionId: null,
     alerts: [],
@@ -101,7 +121,8 @@ export const useSimStore = create<SimulationState>((set) => ({
     error: null,
     chatMessages: [],
     participants: [],
-    votes: {}
+    votes: {},
+    investigationResults: []
   }),
 }));
 

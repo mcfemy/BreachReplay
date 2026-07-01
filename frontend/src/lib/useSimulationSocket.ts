@@ -1,6 +1,6 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useSimStore } from "../store/simulation";
-import type { PressureInjection } from "../store/simulation";
+import type { PressureInjection, InvestigationResult } from "../store/simulation";
 import { WS_BASE } from "./config";
 
 interface SocketOptions {
@@ -13,6 +13,7 @@ interface SocketOptions {
   }) => void;
   onNotification?: (kind: "success" | "error" | "info", message: string) => void;
   onPressureInjection?: (inj: PressureInjection) => void;
+  onInvestigationResult?: (result: InvestigationResult) => void;
 }
 
 export function useSimulationSocket(sessionId: string, options?: SocketOptions) {
@@ -28,6 +29,7 @@ export function useSimulationSocket(sessionId: string, options?: SocketOptions) 
     setVotes,
     clearVotes,
     setPaused,
+    addInvestigationResult,
   } = useSimStore();
 
   const optionsRef = useRef(options);
@@ -122,6 +124,19 @@ export function useSimulationSocket(sessionId: string, options?: SocketOptions) 
             text: msg.text,
           });
           break;
+        case "investigation_result":
+          {
+            const result: InvestigationResult = {
+              query: msg.query,
+              matches: msg.matches || [],
+              server_time: msg.server_time,
+            };
+            addInvestigationResult(result);
+            if (optionsRef.current?.onInvestigationResult) {
+              optionsRef.current.onInvestigationResult(result);
+            }
+          }
+          break;
         default:
           break;
       }
@@ -130,7 +145,7 @@ export function useSimulationSocket(sessionId: string, options?: SocketOptions) 
     return () => {
       socket.close();
     };
-  }, [sessionId, addAlert, setGate, setActivePressureInjection, setComplete, addChat, setParticipants, upsertParticipant, setVotes, clearVotes, setPaused]);
+  }, [sessionId, addAlert, setGate, setActivePressureInjection, setComplete, addChat, setParticipants, upsertParticipant, setVotes, clearVotes, setPaused, addInvestigationResult]);
 
   const send = (payload: unknown) => {
     if (ws.current?.readyState === WebSocket.OPEN) {
@@ -166,6 +181,10 @@ export function useSimulationSocket(sessionId: string, options?: SocketOptions) 
     send({ type: "inject_alert", alert: alertPayload });
   }, []);
 
+  const investigateQuery = useCallback((field: string, value: string) => {
+    send({ type: "investigate_query", field, value });
+  }, []);
+
   return {
     sendChat,
     startStream,
@@ -174,6 +193,7 @@ export function useSimulationSocket(sessionId: string, options?: SocketOptions) 
     submitCommandDecision,
     togglePause,
     injectAlert,
+    investigateQuery,
   };
 }
 

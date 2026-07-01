@@ -110,6 +110,32 @@ COLONIAL_PIPELINE = {
          "description": "SCADA HMI displays going dark in pipeline control room — operator reports total loss of visibility",
          "raw_log": "system=SCADA_HMI status=display_loss control_room=Houston_Hub operator_report=visibility_lost"},
     ],
+    # Hidden IOCs: same field shape as alert_sequence entries, but deliberately NOT surfaced
+    # in the main alert stream. A player who pivots the investigation panel on the right
+    # field/value (see `matches_on`) surfaces these — rewarding "pivot on the data" behavior
+    # instead of just reacting to whatever the SIEM feed pushes. Not gate-blocking (Phase 3).
+    "hidden_iocs": [
+        {"matches_on": {"ip": "185.220.101.34"}, "timestamp": "+1m", "severity": "medium",
+         "source_system": "Auth", "rule_id": "AUTH-009",
+         "description": "Successful login using service account 'svc_backup' against the legacy file-transfer portal — same source IP as the VPN anomaly",
+         "raw_log": "auth=success user=svc_backup src_ip=185.220.101.34 service=legacy_ftp_portal geo=RU"},
+        {"matches_on": {"ip": "185.220.101.34"}, "timestamp": "+3m", "severity": "medium",
+         "source_system": "Auth", "rule_id": "AUTH-010",
+         "description": "Successful login using account 'jsmith' immediately following the failed-login burst — same source IP as the VPN anomaly",
+         "raw_log": "event=4624 user=jsmith logon_type=3 src_ip=185.220.101.34 geo=RU"},
+        {"matches_on": {"ip": "185.220.101.34"}, "timestamp": "+5m", "severity": "high",
+         "source_system": "VPN Gateway", "rule_id": "VPN-004",
+         "description": "Same source IP also used a second, previously-unused VPN credential 'svc_reporting' minutes after the 'svc_backup' login",
+         "raw_log": "auth=success user=svc_reporting src_ip=185.220.101.34 geo=RU session_overlap=svc_backup"},
+        {"matches_on": {"hostname": "CORP-DC-01"}, "timestamp": "+7m", "severity": "medium",
+         "source_system": "EDR", "rule_id": "EDR-030",
+         "description": "Suspicious LOLBin activity on CORP-DC-01 minutes before the confirmed Mimikatz-like credential dump — certutil used to decode a staged payload",
+         "raw_log": "proc=certutil.exe args=-decode staged.b64 staged.exe host=CORP-DC-01 parent=cmd.exe"},
+        {"matches_on": {"username": "svc_backup"}, "timestamp": "+31m", "severity": "high",
+         "source_system": "IAM", "rule_id": "IAM-018",
+         "description": "Account 'svc_backup' — the same service account used at initial VPN compromise — was added to the 'Backup Operators' privileged group",
+         "raw_log": "event=4728 group='Backup Operators' member=svc_backup actor=CORP-DC-01.Administrator"},
+    ],
     "pressure_injections": [
         {"id": "pressure-001", "trigger_timestamp": "+3m", "type": "email", "countdown_seconds": 30,
          "from": "Janet Voss, Shift Operations Lead <j.voss@colpipe.com>",

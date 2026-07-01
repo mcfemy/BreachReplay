@@ -38,6 +38,7 @@ class Scenario(Base):
     decision_tree: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
     pressure_injections: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
     debrief_skeleton: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
+    hidden_iocs: Mapped[list] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
 
     status: Mapped[str] = mapped_column(SAEnum("draft", "review", "approved", "rejected", "archived", name="scenario_status"), default="draft")
     is_private: Mapped[bool] = mapped_column(Boolean, default=False)

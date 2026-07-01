@@ -177,3 +177,12 @@ def build_system_event(event_type: str, data: dict = None) -> dict:
         "data": data or {},
         "server_time": datetime.utcnow().isoformat(),
     }
+
+
+def build_investigation_result_event(field: str, value: str, matches: list) -> dict:
+    return {
+        "type": "investigation_result",
+        "query": {"field": field, "value": value},
+        "matches": matches,
+        "server_time": datetime.utcnow().isoformat(),
+    }

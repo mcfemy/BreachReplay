@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { useSimStore } from "../store/simulation";
-import type { PressureInjection } from "../store/simulation";
+import type { PressureInjection, InvestigationResult } from "../store/simulation";
 import { useSimulationSocket } from "../lib/useSimulationSocket";
 import { useAuthStore } from "../store/auth";
 import { api } from "../lib/api";
+
+// ── Investigation panel field options ───────────────────────────────────────
+const INVESTIGATE_FIELDS: { value: string; label: string }[] = [
+  { value: "ip", label: "IP Address" },
+  { value: "hostname", label: "Hostname" },
+  { value: "username", label: "Username" },
+  { value: "process_name", label: "Process Name" },
+];
 
 // ── Severity styling ────────────────────────────────────────────────────────
 const SEV_BORDER: Record<string, string> = {
@@ -181,6 +189,7 @@ export default function SimulationRoomPage() {
     chatMessages,
     participants,
     votes,
+    investigationResults,
     reset,
   } = useSimStore();
 
@@ -196,6 +205,8 @@ export default function SimulationRoomPage() {
   const [injectSrc, setInjectSrc] = useState("FACILITATOR");
   const [tickerIndex, setTickerIndex] = useState(0);
   const [screenFlash, setScreenFlash] = useState(false);
+  const [investigateField, setInvestigateField] = useState("ip");
+  const [investigateValue, setInvestigateValue] = useState("");
 
   const alertsEndRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -216,7 +227,7 @@ export default function SimulationRoomPage() {
     }
   }, [alerts.length]);
 
-  const { sendChat, startStream, submitVote, submitCommandDecision, togglePause, injectAlert } =
+  const { sendChat, startStream, submitVote, submitCommandDecision, togglePause, injectAlert, investigateQuery } =
     useSimulationSocket(sessionId, {
       onDecisionResult: (result) => {
         setSelectedOption(null);
@@ -227,6 +238,14 @@ export default function SimulationRoomPage() {
       },
       onNotification: notify,
       onPressureInjection: () => {/* stored in zustand via socket hook */},
+      onInvestigationResult: (result: InvestigationResult) => {
+        notify(
+          result.matches.length > 0 ? "success" : "info",
+          result.matches.length > 0
+            ? `Pivot on ${result.query.field}="${result.query.value}" surfaced ${result.matches.length} hidden record(s)`
+            : `No hidden records matched ${result.query.field}="${result.query.value}"`
+        );
+      },
     });
 
   useEffect(() => { reset(); fetchSession(); }, [sessionId]);
@@ -284,6 +303,11 @@ export default function SimulationRoomPage() {
     setInjectDesc("");
     setInjectorOpen(false);
     notify("success", "Alert injected to all participants");
+  }
+
+  function handlePivot() {
+    if (!investigateValue.trim()) return;
+    investigateQuery(investigateField, investigateValue.trim());
   }
 
   const handleChatKey = useCallback((e: React.KeyboardEvent) => {
@@ -727,6 +751,93 @@ export default function SimulationRoomPage() {
             <p className="text-[8px] text-slate-700 mt-1 text-center uppercase tracking-wider">
               {myRole.replace(/_/g, " ").toUpperCase()} — {user?.email}
             </p>
+          </div>
+        </div>
+
+        {/* COL 4: Investigation / pivot panel (enrichment only — never gates progression) */}
+        <div className="w-[300px] shrink-0 flex flex-col overflow-hidden border-l border-slate-800">
+          <div className="px-4 py-2 bg-slate-950/50 border-b border-slate-800 flex items-center justify-between shrink-0">
+            <span className="text-[10px] text-slate-500 uppercase tracking-widest">Investigation Pivot</span>
+            <span className="text-[10px] text-slate-600">{investigationResults.length} queries</span>
+          </div>
+
+          <div className="p-3 border-b border-slate-800/60 bg-slate-950/30 shrink-0 space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                value={investigateField}
+                onChange={(e) => setInvestigateField(e.target.value)}
+                className="bg-[#060810] border border-slate-700 text-slate-300 text-xs p-1.5 rounded focus:outline-none focus:border-blue-500"
+              >
+                {INVESTIGATE_FIELDS.map((f) => (
+                  <option key={f.value} value={f.value}>{f.label}</option>
+                ))}
+              </select>
+              <input
+                value={investigateValue}
+                onChange={(e) => setInvestigateValue(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handlePivot(); }}
+                placeholder="e.g. 185.220.101.34"
+                className="bg-[#060810] border border-slate-700 text-slate-200 text-xs p-1.5 rounded focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <button
+              onClick={handlePivot}
+              disabled={!investigateValue.trim()}
+              className="w-full bg-blue-700 hover:bg-blue-600 disabled:opacity-30 disabled:cursor-not-allowed text-white py-1.5 rounded text-[10px] uppercase tracking-widest font-bold transition-colors"
+            >
+              Pivot
+            </button>
+            <p className="text-[8px] text-slate-600 text-center">
+              Optional — query the data for related activity. Never required to proceed.
+            </p>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-3 space-y-2">
+            {[...investigationResults].reverse().map((result, ri) => (
+              <div key={ri} className="space-y-1.5">
+                <div className="text-[9px] text-slate-500 uppercase tracking-wider">
+                  Pivot: <span className="text-slate-300 font-bold">{result.query.field}</span> = "{result.query.value}"
+                  <span className="text-slate-600"> · {result.matches.length} match{result.matches.length === 1 ? "" : "es"}</span>
+                </div>
+                {result.matches.map((m, mi) => (
+                  <div
+                    key={mi}
+                    className={`border border-slate-800 border-l-4 px-3 py-2 rounded text-[11px] ${
+                      SEV_BORDER[m.severity || ""] || "border-l-slate-600"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      {m.severity && (
+                        <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${SEV_BADGE[m.severity] || "bg-slate-700 text-slate-300"}`}>
+                          {m.severity}
+                        </span>
+                      )}
+                      {m.timestamp && <span className="text-slate-500 text-[9px]">{m.timestamp}</span>}
+                      {m.source_system && (
+                        <>
+                          <span className="text-slate-600 text-[9px]">·</span>
+                          <span className="text-slate-400 text-[9px] font-bold uppercase">{m.source_system}</span>
+                        </>
+                      )}
+                    </div>
+                    {m.description && <p className="text-slate-200 leading-relaxed">{m.description}</p>}
+                    {m.raw_log && (
+                      <p className="text-[9px] text-slate-600 mt-1 truncate">{m.raw_log}</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ))}
+
+            {investigationResults.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-full py-16 text-slate-700 text-center px-2">
+                <div className="text-3xl mb-3">🔍</div>
+                <p className="text-[10px] uppercase tracking-widest">No pivots yet</p>
+                <p className="text-[9px] text-slate-800 mt-2">
+                  Query an IP, hostname, username, or process to surface related activity the SIEM feed didn't show you.
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>

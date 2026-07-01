@@ -1,17 +1,54 @@
 import asyncio
 import json
 import logging
+from datetime import datetime
 from fastapi import WebSocket, WebSocketDisconnect
-from sqlalchemy import select
+from sqlalchemy import select, text
 from app.db.session import AsyncSessionLocal
 from app.models.session import SimulationSession, SessionParticipant, SessionDecision
 from app.models.scenario import Scenario
 from app.models.user import User
-from app.websocket.manager import manager, build_alert_event, build_decision_gate_event, build_system_event
+from app.websocket.manager import (
+    manager,
+    build_alert_event,
+    build_decision_gate_event,
+    build_system_event,
+    build_investigation_result_event,
+)
 from app.pipeline.claude_client import generate_decision_commentary
 from app.services.siem_service import send_alert_to_siem, send_decision_to_siem
 
 logger = logging.getLogger(__name__)
+
+# Fields the investigation panel (Phase 3) can pivot on. Values are matched against
+# each hidden IOC's `matches_on` dict first (exact field match), falling back to a
+# case-insensitive substring match over `raw_log`/`description` so hidden entries
+# authored without an explicit `matches_on` entry are still findable.
+INVESTIGATE_FIELDS = {"ip", "hostname", "username", "process_name"}
+
+
+def _match_hidden_iocs(hidden_iocs: list, field: str, value: str) -> list:
+    """Return hidden IOC dicts matching the query field/value.
+
+    Match strategy (simple field-equality/substring — no full-text search engine,
+    per Phase 3 anti-pattern guard):
+    1. Exact (case-insensitive) match against the entry's own `matches_on[field]`.
+    2. Fallback: case-insensitive substring match of `value` in the entry's
+       `raw_log` or `description`, so entries without a `matches_on` still surface.
+    """
+    needle = value.strip().lower()
+    matches = []
+    for entry in hidden_iocs:
+        matches_on = entry.get("matches_on") or {}
+        tagged_value = matches_on.get(field)
+        if tagged_value and needle == str(tagged_value).strip().lower():
+            matches.append(entry)
+            continue
+
+        haystack = f"{entry.get('raw_log', '')} {entry.get('description', '')}".lower()
+        if needle and needle in haystack:
+            matches.append(entry)
+    return matches
 
 
 async def simulation_ws_handler(websocket: WebSocket, session_id: str, user_id: str):
@@ -177,6 +214,68 @@ async def simulation_ws_handler(websocket: WebSocket, session_id: str, user_id: 
                     continue
                 if manager.start_streaming(session_id):
                     asyncio.create_task(_stream_alerts(session_id, user_id))
+
+            elif msg_type == "investigate_query":
+                field = msg.get("field")
+                value = msg.get("value")
+
+                if field not in INVESTIGATE_FIELDS or not isinstance(value, str) or not value:
+                    await manager.send_personal(websocket, build_system_event(
+                        "error",
+                        {"detail": f"investigate_query requires 'field' (one of {sorted(INVESTIGATE_FIELDS)}) and a non-empty string 'value'"},
+                    ))
+                    continue
+
+                try:
+                    async with AsyncSessionLocal() as db:
+                        s_res = await db.execute(select(SimulationSession).where(SimulationSession.id == session_id))
+                        session = s_res.scalar_one_or_none()
+                        if not session:
+                            await manager.send_personal(websocket, build_system_event("error", {"detail": "Session not found"}))
+                            continue
+
+                        sc_res = await db.execute(select(Scenario).where(Scenario.id == session.scenario_id))
+                        scenario = sc_res.scalar_one_or_none()
+
+                        hidden_iocs = (scenario.hidden_iocs if scenario else None) or []
+                        matches = _match_hidden_iocs(hidden_iocs, field, value)
+
+                        log_entry = {
+                            "user_id": user_id,
+                            "field": field,
+                            "value": value,
+                            "match_count": len(matches),
+                            "found": len(matches) > 0,
+                            "queried_at": datetime.utcnow().isoformat(),
+                        }
+                        # Atomic JSONB append at the SQL level — avoids the lost-update race
+                        # from a Python-side read-modify-write when multiple players in the
+                        # same session pivot concurrently (each WS message uses its own
+                        # AsyncSessionLocal, so two concurrent commits could otherwise clobber
+                        # each other's log entry).
+                        await db.execute(
+                            text(
+                                "UPDATE simulation_sessions "
+                                "SET investigation_log = investigation_log || CAST(:entry AS jsonb) "
+                                "WHERE id = :session_id"
+                            ),
+                            {"entry": json.dumps([log_entry]), "session_id": session.id},
+                        )
+                        await db.commit()
+
+                    await manager.send_personal(
+                        websocket,
+                        build_investigation_result_event(field, value, matches),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Unexpected error handling investigate_query for session %s (field=%s)",
+                        session_id, field,
+                    )
+                    await manager.send_personal(websocket, build_system_event(
+                        "error",
+                        {"detail": "Failed to process investigation query"},
+                    ))
 
     except WebSocketDisconnect:
         manager.disconnect(session_id, websocket)
