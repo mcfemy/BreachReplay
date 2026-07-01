@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.routes import auth, scenarios, sessions, admin, ingestion, slack, billing, daily, redteam, profile, certs, orgs, teams, siem, mastery
+from app.api.routes import auth, scenarios, sessions, admin, ingestion, slack, billing, daily, redteam, profile, certs, orgs, teams, siem, mastery, learning
 from app.api.routes import saml
 
 api_router = APIRouter()
@@ -19,3 +19,4 @@ api_router.include_router(orgs.router)
 api_router.include_router(teams.router)
 api_router.include_router(siem.router)
 api_router.include_router(mastery.router)
+api_router.include_router(learning.router)

@@ -5,6 +5,7 @@ import type { PressureInjection, InvestigationResult } from "../store/simulation
 import { useSimulationSocket } from "../lib/useSimulationSocket";
 import { useAuthStore } from "../store/auth";
 import { api } from "../lib/api";
+import KnowledgeCheckModal from "../components/KnowledgeCheckModal";
 
 // ── Investigation panel field options ───────────────────────────────────────
 const INVESTIGATE_FIELDS: { value: string; label: string }[] = [
@@ -199,6 +200,7 @@ export default function SimulationRoomPage() {
   const [decisionResult, setDecisionResult] = useState<{
     is_correct: boolean; rationale: string; consequence_applied: string; correct_index: number;
   } | null>(null);
+  const [showKnowledgeCheck, setShowKnowledgeCheck] = useState(false);
   const [injectorOpen, setInjectorOpen] = useState(false);
   const [injectDesc, setInjectDesc] = useState("");
   const [injectSev, setInjectSev] = useState("high");
@@ -247,6 +249,10 @@ export default function SimulationRoomPage() {
         );
       },
     });
+
+  // Reset the (optional, dismissible) knowledge-check prompt whenever a fresh
+  // decision result comes in, so it can be re-offered per gate without blocking anything.
+  useEffect(() => { if (decisionResult) setShowKnowledgeCheck(false); }, [decisionResult]);
 
   useEffect(() => { reset(); fetchSession(); }, [sessionId]);
   useEffect(() => { alertsEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [alerts.length]);
@@ -612,7 +618,19 @@ export default function SimulationRoomPage() {
               <p className={`text-[10px] font-bold ${decisionResult.is_correct ? "text-green-400" : "text-red-400"}`}>
                 Consequence: {decisionResult.consequence_applied}
               </p>
+              {/* Optional, dismissible knowledge check — never blocks progression */}
+              <button
+                onClick={() => setShowKnowledgeCheck(true)}
+                className="mt-2 text-[10px] text-cyan-400 hover:text-cyan-300 uppercase tracking-widest font-bold underline underline-offset-2"
+              >
+                💡 Why was that the right call?
+              </button>
             </div>
+          )}
+
+          {/* Knowledge-check modal — optional/supplementary, dismissible, never gates the gate flow */}
+          {showKnowledgeCheck && (
+            <KnowledgeCheckModal onDismiss={() => setShowKnowledgeCheck(false)} />
           )}
 
           {/* Facilitator controls */}

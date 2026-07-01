@@ -10,6 +10,7 @@ os.environ.setdefault("DATABASE_URL", os.getenv("DATABASE_URL", "postgresql+asyn
 
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from app.models.scenario import Scenario
+from app.models.knowledge_check import KnowledgeCheck
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 engine = create_async_engine(DATABASE_URL, echo=False)
@@ -1052,6 +1053,212 @@ NHS_WANNACRY = {
 SCENARIOS = [COLONIAL_PIPELINE, SOLARWINDS, MGM_GRAND, LOG4SHELL, NHS_WANNACRY]
 
 
+# Knowledge-check content for Colonial Pipeline — one question per decision gate (12
+# total), each testing WHY the correct option beat the plausible-but-wrong alternatives,
+# tagged with that gate's nist_control_ref/mitre_technique so answers feed the same
+# mastery aggregation as SessionDecision rows (see app.services.mastery_service).
+# Seeded separately from COLONIAL_PIPELINE (Scenario has no knowledge_checks column) —
+# tied to the real scenario id at seed time via source_reference lookup.
+COLONIAL_PIPELINE_KNOWLEDGE_CHECKS = [
+    {
+        "gate_id": "gate-001",
+        "nist_control_ref": "DE.AE-2", "technique_id": "T1078",
+        "question": "Gate-001: why does correlating the failed-login burst against the svc_backup VPN session beat both dismissing it as routine AND forcing an immediate password reset on jsmith?",
+        "options": [
+            "Because a password reset is technically impossible without help-desk approval during business hours",
+            "Because dismissing failed logins as routine is against company policy regardless of the evidence",
+            "Because cross-referencing timestamps and source IPs across log sources establishes whether two anomalies share a common actor before you commit to a response",
+            "Because the SIEM automatically correlates all events and manual review is redundant",
+        ],
+        "correct_index": 2,
+        "explanation": "NIST DE.AE-2 requires analyzing event data across sources before deciding it's unrelated noise. Resetting jsmith's password alone secures one account while ignoring svc_backup, which is the actual pivot point the attacker used next.",
+    },
+    {
+        "gate_id": "gate-002",
+        "nist_control_ref": "RS.AN-3", "technique_id": "T1003",
+        "question": "Gate-002: why does 'suspend the process, capture a memory image, then isolate the host' beat 'kill the process and reboot immediately' for the Mimikatz/LSASS-dump alert on CORP-DC-01?",
+        "options": [
+            "Because rebooting instantly destroys the live memory image, so you'd never learn what credentials were actually taken — suspend-and-image preserves that evidence while still containing the threat",
+            "Because rebooting a domain controller always takes longer than suspending a process",
+            "Because EDR cannot terminate processes on a domain controller",
+            "Because memory imaging is required by law before any host can be isolated",
+        ],
+        "correct_index": 0,
+        "explanation": "NIST RS.AN-3 (forensics performed) — a reboot wipes volatile memory forensics forever. Suspending the process first lets you image RAM and then isolate the host, getting both containment and evidence instead of sacrificing one for the other.",
+    },
+    {
+        "gate_id": "gate-003",
+        "nist_control_ref": "PR.AC-4", "technique_id": "T1136",
+        "question": "Gate-003: for the unauthorized 'svc_update01' domain admin account, why disable-and-audit instead of deleting it outright or just watching passively?",
+        "options": [
+            "Deletion is irreversible and therefore always the wrong choice in incident response",
+            "Passive watching is the industry-standard first move for any new domain admin account",
+            "Disabling an account requires the same domain-admin privileges the attacker already used, so it doesn't matter which option you pick",
+            "Deleting it tips off the attacker to immediately re-provision under new names; disabling it quietly sets a tripwire and the audit surfaces the attacker's broader persistence pattern without alerting them",
+        ],
+        "correct_index": 3,
+        "explanation": "NIST PR.AC-4 combined with DE.CM-7 — deletion can trigger adversary adaptation (they simply create replacements), while pure observation lets the account be used to spawn more admin accounts. Disable-and-audit removes the risk while preserving intel.",
+    },
+    {
+        "gate_id": "gate-004",
+        "nist_control_ref": "RS.MI-2", "technique_id": "T1021",
+        "question": "Gate-004: with RDP lateral movement active to 14 hosts from CORP-DC-01, why isolate the source host instead of isolating each destination host one by one, or just blocking RDP at the firewall?",
+        "options": [
+            "Domain controllers cannot be reached by firewall rules, so isolating the source is the only technically possible option",
+            "Cutting off the propagation source scales — it stops all further spread at once, whereas working through 14 destinations one at a time is too slow and a port block is trivially bypassed via WMI/PsExec",
+            "Isolating destination hosts one by one is faster because EDR can act on multiple hosts in parallel",
+            "Blocking RDP at the firewall is always sufficient against lateral movement regardless of protocol",
+        ],
+        "correct_index": 1,
+        "explanation": "NIST RS.MI-2 favors containing the propagation source over chasing individual destinations — source containment scales, destination-by-destination containment doesn't, and a single-port firewall block doesn't stop an attacker from pivoting to another lateral-movement technique.",
+    },
+    {
+        "gate_id": "gate-005",
+        "nist_control_ref": "RS.AN-1", "technique_id": "T1053",
+        "question": "Gate-005: for the suspicious 'WindowsUpdateHelper' scheduled task set to fire at 3 AM, why quarantine-and-analyze the binary instead of deleting the tasks immediately or escalating and waiting for sign-off?",
+        "options": [
+            "Scheduled tasks cannot be deleted without administrator approval in any Windows environment",
+            "Quarantining is always faster than deletion regardless of file size",
+            "Escalating to the CISO is required by regulation before touching any scheduled task",
+            "Analyzing the binary first reveals what it actually does (a delayed-detonation ransomware stager) and gives you the attacker's timeline, whereas immediate deletion destroys that intel and waiting for sign-off burns time the attacker doesn't give you",
+        ],
+        "correct_index": 3,
+        "explanation": "NIST RS.AN-1 supports investigating before destroying — understanding a trigger mechanism and payload is often worth more than immediate removal, especially when it reveals a countdown you can now beat.",
+    },
+    {
+        "gate_id": "gate-006",
+        "nist_control_ref": "RS.MI-1", "technique_id": "T1041",
+        "question": "Gate-006: when a flagged-IP exfiltration connection conflicts with a maintenance ticket claim, why kill only the flagged connection and separately verify the ticket, rather than trusting the ticket outright or killing everything indiscriminately?",
+        "options": [
+            "Maintenance tickets should always be trusted once they have a valid approval chain, no exceptions",
+            "Surgical action on the confirmed malicious indicator stops the exfiltration immediately, while a fast, separate verification of the ticket avoids collateral damage to the legitimate maintenance job — trusting the ticket blindly misses the exfil, and killing everything risks breaking real work",
+            "It's impossible to selectively terminate a single network connection without affecting the whole host",
+            "Verifying tickets is not part of an incident responder's job during an active breach",
+        ],
+        "correct_index": 1,
+        "explanation": "NIST RS.MI-1 doesn't force an all-or-nothing choice — acting on the confirmed indicator while rapidly resolving the conflicting signal contains the incident without causing a self-inflicted outage.",
+    },
+    {
+        "gate_id": "gate-007",
+        "nist_control_ref": "RS.CO-1", "technique_id": "T1486",
+        "question": "Gate-007: facing CEO pressure for a ransom decision after 93GB exfiltrated, why respond with 'no decision yet, scoping first, legal is looped in now' instead of committing to pay or going silent?",
+        "options": [
+            "It buys time to determine what data left and whether notification obligations apply, engages the right stakeholders in parallel, and avoids both a premature ransom commitment and the trust-eroding silence of no response at all",
+            "CEOs have no authority over ransom decisions during an active incident, so any response is equally valid",
+            "Committing to pay immediately is always the fastest way to end a ransomware incident",
+            "Silence is the correct default until the FBI arrives on scene",
+        ],
+        "correct_index": 0,
+        "explanation": "NIST RS.CO-1/RS.CO-2 favor structured, honest, parallel-track communication — a defensible non-answer that keeps legal/compliance engaged beats either boxing yourself into a ransom commitment or losing executive trust through silence.",
+    },
+    {
+        "gate_id": "gate-008",
+        "nist_control_ref": "PR.IP-1", "technique_id": "T1562.001",
+        "question": "Gate-008: for the Group Policy change disabling Windows Defender across 200+ endpoints, why revert the GPO AND disable the compromised admin account from gate-003 in the same action, rather than reverting the GPO alone or relying only on an EDR override?",
+        "options": [
+            "Group Policy changes cannot be reverted once Windows Defender has been disabled",
+            "EDR-based policy overrides always cover 100% of endpoints in any environment",
+            "Addressing the root cause (the compromised account) alongside the symptom (the bad GPO) in one coordinated action prevents the attacker from simply re-disabling protection through the account you left open, while an EDR-only fix misses legacy endpoints not enrolled in EDR",
+            "Disabling admin accounts requires a separate change-control window and cannot be done alongside a GPO revert",
+        ],
+        "correct_index": 2,
+        "explanation": "NIST PR.IP-1 combined with RS.MI-2 — closing the policy hole without also closing the account that could reopen it invites whack-a-mole remediation; doing both together prevents any fallback path.",
+    },
+    {
+        "gate_id": "gate-009",
+        "nist_control_ref": "ID.AM-3", "technique_id": "T1078.001",
+        "question": "Gate-009: with the IT/OT firewall segmentation rule breached and a domain admin login inside the OT subnet, why revert the firewall rule AND dispatch OT security to physically verify the historian's access level, instead of just reverting the rule or triggering a full precautionary OT shutdown?",
+        "options": [
+            "OT systems cannot be verified remotely under any circumstances, so physical dispatch is always mandatory regardless of the situation",
+            "Immediate technical containment closes the exposure in seconds, while rapid physical verification gives ground truth about actual risk — reverting alone leaves an unverified foothold, and a full shutdown on unconfirmed risk causes disproportionate, possibly unjustified disruption",
+            "Firewall rules cannot be reverted without also shutting down the OT network as a matter of policy",
+            "A full OT shutdown is always the safest choice whenever OT segmentation is breached, with no exceptions",
+        ],
+        "correct_index": 1,
+        "explanation": "NIST RS.AN-1 and ID.AM-3 (data flows mapped) — pairing immediate containment with rapid physical verification avoids both under-reacting (leaving a foothold) and over-reacting (an unjustified safety shutdown) in ICS environments.",
+    },
+    {
+        "gate_id": "gate-010",
+        "nist_control_ref": "RS.CO-4", "technique_id": "T1486",
+        "question": "Gate-010: when ransomware staging binaries drop on 45 hosts simultaneously, why isolate network access while leaving EDR telemetry/C2 observation running in parallel with the FBI, rather than a full mass-isolation or waiting for FBI go-ahead first?",
+        "options": [
+            "The FBI must always authorize containment actions before any host can be isolated during a ransomware event",
+            "EDR telemetry cannot be preserved once a host's network access is isolated",
+            "Mass-isolating all 45 hosts including telemetry is always faster than a selective approach",
+            "This stops detonation immediately AND preserves the live C2 trace the FBI needs for attribution — a full network-and-telemetry isolation would blind the joint investigation, and waiting for clearance costs too much time before detonation",
+        ],
+        "correct_index": 3,
+        "explanation": "NIST RS.CO-4 (coordination with stakeholders) shows containment and law-enforcement attribution goals aren't mutually exclusive when containment is designed to preserve investigative telemetry rather than sever it.",
+    },
+    {
+        "gate_id": "gate-011",
+        "nist_control_ref": "RC.RP-1", "technique_id": "T1490",
+        "question": "Gate-011: with vssadmin actively deleting shadow copies during live encryption, why force a hard power-cutoff instead of a graceful shutdown or disconnecting shared storage first?",
+        "options": [
+            "Graceful shutdowns are always faster than hard power-cutoffs on Windows Server",
+            "Disconnecting shared storage stops local disk encryption from continuing",
+            "A hard power-cutoff halts encryption mid-execution fast enough to save most shadow copies, even accepting some file corruption — a graceful shutdown takes too long and lets vssadmin finish deleting all shadow copies before the hosts power down",
+            "Shadow copies cannot be deleted once a shutdown sequence of any kind has begun",
+        ],
+        "correct_index": 2,
+        "explanation": "NIST RC.RP-1 (recovery plan executed) — in active-encryption scenarios, speed of interruption outweighs graceful procedure; a corrupted-but-recoverable file with an intact shadow copy beats a fully encrypted one with none.",
+    },
+    {
+        "gate_id": "gate-012",
+        "nist_control_ref": "RS.MI-1", "technique_id": "T1565.001",
+        "question": "Gate-012: as SCADA HMI screens go dark, why order a surgical shutdown of only the compromised historian's segment instead of a full pipeline-wide shutdown or continuing operations while manually verifying each control system?",
+        "options": [
+            "Scoped containment — built on the OT segmentation established earlier — takes the compromised segment offline safely while ~70% of pipeline capacity keeps flowing under direct supervision, avoiding both the massive economic disruption of a full shutdown and the physical-safety risk of trusting unverified systems",
+            "A full pipeline-wide shutdown is always required whenever any OT compromise is suspected, regardless of segmentation",
+            "Manually verifying each control system in real time is always safe because malware cannot act faster than a human operator",
+            "Segment-level shutdowns are not technically possible once OT compromise is confirmed",
+        ],
+        "correct_index": 0,
+        "explanation": "NIST RS.MI-1/RS.MI-2 combined with the segmentation knowledge from gate-009 — proportionate, scoped containment beats both a blanket shutdown (needless economic damage) and trusting unverified systems (physical safety risk).",
+    },
+]
+
+
+async def seed_knowledge_checks(session):
+    """Insert Colonial Pipeline knowledge-check questions tied to the real scenario id.
+    Runs after scenarios are seeded (idempotent — skips if already present for that gate)."""
+    from sqlalchemy import select as _select
+
+    result = await session.execute(
+        _select(Scenario).where(Scenario.source_reference == COLONIAL_PIPELINE["source_reference"])
+    )
+    scenario = result.scalar_one_or_none()
+    if scenario is None:
+        print("  skip knowledge checks: Colonial Pipeline scenario not found")
+        return
+
+    added = 0
+    for kc in COLONIAL_PIPELINE_KNOWLEDGE_CHECKS:
+        existing = await session.execute(
+            _select(KnowledgeCheck).where(
+                KnowledgeCheck.scenario_id == scenario.id,
+                KnowledgeCheck.technique_id == kc["technique_id"],
+                KnowledgeCheck.nist_control_ref == kc["nist_control_ref"],
+            )
+        )
+        if existing.scalar_one_or_none():
+            continue
+        session.add(
+            KnowledgeCheck(
+                scenario_id=scenario.id,
+                technique_id=kc["technique_id"],
+                nist_control_ref=kc["nist_control_ref"],
+                question=kc["question"],
+                options=kc["options"],
+                correct_index=kc["correct_index"],
+                explanation=kc["explanation"],
+            )
+        )
+        added += 1
+    await session.commit()
+    print(f"Seeded {added} new knowledge checks ({len(COLONIAL_PIPELINE_KNOWLEDGE_CHECKS) - added} already existed).")
+
+
 async def seed():
     from sqlalchemy import select as _select
     async with SessionLocal() as session:
@@ -1069,6 +1276,8 @@ async def seed():
             added += 1
         await session.commit()
         print(f"Seeded {added} new scenarios ({len(SCENARIOS) - added} already existed).")
+
+        await seed_knowledge_checks(session)
 
 
 if __name__ == "__main__":

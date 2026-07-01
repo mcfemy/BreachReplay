@@ -4,6 +4,114 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { axiosInstance } from "../lib/api";
 import XPToast from "../components/XPToast";
 
+// ── Daily Drill (spaced repetition on weak techniques) ──────────────────────
+interface KnowledgeCheckQuestion {
+  id: string;
+  scenario_id: string | null;
+  technique_id: string | null;
+  nist_control_ref: string | null;
+  question: string;
+  options: string[];
+}
+
+interface KnowledgeCheckAttemptResult {
+  is_correct: boolean;
+  correct_index: number;
+  explanation: string;
+}
+
+function DailyDrillSection() {
+  const [selected, setSelected] = useState<number | null>(null);
+  const [result, setResult] = useState<KnowledgeCheckAttemptResult | null>(null);
+
+  const { data: check, isLoading, isError, refetch } = useQuery<KnowledgeCheckQuestion>({
+    queryKey: ["knowledge-check-next"],
+    queryFn: () => axiosInstance.get("/learning/knowledge-check/next").then((r) => r.data),
+    retry: false,
+  });
+
+  const attemptMutation = useMutation({
+    mutationFn: (chosen_index: number) =>
+      axiosInstance
+        .post(`/learning/knowledge-check/${check!.id}/attempt`, { chosen_index })
+        .then((r) => r.data as KnowledgeCheckAttemptResult),
+    onSuccess: (data) => setResult(data),
+  });
+
+  const handleSelect = (idx: number) => {
+    if (result || attemptMutation.isPending) return;
+    setSelected(idx);
+    attemptMutation.mutate(idx);
+  };
+
+  const handleNext = () => {
+    setSelected(null);
+    setResult(null);
+    refetch();
+  };
+
+  if (isError) return null;
+
+  return (
+    <div className="border border-gray-800 rounded-xl p-5 bg-gray-900/30 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-gray-500 uppercase tracking-widest">🎯 Daily Drill</div>
+        <div className="text-[10px] text-gray-600">Spaced repetition on your weakest techniques</div>
+      </div>
+
+      {isLoading && <p className="text-xs text-gray-600">Loading a drill question...</p>}
+
+      {check && !result && (
+        <>
+          <p className="text-sm text-gray-300 leading-relaxed">{check.question}</p>
+          <div className="space-y-2">
+            {check.options.map((opt, i) => (
+              <button
+                key={i}
+                onClick={() => handleSelect(i)}
+                disabled={attemptMutation.isPending}
+                className={`w-full text-left px-3 py-2 rounded-lg border text-xs transition-colors ${
+                  selected === i
+                    ? "border-cyan-500/60 bg-cyan-500/10 text-cyan-200"
+                    : "border-gray-700 hover:border-cyan-600/50 hover:bg-cyan-500/5 text-gray-300"
+                }`}
+              >
+                <span className="inline-block w-5 h-5 rounded-full border border-gray-600 text-center text-[10px] leading-5 mr-2 font-bold">
+                  {String.fromCharCode(65 + i)}
+                </span>
+                {opt}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {check && result && (
+        <div
+          className={`rounded-lg p-3 border ${
+            result.is_correct ? "border-green-700/50 bg-green-950/30" : "border-red-700/50 bg-red-950/30"
+          }`}
+        >
+          <p
+            className={`text-xs font-bold uppercase tracking-widest mb-2 ${
+              result.is_correct ? "text-green-400" : "text-red-400"
+            }`}
+          >
+            {result.is_correct ? "✓ Correct" : "✗ Not quite"}
+          </p>
+          <p className="text-xs text-gray-300 leading-relaxed">{result.explanation}</p>
+          <button
+            onClick={handleNext}
+            className="mt-3 w-full py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-black text-xs font-bold uppercase tracking-widest transition-colors"
+          >
+            Next Question
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 interface DailyChallenge {
   id: string;
@@ -609,6 +717,9 @@ export default function DailyBreachPage() {
                 <span className="text-xs text-gray-500">{challenge.gates_count} decision gates · 10 min</span>
               </div>
             </div>
+
+            {/* Daily Drill — optional spaced-repetition knowledge check, independent of game state */}
+            <DailyDrillSection />
 
             {/* Already played — show results */}
             {(challenge.already_played || gamePhase === "results") && myAttempt ? (
