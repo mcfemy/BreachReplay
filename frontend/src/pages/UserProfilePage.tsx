@@ -158,6 +158,14 @@ function CertCard({ cert }: { cert: Cert }) {
 }
 
 // ── Mastery (Phase 1 — Competency & Mastery Engine) ────────────────────────────
+// Styling convention (house-wide decision made in Phase 7): pages that already use
+// the `breach-*` design tokens (this page, TeamsPage, AdminDashboardPage) keep using
+// `breach-*` for backgrounds/borders/muted text since it's the more distinctive brand
+// signal — raw Tailwind palettes (green/yellow/red-400 etc.) are reserved for one-off
+// severity/accuracy colors. Pages that predate `breach-*` and use a self-contained
+// slate/cyan dark-ops aesthetic throughout (SimulationRoomPage, DailyBreachPage, and
+// therefore KnowledgeCheckModal which is mounted from SimulationRoomPage) intentionally
+// keep their existing raw-Tailwind palette rather than mixing in `breach-*` mid-page.
 
 interface TechniqueMasteryEntry {
   attempts: number;

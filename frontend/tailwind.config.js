@@ -19,6 +19,17 @@ export default {
       fontFamily: {
         mono: ["JetBrains Mono", "Fira Code", "Consolas", "monospace"],
       },
+      keyframes: {
+        "bounce-in": {
+          "0%": { transform: "scale(0.3) translateY(12px)", opacity: "0" },
+          "60%": { transform: "scale(1.05) translateY(0)", opacity: "1" },
+          "80%": { transform: "scale(0.98)" },
+          "100%": { transform: "scale(1)" },
+        },
+      },
+      animation: {
+        "bounce-in": "bounce-in 450ms cubic-bezier(0.34, 1.56, 0.64, 1)",
+      },
     },
   },
   plugins: [],
