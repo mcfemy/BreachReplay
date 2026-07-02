@@ -591,22 +591,68 @@ def _role_for_user(match: ArenaMatch, user_id: str) -> str | None:
     return None
 
 
+async def _mark_match_completed_if_needed(db, match_id: str, match_status: str, new_state) -> bool:
+    """Shared match-completion check/write, factored out of the main
+    critical section so it can be called twice in one locked block (once
+    for the attacker's own action, and — for `human_attacks_vs_ai` matches
+    — again after the synchronous defender response is applied) without
+    duplicating the read-modify-write. Caller MUST already hold
+    `manager.get_arena_match_lock(match_id)` and pass the ArenaMatch.status
+    value it last observed in this critical section.
+
+    Minimal per Phase C scope — only the attacker-wins-on-impact condition;
+    a defender-side win condition is Phase H's job."""
+    if not new_state.global_flags.get("impact_deployed") or match_status == "attacker_won":
+        return False
+    m_res = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match_id))
+    m = m_res.scalar_one_or_none()
+    if m and m.status not in ("attacker_won", "defender_won", "abandoned"):
+        m.status = "attacker_won"
+        m.completed_at = datetime.utcnow()
+        m.final_org_state_cache = new_state.to_dict()
+        await db.commit()
+    return True
+
+
 async def _execute_arena_action(match_id: str, role: str, action_type: str, payload: dict) -> dict | None:
     """The ONE critical section for applying + persisting an arena action —
-    human or bot, attacker or defender. Both `arena_ws_handler`'s
+    human or bot, attacker or defender. `arena_ws_handler`'s
     `attacker_action`/`defender_action` message branch AND the Phase D bot
     driver loop (`_run_arena_attacker_bot`) call this exact function so
     there is exactly one place that touches the lock, the DB write, and the
     match-completion check. Do not duplicate this logic anywhere else.
 
+    Fairness fix (see docs/plans/live-arena-mode.md Phase E follow-up): for
+    `human_attacks_vs_ai` matches, if the just-applied ATTACKER action
+    crosses a decision-gate threshold (`_decision_gate_trigger`), the AI
+    defender's response is now computed (`choose_defender_action`) and
+    APPLIED + PERSISTED (`apply_defender_action` + `_persist_arena_action`)
+    synchronously, right here, still inside this same lock/DB session,
+    before the lock is released. Previously this was dispatched as a
+    separate `asyncio.create_task` that first did `await
+    asyncio.sleep(REACTION_DELAY_SECONDS)` — the lock was NOT held during
+    that sleep, so the attacker's WS loop was immediately free to submit
+    its next action and race the defender's still-pending response every
+    single time. Doing the defender's response inside the same critical
+    section makes that race structurally impossible: by the time this
+    function returns and the attacker's WS loop can read another message,
+    the defender's response (if any) is already committed, so the
+    attacker's NEXT action is evaluated against post-defense reality.
+    `REACTION_DELAY_SECONDS`/pacing is preserved only as a cosmetic delay on
+    the human-facing *notification* of the defender's response (see
+    `_notify_arena_action_result`), never on the state mutation itself.
+
     Returns None if the match doesn't exist or isn't in a playable state
     (nothing was persisted). Otherwise returns a result dict:
     `{sequence_number, prev_state, new_state, detected, alert,
-    match_completed}` — callers use this to drive their own
-    notification/broadcast side effects (which deliberately stay OUTSIDE
-    this function/the lock, exactly as Phase C's original inline version
-    did, since sending over the wire shouldn't hold up the next action's
-    critical section).
+    match_completed, defender_response}` — callers use this to drive their
+    own notification/broadcast side effects (which deliberately stay
+    OUTSIDE this function/the lock, exactly as Phase C's original inline
+    version did, since sending over the wire shouldn't hold up the next
+    action's critical section). `defender_response` is `None` unless an
+    in-lock synchronous AI defender reaction fired; when present it is a
+    dict: `{sequence_number, action_type, payload, reason, trigger_host,
+    trigger_credential_id, new_state}`.
     """
     lock = manager.get_arena_match_lock(match_id)
     async with lock:
@@ -631,19 +677,38 @@ async def _execute_arena_action(match_id: str, role: str, action_type: str, payl
 
             await _persist_arena_action(db, match_id, role, action_type, payload, existing_count=sequence_number)
 
-            # Match completion check (minimal per Phase C scope — only the
-            # attacker-wins-on-impact condition; a defender-side win
-            # condition is Phase H's job).
-            match_completed = False
-            if new_state.global_flags.get("impact_deployed") and match.status != "attacker_won":
-                m_res = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match_id))
-                m = m_res.scalar_one_or_none()
-                if m and m.status not in ("attacker_won", "defender_won", "abandoned"):
-                    m.status = "attacker_won"
-                    m.completed_at = datetime.utcnow()
-                    m.final_org_state_cache = new_state.to_dict()
-                    await db.commit()
-                match_completed = True
+            match_completed = await _mark_match_completed_if_needed(db, match_id, match.status, new_state)
+
+            # ── Synchronous in-lock AI defender response (fairness fix) ──
+            # Only for the attacker's own action, only in human_attacks_vs_ai
+            # mode, and only if the match isn't already over from the
+            # attacker's own move (no point containing a match that's
+            # already won).
+            defender_response = None
+            if role == "attacker" and match.mode == "human_attacks_vs_ai" and not match_completed:
+                gate_trigger = _decision_gate_trigger(action_type, payload, prev_state, new_state)
+                if gate_trigger:
+                    defender_response = await _apply_defender_bot_response_locked(
+                        db, match_id, match, new_state, gate_trigger,
+                    )
+                    if defender_response is not None:
+                        new_state = defender_response["new_state"]
+                        match_completed = await _mark_match_completed_if_needed(
+                            db, match_id, match.status, new_state,
+                        )
+
+    if match_completed:
+        # Resource-hygiene cleanup (review finding): drop this match's
+        # per-match lock/counter bookkeeping now that it's reached a
+        # terminal status, so a long-running process doesn't accumulate one
+        # entry per match forever. Deliberately done AFTER the `async with
+        # lock:` block above has exited (can't pop a lock out of the dict
+        # while still holding/inside it) — the lock object itself is only
+        # dropped from the manager's dict here, not while anyone still holds
+        # it; any other coroutine already waiting on the (now-orphaned) lock
+        # object still completes normally against that same object, it just
+        # won't be looked up again for this match_id afterwards.
+        manager.cleanup_arena_match_state(match_id)
 
     return {
         "sequence_number": sequence_number,
@@ -652,21 +717,114 @@ async def _execute_arena_action(match_id: str, role: str, action_type: str, payl
         "detected": detected,
         "alert": alert,
         "match_completed": match_completed,
+        "defender_response": defender_response,
     }
 
 
-async def _notify_arena_action_result(match_id: str, role: str, action_type: str, payload: dict, result: dict) -> None:
+async def _apply_defender_bot_response_locked(
+    db, match_id: str, match: ArenaMatch, state_after_attacker_action, gate_trigger: tuple,
+    difficulty: str = "medium",
+) -> dict | None:
+    """Compute + apply + persist the AI defender bot's reaction to a single
+    decision-gate-worthy attacker action, for `human_attacks_vs_ai` matches.
+    Caller (`_execute_arena_action`) MUST already hold
+    `manager.get_arena_match_lock(match_id)` and be inside the same
+    `AsyncSessionLocal` `db` session used for the triggering attacker
+    action — this function does NOT open its own lock/session (unlike the
+    old fire-and-forget `_run_arena_defender_bot_response`), specifically so
+    its `apply_defender_action` + persist happen atomically with the
+    attacker's action that triggered it, with no `await asyncio.sleep(...)`
+    anywhere in between.
+
+    `_MAX_DEFENDER_BOT_RESPONSES` is still enforced here as a simple
+    checked-and-incremented guard on `manager.arena_defender_bot_responses`
+    — safe as a plain read-then-write now (no longer racy) because this
+    whole function runs inside the per-match lock.
+
+    Returns None if the response ceiling has been hit for this match, or
+    (defensively) if `choose_defender_action` returns None. Otherwise
+    returns `{sequence_number, action_type, payload, reason, trigger_host,
+    trigger_credential_id, new_state}`.
+    """
+    from app.services.arena_ai_defender import choose_defender_action
+
+    responses_so_far = manager.arena_defender_bot_responses.get(match_id, 0)
+    if responses_so_far >= _MAX_DEFENDER_BOT_RESPONSES:
+        logger.warning(
+            "Arena defender bot for match %s hit the %d-response safety cap — "
+            "no longer reacting to new triggers for this match.",
+            match_id, _MAX_DEFENDER_BOT_RESPONSES,
+        )
+        return None
+
+    reason, host_dict, credential_id = gate_trigger
+    difficulty = _normalize_defender_bot_difficulty(difficulty)
+
+    # Derive the defender's own sequence_number the same way the attacker
+    # branch derives its rng/sequence_number: from the actual persisted row
+    # count at this point in the critical section (the attacker's action was
+    # already inserted above, so this is exactly "count so far").
+    a_res = await db.execute(select(ArenaAction).where(ArenaAction.match_id == match_id))
+    defender_sequence_number = len(a_res.scalars().all())
+
+    rng = _derive_rng(match.seed, defender_sequence_number)
+    action = choose_defender_action(state_after_attacker_action, reason, host_dict, credential_id, difficulty, rng)
+    if action is None:
+        return None  # defensive; choose_defender_action always has acknowledge available
+
+    action_type = action.get("action_type")
+    payload = action.get("payload") or {}
+
+    action_for_engine = {"action_type": action_type, "payload": payload}
+    new_state = apply_defender_action(state_after_attacker_action, action_for_engine)
+
+    await _persist_arena_action(
+        db, match_id, "defender", action_type, payload, existing_count=defender_sequence_number,
+    )
+    manager.arena_defender_bot_responses[match_id] = responses_so_far + 1
+
+    return {
+        "sequence_number": defender_sequence_number,
+        "action_type": action_type,
+        "payload": payload,
+        "reason": reason,
+        "trigger_host": host_dict,
+        "trigger_credential_id": credential_id,
+        "new_state": new_state,
+    }
+
+
+async def _notify_arena_action_result(
+    match_id: str, role: str, action_type: str, payload: dict, result: dict, match_mode: str = "pvp",
+) -> None:
     """Post-persistence notification side effects for one arena action —
-    shared by the human WS path and the bot driver loop. Deliberately
+    shared by the human WS path and the bot driver loop(s). Deliberately
     separate from `_execute_arena_action` (which only does the locked
     read-compute-persist critical section) so sending over the wire never
     holds up the next action's critical section, exactly as Phase C's
-    original inline version behaved."""
+    original inline version behaved.
+
+    `match_mode` (Phase E) determines how a decision-gate-worthy attacker
+    action is handled: for `human_attacks_vs_ai`, there is no human defender
+    WS connection to receive a `decision_gate` event (`defender_user_id` is
+    null for this mode per Phase A's schema), so `_execute_arena_action`
+    already computed AND APPLIED the AI defender bot's response
+    synchronously, inside the same locked critical section as the
+    triggering attacker action (see its docstring for the fairness
+    rationale) — `result["defender_response"]` carries what it did, if
+    anything. This function's job for that case is now purely cosmetic
+    notification: optionally pace the human-facing "the SOC reacted" event
+    by `REACTION_DELAY_SECONDS` for narrative feel, since the underlying
+    `OrgState` mutation is already committed and cannot be un-done or
+    raced against by the time this coroutine even starts running (the lock
+    was released before `_notify_arena_action_result` was ever called).
+    Every other mode keeps Phase C's original behavior unchanged."""
     sequence_number = result["sequence_number"]
     prev_state = result["prev_state"]
     new_state = result["new_state"]
     detected = result["detected"]
     alert = result["alert"]
+    defender_response = result.get("defender_response")
 
     if role == "attacker":
         attacker_ws = manager.get_arena_connection(match_id, "attacker")
@@ -686,10 +844,23 @@ async def _notify_arena_action_result(match_id: str, role: str, action_type: str
         gate_trigger = _decision_gate_trigger(action_type, payload, prev_state, new_state)
         if gate_trigger:
             reason, host_dict, credential_id = gate_trigger
-            gate = _build_arena_decision_gate(reason, host_dict, credential_id, sequence_number)
-            defender_ws = manager.get_arena_connection(match_id, "defender")
-            if defender_ws:
-                await manager.send_personal(defender_ws, build_decision_gate_event(gate))
+            if match_mode == "human_attacks_vs_ai":
+                if defender_response is not None:
+                    # The response is ALREADY applied/persisted (done
+                    # synchronously in _execute_arena_action, before this
+                    # function was ever called) — this is cosmetic-only
+                    # pacing for how the notification feels to the human
+                    # attacker, never a delay on the state mutation itself.
+                    asyncio.create_task(_notify_arena_defender_bot_response(
+                        match_id, defender_response,
+                    ))
+                # else: the response ceiling was hit or choose_defender_action
+                # defensively returned None — nothing to notify.
+            else:
+                gate = _build_arena_decision_gate(reason, host_dict, credential_id, sequence_number)
+                defender_ws = manager.get_arena_connection(match_id, "defender")
+                if defender_ws:
+                    await manager.send_personal(defender_ws, build_decision_gate_event(gate))
     else:
         # defender_action: confirm the effect back to the defender
         # (decision_result-equivalent — same wire shape family the
@@ -707,6 +878,20 @@ async def _notify_arena_action_result(match_id: str, role: str, action_type: str
                 "payload": payload,
                 "sequence_number": sequence_number,
             })
+
+        if match_mode == "human_attacks_vs_ai":
+            # Phase E: there's no human defender_ws in this mode (the branch
+            # above is always a no-op here), but the human ATTACKER's own
+            # connection could still be alive and should see that the AI
+            # defender just reacted to their action — the same courtesy a
+            # human defender's response gets relayed as in every other mode.
+            attacker_ws = manager.get_arena_connection(match_id, "attacker")
+            if attacker_ws:
+                await manager.send_personal(attacker_ws, build_system_event("defender_action_result", {
+                    "action_type": action_type,
+                    "payload": payload,
+                    "sequence_number": sequence_number,
+                }))
 
     if result["match_completed"]:
         result_event = build_system_event("match_complete", {
@@ -792,7 +977,7 @@ async def _run_arena_attacker_bot(match_id: str, difficulty: str = _DEFAULT_BOT_
             bot_moves_made += 1
 
             try:
-                await _notify_arena_action_result(match_id, "attacker", action_type, payload, result)
+                await _notify_arena_action_result(match_id, "attacker", action_type, payload, result, match_mode=match.mode)
             except Exception:
                 # Routine: the defender closed their tab/browser mid-match.
                 # A dead socket's send_json can raise several exception
@@ -834,6 +1019,115 @@ def _maybe_start_arena_attacker_bot(match_id: str, mode: str) -> None:
         return
     manager.arena_bot_running.add(match_id)
     asyncio.create_task(_run_arena_attacker_bot(match_id))
+
+
+# ── Live Arena Mode (Phase E, revised) — AI defender policy bot ─────────────
+#
+# Design notes (see docs/plans/live-arena-mode.md, Phase E, and the
+# fairness-fix follow-up that replaced the original fire-and-forget design):
+#
+# ORIGINAL (Phase E) design: REACTIVE-SYNCHRONOUS in spirit, but dispatched
+# as a detached `asyncio.create_task` from `_notify_arena_action_result`,
+# whose first step was `await asyncio.sleep(REACTION_DELAY_SECONDS)` before
+# it ever acquired `manager.get_arena_match_lock(match_id)` and applied the
+# response. That sleep happened OUTSIDE the lock, so the attacker's WS
+# message loop — already back at `receive_text()` with no delay and no lock
+# contention — could submit its next action and have it evaluated against
+# STALE (pre-defense) state every single time. This was not a rare race: it
+# was the deterministic steady-state outcome for any attacker acting at a
+# normal or fast pace.
+#
+# CURRENT design: the AI defender's response is computed
+# (`choose_defender_action`) and applied + persisted
+# (`apply_defender_action` + `_persist_arena_action`) SYNCHRONOUSLY inside
+# `_execute_arena_action`'s own locked critical section, immediately after
+# the triggering attacker action and before the lock is released — see
+# `_apply_defender_bot_response_locked`, called from `_execute_arena_action`
+# itself. There is no `asyncio.sleep` anywhere between "attacker action
+# applied" and "defender response applied/persisted" — by construction, an
+# attacker cannot submit a next action that is evaluated against anything
+# other than post-defense reality, because the lock isn't released until
+# post-defense reality is what's persisted.
+#
+# `REACTION_DELAY_SECONDS` (arena_ai_defender.py, difficulty-keyed) is
+# preserved, but only as a COSMETIC pacing delay on the human-facing
+# notification (`_notify_arena_defender_bot_response`, called via
+# `asyncio.create_task` from `_notify_arena_action_result` — outside the
+# lock, same as every other post-persistence notify in this file) — never on
+# the state mutation itself. This keeps the "the SOC took a moment to
+# react" narrative feel without reintroducing any fairness gap, since the
+# object the notification describes was already committed before the
+# notification's own delay even starts.
+
+# Hard ceiling as defense-in-depth, consistent with _MAX_BOT_STEPS' reasoning
+# for the attacker bot: the defender bot is reactive (one invocation per
+# decision-gate trigger, not a loop), so in practice it can never run away on
+# its own, but a pathological match with an extreme number of triggers
+# (e.g. a malicious/buggy attacker script hammering escalate_privilege) should
+# not let the defender bot submit an unbounded number of responses. Once the
+# ceiling is hit, the bot stops responding for the rest of that match (the
+# match can still end via the attacker's own actions). Checked/incremented in
+# `_apply_defender_bot_response_locked`, which now always runs inside the
+# per-match lock — no longer a racy check-then-act pattern (the whole
+# function, ceiling check included, is serialised by the lock).
+_MAX_DEFENDER_BOT_RESPONSES = 300
+
+_DEFAULT_DEFENDER_BOT_DIFFICULTY = "medium"
+
+
+async def _notify_arena_defender_bot_response(match_id: str, defender_response: dict) -> None:
+    """Cosmetic-only notification for an AI defender bot response that was
+    ALREADY applied and persisted synchronously inside
+    `_execute_arena_action`'s locked critical section (see
+    `_apply_defender_bot_response_locked`). This function does not touch
+    `OrgState`, does not call `apply_defender_action`, and does not persist
+    anything — its only job is telling the human attacker's WS connection
+    "the SOC responded", optionally paced by
+    `arena_ai_defender.REACTION_DELAY_SECONDS` for narrative feel.
+
+    Called fire-and-forget (`asyncio.create_task`) from
+    `_notify_arena_action_result`, exactly like every other post-persistence
+    notification in this file — this is purely about display timing, so it
+    must never block the attacker's own action_result/alert notify or the
+    attacker's ability to submit their next move (which, unlike before, is
+    now always safe regardless of when this notification actually lands)."""
+    from app.services.arena_ai_defender import REACTION_DELAY_SECONDS
+
+    action_type = defender_response["action_type"]
+    payload = defender_response["payload"]
+    sequence_number = defender_response["sequence_number"]
+
+    try:
+        difficulty = _normalize_defender_bot_difficulty(_DEFAULT_DEFENDER_BOT_DIFFICULTY)
+        delay = REACTION_DELAY_SECONDS.get(difficulty, REACTION_DELAY_SECONDS["medium"])
+        await asyncio.sleep(delay)
+
+        # The defender side has no real WS connection in this mode
+        # (defender_user_id is null), so there is nothing to send there.
+        # What matters: the human ATTACKER's own connection could still be
+        # alive and should see that the AI defender just reacted.
+        attacker_ws = manager.get_arena_connection(match_id, "attacker")
+        if attacker_ws:
+            await manager.send_personal(attacker_ws, build_system_event("defender_action_result", {
+                "action_type": action_type,
+                "payload": payload,
+                "sequence_number": sequence_number,
+            }))
+    except Exception:
+        # Mirrors _run_arena_attacker_bot's identical broad catch: a dead
+        # socket's send can raise several exception types depending on
+        # connection state. The response is already persisted (this only
+        # affects the live notify), so just stop quietly instead of
+        # logging a full stack trace for an expected event (e.g. the
+        # attacker closed their tab right as the defender bot responded).
+        logger.info(
+            "Arena defender bot response notify failed for match %s (attacker connection appears gone)",
+            match_id,
+        )
+
+
+def _normalize_defender_bot_difficulty(difficulty: str) -> str:
+    return difficulty if difficulty in ("easy", "medium", "hard") else "medium"
 
 
 async def arena_ws_handler(websocket: WebSocket, match_id: str, user_id: str):
@@ -913,7 +1207,7 @@ async def arena_ws_handler(websocket: WebSocket, match_id: str, user_id: str):
                 await manager.send_personal(websocket, build_system_event("error", {"detail": "Match not found or not active"}))
                 continue
 
-            await _notify_arena_action_result(match_id, role, action_type, payload, result)
+            await _notify_arena_action_result(match_id, role, action_type, payload, result, match_mode=match_mode)
 
     except WebSocketDisconnect:
         manager.disconnect(match_id, websocket)

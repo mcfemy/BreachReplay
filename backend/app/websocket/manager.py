@@ -48,6 +48,19 @@ class ConnectionManager:
         # _maybe_start_arena_attacker_bot, so no two bot tasks can be
         # spawned for the same match even under concurrent WS connects.
         self.arena_bot_running: Set[str] = set()
+        # Phase E: per-match count of AI defender bot responses submitted so
+        # far, for `human_attacks_vs_ai` matches' reactive defender bot
+        # (`_apply_defender_bot_response_locked`, called synchronously from
+        # inside `_execute_arena_action`'s own locked critical section in
+        # handlers.py — see that module's fairness-fix design notes). Unlike
+        # `arena_bot_running` (one long-lived task per match), the Phase E
+        # defender bot is reactive — it's invoked fresh per decision-gate-
+        # worthy trigger rather than running one continuous loop — so this
+        # dict is the ceiling counter that stands in for `_MAX_BOT_STEPS`'s
+        # per-loop-iteration cap, applied instead across however many
+        # separate reactive invocations a match accumulates. Cleaned up on
+        # terminal match status via `cleanup_arena_match_state` below.
+        self.arena_defender_bot_responses: Dict[str, int] = {}
 
     def get_arena_match_lock(self, match_id: str) -> asyncio.Lock:
         if match_id not in self.arena_match_locks:
@@ -66,6 +79,31 @@ class ConnectionManager:
 
     def get_arena_connection(self, match_id: str, role: str) -> Optional[WebSocket]:
         return self.arena_connections.get(match_id, {}).get(role)
+
+    def cleanup_arena_match_state(self, match_id: str) -> None:
+        """Drop this match's per-match in-process bookkeeping once it has
+        reached a terminal ArenaMatch.status, so a long-running process
+        doesn't accumulate one lock + one counter entry per match forever.
+        Called from handlers.py right after a match transitions to a
+        terminal status (attacker_won/defender_won/abandoned).
+
+        Deliberately does NOT remove `arena_connections` or
+        `arena_bot_running` here: `arena_connections` is already cleaned up
+        entry-by-entry in `unregister_arena_connection` as sockets close
+        (and a terminal match may still have a live socket that needs its
+        final `match_complete` event delivered), and `arena_bot_running`'s
+        entry is already removed by `_run_arena_attacker_bot`'s own
+        `finally` block the moment its loop notices the terminal status —
+        removing it again here would just be redundant, not incorrect, but
+        is skipped to keep this function's job to exactly the two
+        collections that had no other cleanup path (per the review finding).
+        `arena_match_locks`' entry is intentionally left in place if the
+        lock is currently held (can't drop a lock out from under its own
+        `async with` holder) — see call site in handlers.py, which calls
+        this only after releasing the lock.
+        """
+        self.arena_match_locks.pop(match_id, None)
+        self.arena_defender_bot_responses.pop(match_id, None)
 
     def get_pause_event(self, session_id: str) -> asyncio.Event:
         if session_id not in self.pause_events:
