@@ -39,6 +39,15 @@ class ConnectionManager:
         # solves a different race (atomic append to one JSONB column), not
         # atomic assignment of a new row's ordinal position.
         self.arena_match_locks: Dict[str, asyncio.Lock] = {}
+        # Phase D: match_ids that currently have an AI attacker bot loop
+        # (_run_arena_attacker_bot in handlers.py) running as a background
+        # asyncio task. A plain set is sufficient (not a lock) because it's
+        # only ever mutated from the single-process event loop's synchronous
+        # code paths (add right before asyncio.create_task, discard in the
+        # bot loop's `finally`) — there's no await between check-and-add in
+        # _maybe_start_arena_attacker_bot, so no two bot tasks can be
+        # spawned for the same match even under concurrent WS connects.
+        self.arena_bot_running: Set[str] = set()
 
     def get_arena_match_lock(self, match_id: str) -> asyncio.Lock:
         if match_id not in self.arena_match_locks:

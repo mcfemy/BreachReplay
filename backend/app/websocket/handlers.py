@@ -591,13 +591,259 @@ def _role_for_user(match: ArenaMatch, user_id: str) -> str | None:
     return None
 
 
+async def _execute_arena_action(match_id: str, role: str, action_type: str, payload: dict) -> dict | None:
+    """The ONE critical section for applying + persisting an arena action —
+    human or bot, attacker or defender. Both `arena_ws_handler`'s
+    `attacker_action`/`defender_action` message branch AND the Phase D bot
+    driver loop (`_run_arena_attacker_bot`) call this exact function so
+    there is exactly one place that touches the lock, the DB write, and the
+    match-completion check. Do not duplicate this logic anywhere else.
+
+    Returns None if the match doesn't exist or isn't in a playable state
+    (nothing was persisted). Otherwise returns a result dict:
+    `{sequence_number, prev_state, new_state, detected, alert,
+    match_completed}` — callers use this to drive their own
+    notification/broadcast side effects (which deliberately stay OUTSIDE
+    this function/the lock, exactly as Phase C's original inline version
+    did, since sending over the wire shouldn't hold up the next action's
+    critical section).
+    """
+    lock = manager.get_arena_match_lock(match_id)
+    async with lock:
+        async with AsyncSessionLocal() as db:
+            match, action_dicts = await _load_match_and_actions(db, match_id)
+            if not match:
+                return None
+            if match.status not in ("active", "lobby"):
+                return None
+
+            prev_state, _ = replay(match.seed, match.archetype_key, action_dicts)
+            sequence_number = len(action_dicts)
+
+            if role == "attacker":
+                rng = _derive_rng(match.seed, sequence_number)
+                action_for_engine = {"action_type": action_type, "payload": payload, "sequence_number": sequence_number}
+                new_state, detected, alert = apply_attacker_action(prev_state, action_for_engine, rng)
+            else:
+                action_for_engine = {"action_type": action_type, "payload": payload}
+                new_state = apply_defender_action(prev_state, action_for_engine)
+                detected, alert = False, None
+
+            await _persist_arena_action(db, match_id, role, action_type, payload, existing_count=sequence_number)
+
+            # Match completion check (minimal per Phase C scope — only the
+            # attacker-wins-on-impact condition; a defender-side win
+            # condition is Phase H's job).
+            match_completed = False
+            if new_state.global_flags.get("impact_deployed") and match.status != "attacker_won":
+                m_res = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match_id))
+                m = m_res.scalar_one_or_none()
+                if m and m.status not in ("attacker_won", "defender_won", "abandoned"):
+                    m.status = "attacker_won"
+                    m.completed_at = datetime.utcnow()
+                    m.final_org_state_cache = new_state.to_dict()
+                    await db.commit()
+                match_completed = True
+
+    return {
+        "sequence_number": sequence_number,
+        "prev_state": prev_state,
+        "new_state": new_state,
+        "detected": detected,
+        "alert": alert,
+        "match_completed": match_completed,
+    }
+
+
+async def _notify_arena_action_result(match_id: str, role: str, action_type: str, payload: dict, result: dict) -> None:
+    """Post-persistence notification side effects for one arena action —
+    shared by the human WS path and the bot driver loop. Deliberately
+    separate from `_execute_arena_action` (which only does the locked
+    read-compute-persist critical section) so sending over the wire never
+    holds up the next action's critical section, exactly as Phase C's
+    original inline version behaved."""
+    sequence_number = result["sequence_number"]
+    prev_state = result["prev_state"]
+    new_state = result["new_state"]
+    detected = result["detected"]
+    alert = result["alert"]
+
+    if role == "attacker":
+        attacker_ws = manager.get_arena_connection(match_id, "attacker")
+        if attacker_ws:
+            confirm = build_system_event("action_result", {
+                "action_type": action_type,
+                "sequence_number": sequence_number,
+                "detected": detected,
+            })
+            await manager.send_personal(attacker_ws, confirm)
+
+        if detected and alert:
+            defender_ws = manager.get_arena_connection(match_id, "defender")
+            if defender_ws:
+                await manager.send_personal(defender_ws, build_alert_event(alert, sequence_number, sequence_number + 1))
+
+        gate_trigger = _decision_gate_trigger(action_type, payload, prev_state, new_state)
+        if gate_trigger:
+            reason, host_dict, credential_id = gate_trigger
+            gate = _build_arena_decision_gate(reason, host_dict, credential_id, sequence_number)
+            defender_ws = manager.get_arena_connection(match_id, "defender")
+            if defender_ws:
+                await manager.send_personal(defender_ws, build_decision_gate_event(gate))
+    else:
+        # defender_action: confirm the effect back to the defender
+        # (decision_result-equivalent — same wire shape family the
+        # frontend already understands for scripted decision gates).
+        defender_ws = manager.get_arena_connection(match_id, "defender")
+        if defender_ws:
+            await manager.send_personal(defender_ws, {
+                "type": "decision_result",
+                "decision_gate_id": None,
+                "is_correct": True,
+                "rationale": f"{action_type.replace('_', ' ').title()} applied.",
+                "consequence_applied": f"{action_type} executed against the live org state.",
+                "correct_index": None,
+                "action_type": action_type,
+                "payload": payload,
+                "sequence_number": sequence_number,
+            })
+
+    if result["match_completed"]:
+        result_event = build_system_event("match_complete", {
+            "status": "attacker_won",
+            "sequence_number": sequence_number,
+        })
+        attacker_ws = manager.get_arena_connection(match_id, "attacker")
+        defender_ws = manager.get_arena_connection(match_id, "defender")
+        if attacker_ws:
+            await manager.send_personal(attacker_ws, result_event)
+        if defender_ws:
+            await manager.send_personal(defender_ws, result_event)
+
+
+# ── Live Arena Mode (Phase D) — AI attacker policy bot driver ───────────────
+#
+# Design notes (see docs/plans/live-arena-mode.md, Phase D):
+#
+# Integration point chosen: the bot loop is started from arena_ws_handler,
+# at connection-open time, for `human_defends_vs_ai` matches once the match
+# is (or becomes) "active" — mirroring _stream_alerts' existing convention
+# of starting background work in response to a live WS connection event,
+# not at REST-create time (POST /arena/matches creates the match in
+# "lobby" status with no one watching yet — spawning a bot loop against a
+# match nobody has connected to would burn cycles for no visible benefit,
+# and there is no defender websocket to notify anyway until the defender
+# connects). manager.arena_bot_running (a plain in-process set, guarded by
+# the same per-match asyncio.Lock used for action persistence) ensures at
+# most one bot task is ever spawned per match even if the defender's
+# connection drops and reconnects.
+#
+# Difficulty is not yet a field on ArenaMatch/CreateMatchRequest (out of
+# this phase's explicit scope — Phase D only asked for the policy + driver,
+# not new schema). A default of "medium" is used until a future phase wires
+# a real difficulty selector through match creation.
+_DEFAULT_BOT_DIFFICULTY = "medium"
+
+# Pacing between bot moves — mirrors _stream_alerts' `interval = 3.0 /
+# speed_multiplier` convention (handlers.py) so bot play feels like a real
+# opponent instead of spamming actions instantly. No speed_multiplier
+# concept exists for arena matches yet, so this is a fixed, realistic pace.
+_BOT_MOVE_INTERVAL_SECONDS = 3.0
+
+# Hard ceiling as defense-in-depth. The loop is finite-by-construction (the
+# candidate builders in arena_ai_attacker.py filter out no-ops, and defender
+# actions are one-directional, so the pool provably empties) — this cap
+# never fires in practice (empirically 8-12 steps per match), it just bounds
+# worst-case resource use if that invariant is ever violated by a future
+# change, rather than relying solely on proof-by-construction.
+_MAX_BOT_STEPS = 300
+
+
+async def _run_arena_attacker_bot(match_id: str, difficulty: str = _DEFAULT_BOT_DIFFICULTY) -> None:
+    """Drive the AI attacker side of a `human_defends_vs_ai` arena match to
+    completion, calling `arena_ai_attacker.choose_attacker_action` for each
+    move and submitting it through the EXACT SAME `_execute_arena_action` /
+    `_notify_arena_action_result` path a human's `attacker_action` WS
+    message uses — no parallel persistence logic. Stops when the match
+    reaches a terminal status, the bot has no viable action, the defender's
+    connection is gone, or `_MAX_BOT_STEPS` is reached."""
+    from app.services.arena_ai_attacker import choose_attacker_action
+
+    try:
+        bot_moves_made = 0
+        while bot_moves_made < _MAX_BOT_STEPS:
+            async with AsyncSessionLocal() as db:
+                match, action_dicts = await _load_match_and_actions(db, match_id)
+            if not match or match.status not in ("active", "lobby"):
+                return
+
+            state, _ = replay(match.seed, match.archetype_key, action_dicts)
+            rng = _derive_rng(match.seed, len(action_dicts))
+            action = choose_attacker_action(state, difficulty, rng, actions_taken=bot_moves_made)
+            if action is None:
+                return  # bot has no viable move left — nothing more to do
+
+            action_type = action.get("action_type")
+            payload = action.get("payload") or {}
+
+            result = await _execute_arena_action(match_id, "attacker", action_type, payload)
+            if result is None:
+                return  # match ended/vanished between the read above and the attempt
+            bot_moves_made += 1
+
+            try:
+                await _notify_arena_action_result(match_id, "attacker", action_type, payload, result)
+            except Exception:
+                # Routine: the defender closed their tab/browser mid-match.
+                # A dead socket's send_json can raise several exception
+                # types depending on connection state (WebSocketDisconnect,
+                # RuntimeError, etc. — see ConnectionManager.broadcast()'s
+                # identical broad catch for the same reason), so catch
+                # broadly here too. The action is already persisted (this
+                # only affects the live notify), so just stop the bot
+                # quietly instead of logging a full stack trace for an
+                # expected event.
+                logger.info("Arena bot stopping for match %s: defender connection appears gone", match_id)
+                return
+
+            if result["match_completed"]:
+                return
+
+            await asyncio.sleep(_BOT_MOVE_INTERVAL_SECONDS)
+        else:
+            logger.warning(
+                "Arena bot for match %s hit the %d-step safety cap without reaching a terminal "
+                "state — this should not happen given the candidate pool's finite-by-construction "
+                "design; investigate if seen in practice.",
+                match_id, _MAX_BOT_STEPS,
+            )
+    except Exception:
+        logger.exception("Arena attacker bot loop crashed for match %s", match_id)
+    finally:
+        manager.arena_bot_running.discard(match_id)
+
+
+def _maybe_start_arena_attacker_bot(match_id: str, mode: str) -> None:
+    """Start the AI attacker bot loop for this match if it's a
+    human_defends_vs_ai match and no bot task is already running for it.
+    Safe to call every time a defender's WS connection opens (e.g. on
+    reconnect) — the manager.arena_bot_running guard makes this idempotent."""
+    if mode != "human_defends_vs_ai":
+        return
+    if match_id in manager.arena_bot_running:
+        return
+    manager.arena_bot_running.add(match_id)
+    asyncio.create_task(_run_arena_attacker_bot(match_id))
+
+
 async def arena_ws_handler(websocket: WebSocket, match_id: str, user_id: str):
     """Live Arena Mode match connection. One socket per (match, user); the
     user's role (attacker/defender) is resolved from ArenaMatch.
-    attacker_user_id / defender_user_id. No AI-bot logic lives here —
-    Phase C is human-vs-human WS plumbing only (Phases D/E add bot moves
-    later, calling the same apply_attacker_action/apply_defender_action
-    functions from a scheduled task instead of a WS message)."""
+    attacker_user_id / defender_user_id. Phase D adds the AI attacker bot
+    loop for human_defends_vs_ai matches (started below, once the match is
+    active) — the bot calls the same apply_attacker_action/
+    apply_defender_action functions via _execute_arena_action, the identical
+    critical section a human's WS message uses."""
     async with AsyncSessionLocal() as db:
         match, _ = await _load_match_and_actions(db, match_id)
         if not match:
@@ -607,6 +853,7 @@ async def arena_ws_handler(websocket: WebSocket, match_id: str, user_id: str):
         if role is None:
             await websocket.close(code=4003)
             return
+        match_mode = match.mode
 
     await manager.connect(match_id, websocket)
     manager.register_arena_connection(match_id, role, websocket)
@@ -619,6 +866,13 @@ async def arena_ws_handler(websocket: WebSocket, match_id: str, user_id: str):
                 m.status = "active"
                 m.started_at = datetime.utcnow()
                 await db.commit()
+
+    # Phase D: for human_defends_vs_ai matches, make sure the AI attacker
+    # bot loop is running now that a participant is actually connected
+    # (mirrors _stream_alerts' "start background work on a live WS event"
+    # convention rather than at match-creation time — see the design note
+    # above _run_arena_attacker_bot).
+    _maybe_start_arena_attacker_bot(match_id, match_mode)
 
     try:
         while True:
@@ -654,95 +908,12 @@ async def arena_ws_handler(websocket: WebSocket, match_id: str, user_id: str):
                 ))
                 continue
 
-            lock = manager.get_arena_match_lock(match_id)
-            async with lock:
-                async with AsyncSessionLocal() as db:
-                    match, action_dicts = await _load_match_and_actions(db, match_id)
-                    if not match:
-                        await manager.send_personal(websocket, build_system_event("error", {"detail": "Match not found"}))
-                        continue
-                    if match.status not in ("active", "lobby"):
-                        await manager.send_personal(websocket, build_system_event("error", {"detail": f"Match is {match.status}"}))
-                        continue
+            result = await _execute_arena_action(match_id, role, action_type, payload)
+            if result is None:
+                await manager.send_personal(websocket, build_system_event("error", {"detail": "Match not found or not active"}))
+                continue
 
-                    prev_state, _ = replay(match.seed, match.archetype_key, action_dicts)
-                    sequence_number = len(action_dicts)
-
-                    if role == "attacker":
-                        rng = _derive_rng(match.seed, sequence_number)
-                        action_for_engine = {"action_type": action_type, "payload": payload, "sequence_number": sequence_number}
-                        new_state, detected, alert = apply_attacker_action(prev_state, action_for_engine, rng)
-                    else:
-                        action_for_engine = {"action_type": action_type, "payload": payload}
-                        new_state = apply_defender_action(prev_state, action_for_engine)
-                        detected, alert = False, None
-
-                    await _persist_arena_action(db, match_id, role, action_type, payload, existing_count=sequence_number)
-
-                    # Match completion check (minimal per Phase C scope —
-                    # only the attacker-wins-on-impact condition; a
-                    # defender-side win condition is Phase H's job).
-                    match_completed = False
-                    if new_state.global_flags.get("impact_deployed") and match.status != "attacker_won":
-                        m_res = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match_id))
-                        m = m_res.scalar_one_or_none()
-                        if m and m.status not in ("attacker_won", "defender_won", "abandoned"):
-                            m.status = "attacker_won"
-                            m.completed_at = datetime.utcnow()
-                            m.final_org_state_cache = new_state.to_dict()
-                            await db.commit()
-                        match_completed = True
-
-            # ── Post-persistence: notify participants (outside the lock —
-            # sending over the wire shouldn't hold up the next action's
-            # critical section) ──
-            if role == "attacker":
-                confirm = build_system_event("action_result", {
-                    "action_type": action_type,
-                    "sequence_number": sequence_number,
-                    "detected": detected,
-                })
-                await manager.send_personal(websocket, confirm)
-
-                if detected and alert:
-                    defender_ws = manager.get_arena_connection(match_id, "defender")
-                    if defender_ws:
-                        await manager.send_personal(defender_ws, build_alert_event(alert, sequence_number, sequence_number + 1))
-
-                gate_trigger = _decision_gate_trigger(action_type, payload, prev_state, new_state)
-                if gate_trigger:
-                    reason, host_dict, credential_id = gate_trigger
-                    gate = _build_arena_decision_gate(reason, host_dict, credential_id, sequence_number)
-                    defender_ws = manager.get_arena_connection(match_id, "defender")
-                    if defender_ws:
-                        await manager.send_personal(defender_ws, build_decision_gate_event(gate))
-            else:
-                # defender_action: confirm the effect back to the defender
-                # (decision_result-equivalent — same wire shape family the
-                # frontend already understands for scripted decision gates).
-                await manager.send_personal(websocket, {
-                    "type": "decision_result",
-                    "decision_gate_id": None,
-                    "is_correct": True,
-                    "rationale": f"{action_type.replace('_', ' ').title()} applied.",
-                    "consequence_applied": f"{action_type} executed against the live org state.",
-                    "correct_index": None,
-                    "action_type": action_type,
-                    "payload": payload,
-                    "sequence_number": sequence_number,
-                })
-
-            if match_completed:
-                result_event = build_system_event("match_complete", {
-                    "status": "attacker_won",
-                    "sequence_number": sequence_number,
-                })
-                attacker_ws = manager.get_arena_connection(match_id, "attacker")
-                defender_ws = manager.get_arena_connection(match_id, "defender")
-                if attacker_ws:
-                    await manager.send_personal(attacker_ws, result_event)
-                if defender_ws:
-                    await manager.send_personal(defender_ws, result_event)
+            await _notify_arena_action_result(match_id, role, action_type, payload, result)
 
     except WebSocketDisconnect:
         manager.disconnect(match_id, websocket)
