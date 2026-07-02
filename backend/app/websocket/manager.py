@@ -1,6 +1,6 @@
 import asyncio
 import json
-from typing import Dict, Set
+from typing import Dict, Optional, Set
 from fastapi import WebSocket, WebSocketDisconnect
 from datetime import datetime
 
@@ -21,6 +21,42 @@ class ConnectionManager:
         self.pause_events: Dict[str, asyncio.Event] = {}
         # Serialises concurrent presence mutations to prevent race conditions on disconnect/reconnect
         self._presence_lock: asyncio.Lock = asyncio.Lock()
+
+        # ── Live Arena Mode (Phase C) ────────────────────────────────────
+        # Arena connections by role, so an attacker's alert/decision_gate can
+        # be sent specifically to the defender's socket (send_personal) —
+        # arena matches are 1v1 or 1v-AI, not a broadcast room like
+        # scripted-scenario multiplayer sessions.
+        # match_id -> {"attacker": WebSocket, "defender": WebSocket}
+        self.arena_connections: Dict[str, Dict[str, WebSocket]] = {}
+        # Per-match locks serialising ArenaAction sequence_number assignment.
+        # A single backend process handles all WS connections in this
+        # deployment, so an in-process asyncio.Lock per match_id is
+        # sufficient to make "read current action count, insert next
+        # sequence_number" atomic — see arena_ws_handler in handlers.py for
+        # the full rationale. This is deliberately a different mechanism
+        # from investigate_query's atomic SQL UPDATE, because that pattern
+        # solves a different race (atomic append to one JSONB column), not
+        # atomic assignment of a new row's ordinal position.
+        self.arena_match_locks: Dict[str, asyncio.Lock] = {}
+
+    def get_arena_match_lock(self, match_id: str) -> asyncio.Lock:
+        if match_id not in self.arena_match_locks:
+            self.arena_match_locks[match_id] = asyncio.Lock()
+        return self.arena_match_locks[match_id]
+
+    def register_arena_connection(self, match_id: str, role: str, websocket: WebSocket):
+        self.arena_connections.setdefault(match_id, {})[role] = websocket
+
+    def unregister_arena_connection(self, match_id: str, role: str, websocket: WebSocket):
+        conns = self.arena_connections.get(match_id)
+        if conns and conns.get(role) is websocket:
+            del conns[role]
+            if not conns:
+                del self.arena_connections[match_id]
+
+    def get_arena_connection(self, match_id: str, role: str) -> Optional[WebSocket]:
+        return self.arena_connections.get(match_id, {}).get(role)
 
     def get_pause_event(self, session_id: str) -> asyncio.Event:
         if session_id not in self.pause_events:

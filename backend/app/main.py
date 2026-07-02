@@ -22,7 +22,7 @@ from app.core.logging import set_request_context, setup_logging
 from app.core.redis import get_redis
 from app.core.security import limiter, sentry_before_send
 from app.db.session import engine
-from app.websocket.handlers import simulation_ws_handler
+from app.websocket.handlers import simulation_ws_handler, arena_ws_handler
 
 if settings.SENTRY_DSN:
     sentry_sdk.init(
@@ -206,3 +206,44 @@ async def websocket_session(websocket: WebSocket, session_id: str):
         return
 
     await simulation_ws_handler(websocket, session_id, user_id)
+
+
+@app.websocket("/ws/arena/{match_id}")
+async def websocket_arena(websocket: WebSocket, match_id: str):
+    """Live Arena Mode match connection (Phase C). Mirrors /ws/session/{id}'s
+    rate-limit + deferred-auth-frame pattern exactly (BR-ARC-02 / BR-SEC-01)."""
+    # 1. Per-IP rate limit before completing the upgrade (BR-ARC-02)
+    client_ip = _get_client_ip(websocket)
+    r = await get_redis()
+    if not await _ws_rate_allowed(r, client_ip):
+        await websocket.close(code=4029)
+        return
+
+    # 2. Complete the HTTP → WebSocket upgrade
+    await websocket.accept()
+
+    # 3. First message must be an auth frame within 3 s (BR-SEC-01 / BR-BUG-01)
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)
+        auth_msg = json.loads(raw)
+        if auth_msg.get("type") != "auth":
+            await websocket.close(code=4001)
+            return
+        token = auth_msg.get("token", "")
+    except (asyncio.TimeoutError, json.JSONDecodeError, Exception):
+        await websocket.close(code=4001)
+        return
+
+    # 4. Verify JWT
+    try:
+        payload = jose_jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        user_id: str = payload.get("sub")
+        if not user_id:
+            raise ValueError("Missing sub claim")
+    except (JWTError, ValueError):
+        await websocket.close(code=4001)
+        return
+
+    await arena_ws_handler(websocket, match_id, user_id)
