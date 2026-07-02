@@ -20,6 +20,13 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    # RedBeat stores "when did each periodic task last run" in Redis instead
+    # of a local file inside the beat container. Redis is the one process in
+    # this stack that survives every deploy (db/redis aren't recreated, only
+    # backend/beat/worker are) — without this, every deploy silently resets
+    # the weekly/monthly ingestion countdown clocks.
+    beat_scheduler="redbeat.RedBeatScheduler",
+    redbeat_redis_url=settings.REDIS_URL,
     beat_schedule={
         # CISA AA-prefixed advisories — weekly
         "weekly-cisa-ingestion": {
