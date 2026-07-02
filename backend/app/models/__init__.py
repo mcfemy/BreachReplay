@@ -12,6 +12,7 @@ from app.models.team import Team, TeamMember
 from app.models.saml_config import OrganizationSAMLConfig
 from app.models.knowledge_check import KnowledgeCheck, UserKnowledgeCheckAttempt
 from app.models.content_assignment import ContentAssignment
+from app.models.arena import ArenaMatch, ArenaAction
 
 __all__ = [
     "Base",
@@ -35,4 +36,6 @@ __all__ = [
     "KnowledgeCheck",
     "UserKnowledgeCheckAttempt",
     "ContentAssignment",
+    "ArenaMatch",
+    "ArenaAction",
 ]
