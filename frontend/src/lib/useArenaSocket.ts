@@ -64,9 +64,19 @@ export interface ArenaDefenderActionResult {
   sequence_number: number;
 }
 
+// Phase I: rating_change is null for a side with no real User row (an AI
+// opponent) or if the match somehow completed without a rating update.
+export interface ArenaRatingChange {
+  user_id: string;
+  before: number;
+  after: number;
+  delta: number;
+}
+
 export interface ArenaMatchComplete {
   status: string;
   sequence_number: number;
+  rating_change?: ArenaRatingChange | null;
 }
 
 interface ArenaSocketOptions {

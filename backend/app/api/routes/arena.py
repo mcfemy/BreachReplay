@@ -24,6 +24,7 @@ from app.models.arena import ArenaMatch, ArenaAction
 from app.models.user import User
 from app.core.security import get_current_user
 from app.services.org_simulation import ORG_ARCHETYPES, generate_org_state, replay
+from app.services import arena_matchmaking_service
 
 router = APIRouter(prefix="/arena", tags=["arena"])
 
@@ -364,3 +365,80 @@ async def list_my_matches(
     )
     matches = result.scalars().all()
     return [_match_summary(m) for m in matches]
+
+
+# ── Phase I: matchmaking queue ──────────────────────────────────────────────
+#
+# Pairs two waiting humans into a fresh PvP match. Queue state lives
+# in-process (app.websocket.manager.ConnectionManager.arena_queue) rather
+# than a DB table — see arena_matchmaking_service.py's module docstring for
+# why. Once paired, the resulting ArenaMatch is a completely normal match:
+# the frontend navigates to it and plays it over the same
+# /ws/arena/{match_id} WebSocket every other match uses.
+
+@router.post("/queue/join")
+async def join_matchmaking_queue(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Join the PvP matchmaking queue. Idempotent — calling this again while
+    already queued (or already matched but not yet polled) just returns the
+    current state instead of creating a duplicate entry."""
+    return await arena_matchmaking_service.join_queue(db, current_user.id)
+
+
+@router.get("/queue/status")
+async def get_matchmaking_queue_status(
+    current_user: User = Depends(get_current_user),
+):
+    """Poll queue state. Once `status == "matched"`, the entry is consumed
+    server-side (won't be returned again) — the frontend should navigate to
+    `match_id` immediately."""
+    return await arena_matchmaking_service.queue_status(current_user.id)
+
+
+@router.delete("/queue/leave")
+async def leave_matchmaking_queue(
+    current_user: User = Depends(get_current_user),
+):
+    """Leave the queue before being matched. No-op (returns left=False) if
+    not currently queued, or if already matched (at that point the match
+    itself exists — canceling it is the normal abandon-a-match path, not
+    this endpoint)."""
+    left = await arena_matchmaking_service.leave_queue(current_user.id)
+    return {"left": left}
+
+
+# ── Phase I: leaderboard ─────────────────────────────────────────────────────
+
+@router.get("/leaderboard")
+async def get_arena_leaderboard(
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Top arena players by ELO-style rating. Only players who have actually
+    completed at least one rated match are listed — every user starts at
+    the same default rating (1200), so including never-played accounts
+    would just be noise, not a meaningful ranking."""
+    limit = max(1, min(limit, 100))
+    result = await db.execute(
+        select(User)
+        .where(User.arena_matches_played > 0)
+        .order_by(desc(User.arena_rating))
+        .limit(limit)
+    )
+    users = result.scalars().all()
+    return [
+        {
+            "rank": i + 1,
+            "user_id": u.id,
+            "display_name": u.full_name or u.email,
+            "arena_rating": u.arena_rating,
+            "arena_wins": u.arena_wins,
+            "arena_losses": u.arena_losses,
+            "arena_matches_played": u.arena_matches_played,
+            "is_current_user": u.id == current_user.id,
+        }
+        for i, u in enumerate(users)
+    ]

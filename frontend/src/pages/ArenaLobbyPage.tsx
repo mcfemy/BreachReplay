@@ -72,7 +72,13 @@ const DIFF_META: Record<Difficulty, { label: string; color: string; desc: string
   hard: { label: "Hard", color: "border-red-500/40 text-red-400 bg-red-500/10", desc: "Bot plays near-optimally and reacts fast — a real test." },
 };
 
-type FlowState = "select" | "pvp_waiting";
+type FlowState = "select" | "pvp_waiting" | "queue_waiting";
+
+interface QueueStatusResponse {
+  status: "not_queued" | "waiting" | "matched";
+  match_id: string | null;
+  estimated_wait_seconds: number | null;
+}
 
 export default function ArenaLobbyPage() {
   const navigate = useNavigate();
@@ -91,9 +97,14 @@ export default function ArenaLobbyPage() {
   const [copied, setCopied] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Phase I: matchmaking queue waiting-room state
+  const [queueEstimatedWait, setQueueEstimatedWait] = useState<number | null>(null);
+  const queuePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
+      if (queuePollRef.current) clearInterval(queuePollRef.current);
     };
   }, []);
 
@@ -102,19 +113,19 @@ export default function ArenaLobbyPage() {
     setError(null);
     setCreating(true);
     try {
-      // Design call (see docs/plans/live-arena-mode.md Phase F): the backend
-      // has no dedicated matchmaking queue or "join by match id" endpoint —
-      // POST /arena/matches is the ONLY way to set defender_user_id, and it
-      // always creates a brand-new match. There is genuinely no way for a
-      // second user to attach themselves to an already-created match. So
-      // real PvP pairing only works if the creator already knows their
-      // opponent's user id and supplies it as defender_user_id up front
-      // (arena.py's create_match explicitly allows this: pvp mode accepts
-      // both ids as long as the current user is one of them). If left
-      // blank, we fall back to the "create match, opponent TBD" default the
-      // backend already supports and poll GET /arena/matches/{id} — but be
-      // honest in the UI that nothing can currently attach a second player
-      // to that match without a future join endpoint.
+      // Manual-invite path (Phase F design, still supported): POST
+      // /arena/matches is the only way to set defender_user_id directly, and
+      // it always creates a brand-new match — there's no "join an existing
+      // match by id" endpoint. So this path only works if the creator
+      // already knows their opponent's user id and supplies it as
+      // defender_user_id up front (arena.py's create_match explicitly
+      // allows this: pvp mode accepts both ids as long as the current user
+      // is one of them). If left blank, we fall back to "create match,
+      // opponent TBD" and poll GET /arena/matches/{id} until someone
+      // attaches. Phase I's handleJoinQueue (the "Quick Match" button)
+      // solves the same problem without needing to know a user id at all,
+      // via POST /arena/queue/join — this manual path stays for
+      // invite-a-specific-friend use cases.
       const body: Record<string, unknown> = { mode, archetype_key: archetypeKey, difficulty };
       if (mode === "pvp" && opponentUserId.trim()) {
         body.defender_user_id = opponentUserId.trim();
@@ -177,6 +188,49 @@ export default function ArenaLobbyPage() {
     setFlow("select");
   }
 
+  // Phase I: "Quick Match" — auto-pair with any other waiting human via the
+  // matchmaking queue, instead of needing to already know an opponent's
+  // user id (the only PvP pairing path before this phase).
+  async function handleJoinQueue() {
+    setError(null);
+    setFlow("queue_waiting");
+    try {
+      const data = await api.post<QueueStatusResponse>("/arena/queue/join", {});
+      if (data.status === "matched" && data.match_id) {
+        navigate(`/arena/match/${data.match_id}`);
+        return;
+      }
+      setQueueEstimatedWait(data.estimated_wait_seconds);
+      queuePollRef.current = setInterval(async () => {
+        try {
+          const s = await api.get<QueueStatusResponse>("/arena/queue/status");
+          if (s.status === "matched" && s.match_id) {
+            if (queuePollRef.current) clearInterval(queuePollRef.current);
+            navigate(`/arena/match/${s.match_id}`);
+          } else {
+            setQueueEstimatedWait(s.estimated_wait_seconds);
+          }
+        } catch {
+          // transient — keep polling
+        }
+      }, 3000);
+    } catch (e: any) {
+      setError(e.message || "Failed to join matchmaking queue");
+      setFlow("select");
+    }
+  }
+
+  async function handleCancelQueue() {
+    if (queuePollRef.current) clearInterval(queuePollRef.current);
+    setFlow("select");
+    try {
+      await api.delete("/arena/queue/leave");
+    } catch {
+      // best-effort — the entry will just sit unmatched until it would
+      // otherwise be paired; nothing destructive happens either way.
+    }
+  }
+
   // ── PvP waiting room ───────────────────────────────────────────────────
   if (flow === "pvp_waiting" && pendingMatch) {
     return (
@@ -219,6 +273,40 @@ export default function ArenaLobbyPage() {
     );
   }
 
+  // ── Phase I: matchmaking queue waiting room ────────────────────────────
+  if (flow === "queue_waiting") {
+    return (
+      <div className="min-h-screen bg-gray-950 text-white flex items-center justify-center px-4">
+        <div className="max-w-lg w-full border border-gray-800 rounded-xl p-8 text-center">
+          <div className="text-5xl mb-4">🔎</div>
+          <h1 className="text-2xl font-black mb-2">Finding an opponent...</h1>
+          <p className="text-gray-500 text-sm mb-6">
+            You'll be paired with the next human who joins the queue — attacker/defender roles are
+            assigned randomly, and the target organization is a random archetype. This screen
+            advances automatically the moment you're matched.
+          </p>
+
+          <div className="flex items-center justify-center gap-2 text-xs text-cyan-400 mb-2">
+            <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
+            Waiting in queue...
+          </div>
+          {queueEstimatedWait !== null && (
+            <p className="text-[10px] text-gray-600 mb-6">
+              Estimated wait: ~{queueEstimatedWait}s
+            </p>
+          )}
+
+          <button
+            onClick={handleCancelQueue}
+            className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          >
+            Leave queue
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   // ── Mode / difficulty / archetype selector ─────────────────────────────
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -230,6 +318,12 @@ export default function ArenaLobbyPage() {
             A real, deterministic simulated org — attacker and defender both act against the SAME
             live state. No scripted outcomes, no repeat matches.
           </p>
+          <button
+            onClick={() => navigate("/arena/leaderboard")}
+            className="mt-4 text-xs text-yellow-500 hover:text-yellow-400 font-bold uppercase tracking-widest transition-colors"
+          >
+            🏆 View Arena Leaderboard
+          </button>
         </div>
 
         {error && (
@@ -284,13 +378,28 @@ export default function ArenaLobbyPage() {
               </div>
             )}
 
-            {/* Opponent id — PvP only. No matchmaking queue exists yet, so
-                pairing requires already knowing the opponent's user id
-                (see the design note in handleCreateMatch). Leaving this
+            {/* Phase I: Quick Match — auto-pair via the matchmaking queue,
+                no need to already know an opponent's user id. */}
+            {mode === "pvp" && (
+              <button
+                onClick={handleJoinQueue}
+                className="w-full py-3 rounded-lg border border-cyan-500/50 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 font-bold text-sm uppercase tracking-wider transition-colors"
+              >
+                🔎 Quick Match — Auto-Pair With Next Available Opponent
+              </button>
+            )}
+
+            {/* Opponent id — PvP manual-invite fallback, for when you already
+                know who you want to play (e.g. a friend). Leaving this
                 blank falls back to "create match, opponent TBD" and a
                 waiting screen. */}
             {mode === "pvp" && (
               <div>
+                <div className="text-xs text-gray-600 uppercase tracking-widest mb-2 flex items-center gap-2">
+                  <span className="flex-1 border-t border-gray-800" />
+                  <span>or invite by user ID</span>
+                  <span className="flex-1 border-t border-gray-800" />
+                </div>
                 <div className="text-xs text-gray-600 uppercase tracking-widest mb-2">
                   Opponent User ID <span className="text-gray-700 normal-case">(optional — leave blank to wait for one)</span>
                 </div>

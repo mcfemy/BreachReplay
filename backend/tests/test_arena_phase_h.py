@@ -115,8 +115,9 @@ async def test_attacker_wins_on_impact_deployed_regression(db, test_org):
         global_flags={**state.global_flags, "impact_deployed": True},
     )
 
-    completed = await _mark_match_completed_if_needed(db, match.id, match.status, state, total_actions=5)
-    assert completed is True
+    result = await _mark_match_completed_if_needed(db, match.id, match.status, state, total_actions=5)
+    assert result["completed"] is True
+    assert result["status"] == "attacker_won"
 
     res = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match.id))
     m = res.scalar_one()
@@ -132,8 +133,10 @@ async def test_active_match_does_not_false_positive_on_fresh_state(db, test_org)
     await db.commit()
 
     state = _base_state()
-    completed = await _mark_match_completed_if_needed(db, match.id, match.status, state, total_actions=0)
-    assert completed is False
+    result = await _mark_match_completed_if_needed(db, match.id, match.status, state, total_actions=0)
+    assert result["completed"] is False
+    assert result["status"] is None
+    assert result["rating_changes"] == {}
 
     res = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match.id))
     m = res.scalar_one()
@@ -155,8 +158,9 @@ async def test_defender_wins_on_real_containment_once_min_actions_met(db, test_o
     state = _replace_host(state, host.id, compromise_level="admin", isolated=True)
     state = _replace_credential(state, cred.id, harvested=True, disabled=True)
 
-    completed = await _mark_match_completed_if_needed(db, match.id, match.status, state, total_actions=3)
-    assert completed is True
+    result = await _mark_match_completed_if_needed(db, match.id, match.status, state, total_actions=3)
+    assert result["completed"] is True
+    assert result["status"] == "defender_won"
 
     res = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match.id))
     m = res.scalar_one()
@@ -180,12 +184,13 @@ async def test_turn_budget_cap_terminates_a_gridlocked_match(db, test_org):
     not_yet = await _mark_match_completed_if_needed(
         db, match.id, match.status, gridlocked, total_actions=_MAX_MATCH_ACTIONS - 1,
     )
-    assert not_yet is False
+    assert not_yet["completed"] is False
 
-    completed = await _mark_match_completed_if_needed(
+    result = await _mark_match_completed_if_needed(
         db, match.id, match.status, gridlocked, total_actions=_MAX_MATCH_ACTIONS,
     )
-    assert completed is True
+    assert result["completed"] is True
+    assert result["status"] == "defender_won"
 
     res = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match.id))
     m = res.scalar_one()
@@ -200,8 +205,8 @@ async def test_already_terminal_match_status_is_a_no_op(db, test_org):
     await db.commit()
 
     state = _base_state()
-    completed = await _mark_match_completed_if_needed(db, match.id, "attacker_won", state, total_actions=99)
-    assert completed is False
+    result = await _mark_match_completed_if_needed(db, match.id, "attacker_won", state, total_actions=99)
+    assert result["completed"] is False
 
     res = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match.id))
     m = res.scalar_one()

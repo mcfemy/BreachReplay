@@ -29,6 +29,7 @@ from app.services.org_simulation import (
     _derive_rng,
     check_defender_containment,
 )
+from app.services import arena_rating_service
 
 logger = logging.getLogger(__name__)
 
@@ -595,7 +596,7 @@ def _role_for_user(match: ArenaMatch, user_id: str) -> str | None:
 _MIN_ACTIONS_FOR_CONTAINMENT_WIN = 2
 
 
-async def _mark_match_completed_if_needed(db, match_id: str, match_status: str, new_state, total_actions: int) -> bool:
+async def _mark_match_completed_if_needed(db, match_id: str, match_status: str, new_state, total_actions: int) -> dict:
     """Shared match-completion check/write, factored out of the main
     critical section so it can be called twice in one locked block (once
     for the attacker's own action, and — for `human_attacks_vs_ai` matches
@@ -622,9 +623,20 @@ async def _mark_match_completed_if_needed(db, match_id: str, match_status: str, 
          fallback that guarantees every match terminates decisively instead
          of gridlocking forever, not an arbitrary timeout (it's still gated
          on the match actually being ongoing, not a wall-clock timer).
+
+    Phase I: once a terminal status is actually written, also applies the
+    ELO-style rating update (`arena_rating_service.apply_match_result`) in
+    the SAME transaction as the status write, so a match's rating effect
+    and its terminal status are committed atomically — there is no window
+    where the match reads as over but ratings haven't moved yet.
+
+    Returns `{"completed": bool, "status": str | None, "rating_changes": dict}`
+    — `status` and `rating_changes` are only meaningful when `completed` is
+    True. Callers that only care about the boolean can keep using
+    `result["completed"]` exactly like the old bool return value.
     """
     if match_status in ("attacker_won", "defender_won"):
-        return False
+        return {"completed": False, "status": None, "rating_changes": {}}
 
     if new_state.global_flags.get("impact_deployed"):
         new_status = "attacker_won"
@@ -636,16 +648,18 @@ async def _mark_match_completed_if_needed(db, match_id: str, match_status: str, 
     elif total_actions >= _MAX_MATCH_ACTIONS:
         new_status = "defender_won"
     else:
-        return False
+        return {"completed": False, "status": None, "rating_changes": {}}
 
     m_res = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match_id))
     m = m_res.scalar_one_or_none()
+    rating_changes: dict = {}
     if m and m.status not in ("attacker_won", "defender_won", "abandoned"):
         m.status = new_status
         m.completed_at = datetime.utcnow()
         m.final_org_state_cache = new_state.to_dict()
+        rating_changes = await arena_rating_service.apply_match_result(db, m)
         await db.commit()
-    return True
+    return {"completed": True, "status": new_status, "rating_changes": rating_changes}
 
 
 async def _execute_arena_action(match_id: str, role: str, action_type: str, payload: dict) -> dict | None:
@@ -679,14 +693,20 @@ async def _execute_arena_action(match_id: str, role: str, action_type: str, payl
     Returns None if the match doesn't exist or isn't in a playable state
     (nothing was persisted). Otherwise returns a result dict:
     `{sequence_number, prev_state, new_state, detected, alert,
-    match_completed, defender_response}` — callers use this to drive their
-    own notification/broadcast side effects (which deliberately stay
-    OUTSIDE this function/the lock, exactly as Phase C's original inline
-    version did, since sending over the wire shouldn't hold up the next
-    action's critical section). `defender_response` is `None` unless an
-    in-lock synchronous AI defender reaction fired; when present it is a
-    dict: `{sequence_number, action_type, payload, reason, trigger_host,
-    trigger_credential_id, new_state}`.
+    match_completed, match_status, rating_changes, defender_response}` —
+    callers use this to drive their own notification/broadcast side effects
+    (which deliberately stay OUTSIDE this function/the lock, exactly as
+    Phase C's original inline version did, since sending over the wire
+    shouldn't hold up the next action's critical section). `match_status`
+    is the real terminal status ("attacker_won"/"defender_won") when
+    `match_completed` is True, else None — added in Phase I to fix
+    `_notify_arena_action_result` previously hardcoding "attacker_won"
+    regardless of which side actually won. `rating_changes` (Phase I) is
+    `{user_id: {before, after, delta}}` for whichever side(s) are real
+    users, empty if the match isn't complete. `defender_response` is `None`
+    unless an in-lock synchronous AI defender reaction fired; when present
+    it is a dict: `{sequence_number, action_type, payload, reason,
+    trigger_host, trigger_credential_id, new_state}`.
     """
     lock = manager.get_arena_match_lock(match_id)
     async with lock:
@@ -711,7 +731,7 @@ async def _execute_arena_action(match_id: str, role: str, action_type: str, payl
 
             await _persist_arena_action(db, match_id, role, action_type, payload, existing_count=sequence_number)
 
-            match_completed = await _mark_match_completed_if_needed(
+            completion = await _mark_match_completed_if_needed(
                 db, match_id, match.status, new_state, total_actions=sequence_number + 1,
             )
 
@@ -721,7 +741,7 @@ async def _execute_arena_action(match_id: str, role: str, action_type: str, payl
             # attacker's own move (no point containing a match that's
             # already won).
             defender_response = None
-            if role == "attacker" and match.mode == "human_attacks_vs_ai" and not match_completed:
+            if role == "attacker" and match.mode == "human_attacks_vs_ai" and not completion["completed"]:
                 gate_trigger = _decision_gate_trigger(action_type, payload, prev_state, new_state)
                 if gate_trigger:
                     defender_response = await _apply_defender_bot_response_locked(
@@ -730,11 +750,12 @@ async def _execute_arena_action(match_id: str, role: str, action_type: str, payl
                     )
                     if defender_response is not None:
                         new_state = defender_response["new_state"]
-                        match_completed = await _mark_match_completed_if_needed(
+                        completion = await _mark_match_completed_if_needed(
                             db, match_id, match.status, new_state,
                             total_actions=defender_response["sequence_number"] + 1,
                         )
 
+    match_completed = completion["completed"]
     if match_completed:
         # Resource-hygiene cleanup (review finding): drop this match's
         # per-match lock/counter bookkeeping now that it's reached a
@@ -755,6 +776,8 @@ async def _execute_arena_action(match_id: str, role: str, action_type: str, payl
         "detected": detected,
         "alert": alert,
         "match_completed": match_completed,
+        "match_status": completion["status"],
+        "rating_changes": completion["rating_changes"],
         "defender_response": defender_response,
     }
 
@@ -933,16 +956,28 @@ async def _notify_arena_action_result(
                 }))
 
     if result["match_completed"]:
-        result_event = build_system_event("match_complete", {
-            "status": "attacker_won",
-            "sequence_number": sequence_number,
-        })
+        # Phase I: rating_changes is keyed by role ("attacker"/"defender"),
+        # matching how connections are already routed here — no key at all
+        # for a side with no real User row (an AI opponent). Previously this
+        # hardcoded status="attacker_won" unconditionally, which was wrong
+        # for every defender_won match starting in Phase H — fixed to use
+        # the real terminal status computed by
+        # _mark_match_completed_if_needed.
+        rating_changes = result.get("rating_changes") or {}
         attacker_ws = manager.get_arena_connection(match_id, "attacker")
         defender_ws = manager.get_arena_connection(match_id, "defender")
         if attacker_ws:
-            await manager.send_personal(attacker_ws, result_event)
+            await manager.send_personal(attacker_ws, build_system_event("match_complete", {
+                "status": result["match_status"],
+                "sequence_number": sequence_number,
+                "rating_change": rating_changes.get("attacker"),
+            }))
         if defender_ws:
-            await manager.send_personal(defender_ws, result_event)
+            await manager.send_personal(defender_ws, build_system_event("match_complete", {
+                "status": result["match_status"],
+                "sequence_number": sequence_number,
+                "rating_change": rating_changes.get("defender"),
+            }))
 
 
 # ── Live Arena Mode (Phase D) — AI attacker policy bot driver ───────────────

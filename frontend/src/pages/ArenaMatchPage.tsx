@@ -3,6 +3,7 @@ import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/auth";
 import { useArenaSocket } from "../lib/useArenaSocket";
+import RankChangeToast from "../components/RankChangeToast";
 
 // ── Types (mirror OrgState.to_dict() from org_simulation.py exactly) ───────
 interface Host {
@@ -94,6 +95,7 @@ export default function ArenaMatchPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ kind: "success" | "error" | "info"; message: string } | null>(null);
   const [executing, setExecuting] = useState<string | null>(null);
+  const [rankToastDismissed, setRankToastDismissed] = useState(false);
 
   // Selections for multi-field attacker moves
   const [selectedSegment, setSelectedSegment] = useState<string>("");
@@ -225,6 +227,19 @@ export default function ArenaMatchPage() {
         <div className={`fixed top-4 right-4 z-40 border rounded-lg px-4 py-3 text-xs max-w-sm shadow-2xl border-l-4 leading-relaxed ${NOTIF_CLS[notification.kind]}`}>
           {notification.message}
         </div>
+      )}
+
+      {/* Phase I: rank-change toast — matchComplete.rating_change is already
+          scoped to THIS connection's side (attacker's socket only ever gets
+          the attacker's own change, defender's socket only its own), so no
+          extra user-id filtering is needed here. */}
+      {matchComplete?.rating_change && !rankToastDismissed && (
+        <RankChangeToast
+          before={matchComplete.rating_change.before}
+          after={matchComplete.rating_change.after}
+          delta={matchComplete.rating_change.delta}
+          onDone={() => setRankToastDismissed(true)}
+        />
       )}
 
       {/* Top bar */}

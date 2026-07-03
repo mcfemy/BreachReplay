@@ -32,5 +32,12 @@ class User(Base):
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     mfa_backup_codes: Mapped[Optional[list]] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
 
+    # Live Arena Mode (Phase I) — ELO-style rating and record, updated by
+    # arena_rating_service.py whenever a match reaches a terminal status.
+    arena_rating: Mapped[int] = mapped_column(Integer, default=1200, server_default="1200")
+    arena_wins: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    arena_losses: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    arena_matches_played: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
     organization: Mapped["Organization"] = relationship("Organization", back_populates="users")
     session_participants: Mapped[list["SessionParticipant"]] = relationship("SessionParticipant", back_populates="user")

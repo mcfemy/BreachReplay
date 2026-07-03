@@ -121,4 +121,8 @@ export const api = {
     const response = await axiosInstance.patch<T>(path, body);
     return response.data;
   },
+  delete: async <T>(path: string): Promise<T> => {
+    const response = await axiosInstance.delete<T>(path);
+    return response.data;
+  },
 };

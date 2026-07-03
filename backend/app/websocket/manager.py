@@ -62,6 +62,16 @@ class ConnectionManager:
         # terminal match status via `cleanup_arena_match_state` below.
         self.arena_defender_bot_responses: Dict[str, int] = {}
 
+        # Phase I: matchmaking queue. A single backend process handles all
+        # requests in this deployment (same assumption as arena_match_locks
+        # above), so an in-process dict + one lock is sufficient — no new
+        # DB table needed for what is inherently transient, ephemeral state
+        # (someone waiting to be paired), unlike ArenaMatch/ArenaAction which
+        # must survive process restarts as the actual source of truth.
+        # user_id -> {"joined_at": datetime, "matched_match_id": str | None}
+        self.arena_queue: Dict[str, dict] = {}
+        self._arena_queue_lock: asyncio.Lock = asyncio.Lock()
+
     def get_arena_match_lock(self, match_id: str) -> asyncio.Lock:
         if match_id not in self.arena_match_locks:
             self.arena_match_locks[match_id] = asyncio.Lock()
