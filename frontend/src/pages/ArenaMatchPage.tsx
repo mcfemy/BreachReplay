@@ -276,12 +276,20 @@ export default function ArenaMatchPage() {
                 ? "Impact was deployed. The attacker achieved their objective."
                 : "The match ended without the attacker reaching impact."}
             </p>
-            <button
-              onClick={() => navigate("/arena")}
-              className="mt-3 text-xs px-4 py-2 rounded bg-cyan-700 hover:bg-cyan-600 text-white font-bold uppercase tracking-wider transition-colors"
-            >
-              Back to Arena Lobby
-            </button>
+            <div className="flex items-center justify-center gap-3 mt-3">
+              <button
+                onClick={() => navigate("/arena")}
+                className="text-xs px-4 py-2 rounded bg-cyan-700 hover:bg-cyan-600 text-white font-bold uppercase tracking-wider transition-colors"
+              >
+                Back to Arena Lobby
+              </button>
+              <button
+                onClick={() => navigate(`/arena/match/${matchId}/debrief`)}
+                className="text-xs px-4 py-2 rounded bg-purple-700 hover:bg-purple-600 text-white font-bold uppercase tracking-wider transition-colors"
+              >
+                🕸 View Debrief / Explore Alternate Choices
+              </button>
+            </div>
           </div>
         </div>
       )}

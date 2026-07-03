@@ -229,6 +229,122 @@ async def get_match(
     }
 
 
+# ── Phase G: branching debrief exploration ──────────────────────────────────
+
+_COMPLETED_STATUSES = ("attacker_won", "defender_won", "abandoned")
+
+
+class AlternateActionRequest(BaseModel):
+    actor: str
+    action_type: str
+    payload: dict = {}
+
+    @field_validator("actor")
+    @classmethod
+    def _validate_actor(cls, v: str) -> str:
+        if v not in ("attacker", "defender"):
+            raise ValueError("actor must be 'attacker' or 'defender'")
+        return v
+
+
+class ExploreMatchRequest(BaseModel):
+    at_sequence_number: int
+    alternate_action: AlternateActionRequest
+
+    @field_validator("at_sequence_number")
+    @classmethod
+    def _validate_at_sequence_number(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("at_sequence_number must be >= 0")
+        return v
+
+
+@router.post("/matches/{match_id}/explore")
+async def explore_match(
+    match_id: str,
+    payload: ExploreMatchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Phase G — "what if I'd chosen differently at step N" branching debrief.
+
+    100% READ-ONLY against arena_matches/arena_actions for the real match.
+    This endpoint NEVER calls `_persist_arena_action` and NEVER writes to
+    the `arena_actions` table — it loads the real, persisted action log,
+    truncates it to `actions[:at_sequence_number]`, appends the caller's
+    `alternate_action` in place of whatever really happened at that point
+    (and everything after it, since actions after a divergence point no
+    longer make sense against a state that never happened), and calls
+    `org_simulation.replay()` — the exact same pure function
+    `GET /arena/matches/{id}` uses to reconstruct real state — over that
+    hypothetical log. The result is computed and returned; nothing is
+    committed.
+
+    Restricted to COMPLETED matches only (attacker_won | defender_won |
+    abandoned): "explore alternate history" is a post-game debrief feature
+    per the plan's framing (Phase G verification talks about "a completed
+    match"), not a way to preview alternate futures against a still-live
+    match's current state while it's in progress.
+    """
+    result = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match_id))
+    match = result.scalar_one_or_none()
+    if not match:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if current_user.id not in (match.attacker_user_id, match.defender_user_id):
+        raise HTTPException(status_code=403, detail="Not a participant in this match")
+    if match.status not in _COMPLETED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail="Exploration is only available for completed matches",
+        )
+
+    actions_result = await db.execute(
+        select(ArenaAction)
+        .where(ArenaAction.match_id == match_id)
+        .order_by(ArenaAction.sequence_number)
+    )
+    action_rows = actions_result.scalars().all()
+    real_action_dicts = [
+        {
+            "sequence_number": a.sequence_number,
+            "actor": a.actor,
+            "action_type": a.action_type,
+            "payload": a.payload,
+        }
+        for a in action_rows
+    ]
+
+    if payload.at_sequence_number > len(real_action_dicts):
+        raise HTTPException(
+            status_code=400,
+            detail=f"at_sequence_number out of range (match has {len(real_action_dicts)} actions)",
+        )
+
+    # Truncate to actions[:at_sequence_number] and append the alternate
+    # action in place of the real one at that point — everything after the
+    # divergence point is dropped, never read, never written anywhere.
+    truncated = real_action_dicts[: payload.at_sequence_number]
+    alternate_dict = {
+        "sequence_number": payload.at_sequence_number,
+        "actor": payload.alternate_action.actor,
+        "action_type": payload.alternate_action.action_type,
+        "payload": payload.alternate_action.payload,
+    }
+    hypothetical_actions = truncated + [alternate_dict]
+
+    # Pure compute — no DB write of any kind below this line.
+    alt_state, alt_events = replay(match.seed, match.archetype_key, hypothetical_actions)
+
+    return {
+        "match_id": match.id,
+        "at_sequence_number": payload.at_sequence_number,
+        "real_action_count": len(real_action_dicts),
+        "alternate_action": alternate_dict,
+        "state": alt_state.to_dict(),
+        "events": alt_events,
+    }
+
+
 @router.get("/matches")
 async def list_my_matches(
     db: AsyncSession = Depends(get_db),
