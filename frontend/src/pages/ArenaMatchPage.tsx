@@ -255,7 +255,11 @@ export default function ArenaMatchPage() {
           )}
           <span className={`text-[10px] px-2 py-0.5 rounded border font-bold uppercase tracking-wider ${
             isComplete
-              ? status === "attacker_won" ? "border-red-500/50 text-red-400 bg-red-500/10" : "border-green-500/50 text-green-400 bg-green-500/10"
+              ? status === "attacker_won"
+                ? "border-red-500/50 text-red-400 bg-red-500/10"
+                : status === "defender_won"
+                ? "border-green-500/50 text-green-400 bg-green-500/10"
+                : "border-gray-600/50 text-gray-400 bg-gray-600/10"
               : "border-yellow-500/40 text-yellow-400 bg-yellow-500/10 animate-pulse"
           }`}>
             {status.replace(/_/g, " ")}
@@ -265,16 +269,26 @@ export default function ArenaMatchPage() {
 
       {/* Match complete banner */}
       {isComplete && (
-        <div className={`px-5 py-4 border-b ${status === "attacker_won" ? "bg-red-950/30 border-red-800/40" : "bg-green-950/30 border-green-800/40"}`}>
+        <div className={`px-5 py-4 border-b ${
+          status === "attacker_won"
+            ? "bg-red-950/30 border-red-800/40"
+            : status === "defender_won"
+            ? "bg-green-950/30 border-green-800/40"
+            : "bg-gray-900/30 border-gray-700/40"
+        }`}>
           <div className="max-w-3xl mx-auto text-center">
-            <div className="text-3xl mb-1">{status === "attacker_won" ? "💀" : "🛡️"}</div>
-            <h2 className={`text-lg font-black uppercase tracking-widest ${status === "attacker_won" ? "text-red-400" : "text-green-400"}`}>
+            <div className="text-3xl mb-1">{status === "attacker_won" ? "💀" : status === "defender_won" ? "🛡️" : "⏹"}</div>
+            <h2 className={`text-lg font-black uppercase tracking-widest ${
+              status === "attacker_won" ? "text-red-400" : status === "defender_won" ? "text-green-400" : "text-gray-400"
+            }`}>
               Match Complete — {status.replace(/_/g, " ")}
             </h2>
             <p className="text-xs text-slate-500 mt-1">
               {status === "attacker_won"
                 ? "Impact was deployed. The attacker achieved their objective."
-                : "The match ended without the attacker reaching impact."}
+                : status === "defender_won"
+                ? "The defender contained every foothold before impact, or held the line for the full turn budget. Blue team wins."
+                : "The match was abandoned before either side reached a decisive outcome."}
             </p>
             <div className="flex items-center justify-center gap-3 mt-3">
               <button

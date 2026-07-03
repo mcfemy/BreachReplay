@@ -766,27 +766,44 @@ async def test_attacker_cannot_outrun_synchronous_defender_response():
         # now-isolated host immediately — no asyncio.sleep, no yield, this
         # call happens on the very next line, exactly like an attacker WS
         # loop's next receive_text() would.
+        from sqlalchemy import select as _select
+
+        async with AsyncSessionLocal() as db:
+            match_row = (await db.execute(_select(ArenaMatch).where(ArenaMatch.id == match_id))).scalar_one()
+        # Phase H: the isolate_host action that just fired may itself have
+        # achieved full defender containment (check_defender_containment),
+        # ending the match right there. That's an even stronger proof of
+        # "the attacker cannot outrun the defender" than the original race
+        # check — the match is already over before the attacker's next
+        # action can even be evaluated, so _execute_arena_action correctly
+        # returns None for it (no playable match to act against).
+        match_already_completed = match_row.status != "active"
+
         pre_followup_state = state
         followup_result = await _execute_arena_action(
             match_id, "attacker", "escalate_privilege", {"host_id": isolated_host_id},
         )
-        assert followup_result is not None
 
-        followup_host = followup_result["new_state"].get_host(isolated_host_id)
-        assert followup_host is not None
-        # The core assertion: isolation holds, and the follow-up action had
-        # NO effect on that host's compromise level (org_simulation's
-        # escalate_privilege branch no-ops entirely on an isolated host).
-        assert followup_host.isolated is True
-        assert followup_host.compromise_level == pre_followup_state.get_host(isolated_host_id).compromise_level
-        assert followup_result["detected"] is False
+        if match_already_completed:
+            assert followup_result is None
+        else:
+            assert followup_result is not None
 
-        # And at the persistence level: exactly one ArenaAction row exists
-        # for this follow-up attacker action (it WAS recorded — the
-        # attacker's action_type/payload is always logged — but it produced
-        # no state change), immediately preceded by the defender's
-        # isolate_host row, not interleaved with or preceded by a second,
-        # earlier attacker action that snuck in before containment.
+            followup_host = followup_result["new_state"].get_host(isolated_host_id)
+            assert followup_host is not None
+            # The core assertion: isolation holds, and the follow-up action had
+            # NO effect on that host's compromise level (org_simulation's
+            # escalate_privilege branch no-ops entirely on an isolated host).
+            assert followup_host.isolated is True
+            assert followup_host.compromise_level == pre_followup_state.get_host(isolated_host_id).compromise_level
+            assert followup_result["detected"] is False
+
+        # And at the persistence level: the defender's isolate_host row for
+        # this host exists exactly once, and if the follow-up attacker
+        # action was actually processed (match wasn't already over), it's
+        # persisted strictly AFTER that isolate_host row — never interleaved
+        # with or preceded by a second, earlier attacker action that snuck
+        # in before containment.
         async with AsyncSessionLocal() as db:
             _, final_actions = await _load_match_and_actions(db, match_id)
         isolate_rows = [
@@ -802,11 +819,17 @@ async def test_attacker_cannot_outrun_synchronous_defender_response():
             and a["payload"].get("host_id") == isolated_host_id
             and a["sequence_number"] > isolate_seq
         ]
-        assert len(followup_rows) == 1, (
-            "expected the follow-up escalate_privilege action to be persisted strictly AFTER "
-            "the defender's isolate_host action — proving no attacker action could ever land "
-            "between the trigger and the (now-synchronous) containment"
-        )
+        if match_already_completed:
+            assert len(followup_rows) == 0, (
+                "match was already over — the follow-up attacker action must not have been "
+                "persisted at all"
+            )
+        else:
+            assert len(followup_rows) == 1, (
+                "expected the follow-up escalate_privilege action to be persisted strictly AFTER "
+                "the defender's isolate_host action — proving no attacker action could ever land "
+                "between the trigger and the (now-synchronous) containment"
+            )
     finally:
         async with AsyncSessionLocal() as db:
             await db.execute(delete(ArenaAction).where(ArenaAction.match_id == match_id))

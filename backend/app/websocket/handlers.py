@@ -27,6 +27,7 @@ from app.services.org_simulation import (
     apply_defender_action,
     replay,
     _derive_rng,
+    check_defender_containment,
 )
 
 logger = logging.getLogger(__name__)
@@ -591,23 +592,56 @@ def _role_for_user(match: ArenaMatch, user_id: str) -> str | None:
     return None
 
 
-async def _mark_match_completed_if_needed(db, match_id: str, match_status: str, new_state) -> bool:
+_MIN_ACTIONS_FOR_CONTAINMENT_WIN = 2
+
+
+async def _mark_match_completed_if_needed(db, match_id: str, match_status: str, new_state, total_actions: int) -> bool:
     """Shared match-completion check/write, factored out of the main
     critical section so it can be called twice in one locked block (once
     for the attacker's own action, and — for `human_attacks_vs_ai` matches
     — again after the synchronous defender response is applied) without
     duplicating the read-modify-write. Caller MUST already hold
     `manager.get_arena_match_lock(match_id)` and pass the ArenaMatch.status
-    value it last observed in this critical section.
+    value it last observed in this critical section, plus `total_actions`
+    — the count of ArenaAction rows persisted for this match as of THIS
+    call (attacker + defender combined; see call sites in
+    `_execute_arena_action` for the exact arithmetic).
 
-    Minimal per Phase C scope — only the attacker-wins-on-impact condition;
-    a defender-side win condition is Phase H's job."""
-    if not new_state.global_flags.get("impact_deployed") or match_status == "attacker_won":
+    Phase H: three terminal conditions, checked in order —
+      1. Attacker wins on `deploy_impact` (global_flags["impact_deployed"]),
+         same as before Phase H.
+      2. Defender wins on containment: `check_defender_containment(new_state)`
+         is a REAL, checkable condition computed from OrgState (every
+         compromised host isolated, no usable harvested credential left) —
+         not a guess. Gated on `total_actions >= _MIN_ACTIONS_FOR_CONTAINMENT_WIN`
+         so the freshly-generated, untouched OrgState at match start (which
+         trivially satisfies "nothing compromised") can never itself count
+         as a defender win.
+      3. Defender wins by survival once `total_actions` hits
+         `_MAX_MATCH_ACTIONS` without either of the above — a turn-budget
+         fallback that guarantees every match terminates decisively instead
+         of gridlocking forever, not an arbitrary timeout (it's still gated
+         on the match actually being ongoing, not a wall-clock timer).
+    """
+    if match_status in ("attacker_won", "defender_won"):
         return False
+
+    if new_state.global_flags.get("impact_deployed"):
+        new_status = "attacker_won"
+    elif (
+        total_actions >= _MIN_ACTIONS_FOR_CONTAINMENT_WIN
+        and check_defender_containment(new_state)
+    ):
+        new_status = "defender_won"
+    elif total_actions >= _MAX_MATCH_ACTIONS:
+        new_status = "defender_won"
+    else:
+        return False
+
     m_res = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match_id))
     m = m_res.scalar_one_or_none()
     if m and m.status not in ("attacker_won", "defender_won", "abandoned"):
-        m.status = "attacker_won"
+        m.status = new_status
         m.completed_at = datetime.utcnow()
         m.final_org_state_cache = new_state.to_dict()
         await db.commit()
@@ -677,7 +711,9 @@ async def _execute_arena_action(match_id: str, role: str, action_type: str, payl
 
             await _persist_arena_action(db, match_id, role, action_type, payload, existing_count=sequence_number)
 
-            match_completed = await _mark_match_completed_if_needed(db, match_id, match.status, new_state)
+            match_completed = await _mark_match_completed_if_needed(
+                db, match_id, match.status, new_state, total_actions=sequence_number + 1,
+            )
 
             # ── Synchronous in-lock AI defender response (fairness fix) ──
             # Only for the attacker's own action, only in human_attacks_vs_ai
@@ -696,6 +732,7 @@ async def _execute_arena_action(match_id: str, role: str, action_type: str, payl
                         new_state = defender_response["new_state"]
                         match_completed = await _mark_match_completed_if_needed(
                             db, match_id, match.status, new_state,
+                            total_actions=defender_response["sequence_number"] + 1,
                         )
 
     if match_completed:
@@ -944,6 +981,19 @@ _BOT_MOVE_INTERVAL_SECONDS = 3.0
 # worst-case resource use if that invariant is ever violated by a future
 # change, rather than relying solely on proof-by-construction.
 _MAX_BOT_STEPS = 300
+
+# Phase H turn-budget fallback: if a match reaches this many total
+# persisted actions (attacker + defender combined) without the attacker
+# reaching `deploy_impact` or the defender achieving full containment
+# (`check_defender_containment`), the defender wins by survival — every
+# match must terminate decisively, not gridlock forever. Empirically
+# matches resolve in 8-12 actions per side today (see `_MAX_BOT_STEPS`
+# comment above), so 40 gives generous headroom before this fallback ever
+# fires in practice, mirroring `_MAX_BOT_STEPS`' own "defense-in-depth,
+# rarely triggers" character. This only bounds *action count*, not wall-clock
+# time — human-paced matches have no artificial per-move delay, only the AI
+# bots are paced via `_BOT_MOVE_INTERVAL_SECONDS`/`REACTION_DELAY_SECONDS`.
+_MAX_MATCH_ACTIONS = 40
 
 
 async def _run_arena_attacker_bot(match_id: str, difficulty: str = _DEFAULT_BOT_DIFFICULTY) -> None:

@@ -896,3 +896,38 @@ def replay(seed: int, archetype_key: str, actions: list[dict]) -> tuple[OrgState
             })
 
     return state, events
+
+
+def check_defender_containment(state: OrgState) -> bool:
+    """The defender's symmetric win condition (Phase H): the attacker
+    actually got a foothold somewhere, and every one of those compromised
+    hosts has since been isolated, and no harvested credential remains
+    usable (harvested but not disabled). Computed purely from OrgState —
+    not a move count or a timer.
+
+    Requiring at least one ever-compromised host is deliberate and load-
+    bearing, not a redundant nicety: without it, an OrgState where the
+    attacker never compromised anything (e.g. only recon actions were
+    taken so far) would trivially satisfy "no uncontained compromise
+    exists" and "no harvested credential exists" — a false-positive
+    defender win at/near match start, which an earlier version of this
+    function got wrong.
+
+    Note this checks "compromised AND NOT isolated" rather than
+    "compromise_level == none" — no defender action in DEFENDER_ACTION_TYPES
+    ever resets compromise_level back to "none" (there is no remediation
+    action, only containment ones), so that stricter condition would be
+    unreachable once the attacker gains any foothold at all. Isolating a
+    host is exactly what already neutralizes it elsewhere in this module
+    (see `_is_host_reachable`/`_segment_reachable_from_any_compromised`),
+    so "every compromised host is isolated" is the real, buildable analogue
+    of "the attacker has no live foothold left."
+    """
+    ever_compromised = [h for h in state.hosts if h.compromise_level != "none"]
+    if not ever_compromised:
+        return False
+    if any(not h.isolated for h in ever_compromised):
+        return False
+    if any(c.harvested and not c.disabled for c in state.credentials):
+        return False
+    return True
