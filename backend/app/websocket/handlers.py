@@ -690,6 +690,7 @@ async def _execute_arena_action(match_id: str, role: str, action_type: str, payl
                 if gate_trigger:
                     defender_response = await _apply_defender_bot_response_locked(
                         db, match_id, match, new_state, gate_trigger,
+                        difficulty=getattr(match, "difficulty", None) or _DEFAULT_DEFENDER_BOT_DIFFICULTY,
                     )
                     if defender_response is not None:
                         new_state = defender_response["new_state"]
@@ -796,6 +797,7 @@ async def _apply_defender_bot_response_locked(
 
 async def _notify_arena_action_result(
     match_id: str, role: str, action_type: str, payload: dict, result: dict, match_mode: str = "pvp",
+    difficulty: str = "medium",
 ) -> None:
     """Post-persistence notification side effects for one arena action —
     shared by the human WS path and the bot driver loop(s). Deliberately
@@ -852,7 +854,7 @@ async def _notify_arena_action_result(
                     # pacing for how the notification feels to the human
                     # attacker, never a delay on the state mutation itself.
                     asyncio.create_task(_notify_arena_defender_bot_response(
-                        match_id, defender_response,
+                        match_id, defender_response, difficulty=difficulty,
                     ))
                 # else: the response ceiling was hit or choose_defender_action
                 # defensively returned None — nothing to notify.
@@ -923,10 +925,10 @@ async def _notify_arena_action_result(
 # most one bot task is ever spawned per match even if the defender's
 # connection drops and reconnects.
 #
-# Difficulty is not yet a field on ArenaMatch/CreateMatchRequest (out of
-# this phase's explicit scope — Phase D only asked for the policy + driver,
-# not new schema). A default of "medium" is used until a future phase wires
-# a real difficulty selector through match creation.
+# Difficulty is now a real field on ArenaMatch/CreateMatchRequest (wired
+# through in Phase F). This constant remains only as the fallback default
+# for any call site that doesn't pass an explicit difficulty (e.g. matches
+# created before this column existed, or a caller that omits the field).
 _DEFAULT_BOT_DIFFICULTY = "medium"
 
 # Pacing between bot moves — mirrors _stream_alerts' `interval = 3.0 /
@@ -977,7 +979,7 @@ async def _run_arena_attacker_bot(match_id: str, difficulty: str = _DEFAULT_BOT_
             bot_moves_made += 1
 
             try:
-                await _notify_arena_action_result(match_id, "attacker", action_type, payload, result, match_mode=match.mode)
+                await _notify_arena_action_result(match_id, "attacker", action_type, payload, result, match_mode=match.mode, difficulty=difficulty)
             except Exception:
                 # Routine: the defender closed their tab/browser mid-match.
                 # A dead socket's send_json can raise several exception
@@ -1008,17 +1010,22 @@ async def _run_arena_attacker_bot(match_id: str, difficulty: str = _DEFAULT_BOT_
         manager.arena_bot_running.discard(match_id)
 
 
-def _maybe_start_arena_attacker_bot(match_id: str, mode: str) -> None:
+def _maybe_start_arena_attacker_bot(match_id: str, mode: str, difficulty: str = _DEFAULT_BOT_DIFFICULTY) -> None:
     """Start the AI attacker bot loop for this match if it's a
     human_defends_vs_ai match and no bot task is already running for it.
     Safe to call every time a defender's WS connection opens (e.g. on
-    reconnect) — the manager.arena_bot_running guard makes this idempotent."""
+    reconnect) — the manager.arena_bot_running guard makes this idempotent.
+
+    `difficulty` (Phase F) comes from the match's own `difficulty` column
+    (ArenaMatch.difficulty, set at creation time via POST /arena/matches) —
+    `_DEFAULT_BOT_DIFFICULTY` remains only the fallback for callers that
+    don't pass one explicitly."""
     if mode != "human_defends_vs_ai":
         return
     if match_id in manager.arena_bot_running:
         return
     manager.arena_bot_running.add(match_id)
-    asyncio.create_task(_run_arena_attacker_bot(match_id))
+    asyncio.create_task(_run_arena_attacker_bot(match_id, difficulty=_normalize_defender_bot_difficulty(difficulty)))
 
 
 # ── Live Arena Mode (Phase E, revised) — AI defender policy bot ─────────────
@@ -1075,7 +1082,7 @@ _MAX_DEFENDER_BOT_RESPONSES = 300
 _DEFAULT_DEFENDER_BOT_DIFFICULTY = "medium"
 
 
-async def _notify_arena_defender_bot_response(match_id: str, defender_response: dict) -> None:
+async def _notify_arena_defender_bot_response(match_id: str, defender_response: dict, difficulty: str = _DEFAULT_DEFENDER_BOT_DIFFICULTY) -> None:
     """Cosmetic-only notification for an AI defender bot response that was
     ALREADY applied and persisted synchronously inside
     `_execute_arena_action`'s locked critical section (see
@@ -1098,8 +1105,8 @@ async def _notify_arena_defender_bot_response(match_id: str, defender_response: 
     sequence_number = defender_response["sequence_number"]
 
     try:
-        difficulty = _normalize_defender_bot_difficulty(_DEFAULT_DEFENDER_BOT_DIFFICULTY)
-        delay = REACTION_DELAY_SECONDS.get(difficulty, REACTION_DELAY_SECONDS["medium"])
+        normalized_difficulty = _normalize_defender_bot_difficulty(difficulty)
+        delay = REACTION_DELAY_SECONDS.get(normalized_difficulty, REACTION_DELAY_SECONDS["medium"])
         await asyncio.sleep(delay)
 
         # The defender side has no real WS connection in this mode
@@ -1148,6 +1155,7 @@ async def arena_ws_handler(websocket: WebSocket, match_id: str, user_id: str):
             await websocket.close(code=4003)
             return
         match_mode = match.mode
+        match_difficulty = _normalize_defender_bot_difficulty(getattr(match, "difficulty", None) or _DEFAULT_BOT_DIFFICULTY)
 
     await manager.connect(match_id, websocket)
     manager.register_arena_connection(match_id, role, websocket)
@@ -1166,7 +1174,7 @@ async def arena_ws_handler(websocket: WebSocket, match_id: str, user_id: str):
     # (mirrors _stream_alerts' "start background work on a live WS event"
     # convention rather than at match-creation time — see the design note
     # above _run_arena_attacker_bot).
-    _maybe_start_arena_attacker_bot(match_id, match_mode)
+    _maybe_start_arena_attacker_bot(match_id, match_mode, difficulty=match_difficulty)
 
     try:
         while True:
@@ -1207,7 +1215,7 @@ async def arena_ws_handler(websocket: WebSocket, match_id: str, user_id: str):
                 await manager.send_personal(websocket, build_system_event("error", {"detail": "Match not found or not active"}))
                 continue
 
-            await _notify_arena_action_result(match_id, role, action_type, payload, result, match_mode=match_mode)
+            await _notify_arena_action_result(match_id, role, action_type, payload, result, match_mode=match_mode, difficulty=match_difficulty)
 
     except WebSocketDisconnect:
         manager.disconnect(match_id, websocket)

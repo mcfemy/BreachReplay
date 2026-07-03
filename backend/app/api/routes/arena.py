@@ -28,6 +28,7 @@ from app.services.org_simulation import ORG_ARCHETYPES, generate_org_state, repl
 router = APIRouter(prefix="/arena", tags=["arena"])
 
 _MODES = ("pvp", "human_defends_vs_ai", "human_attacks_vs_ai")
+_DIFFICULTIES = ("easy", "medium", "hard")
 
 
 # ── Schemas ──────────────────────────────────────────────────────────────────
@@ -37,12 +38,20 @@ class CreateMatchRequest(BaseModel):
     archetype_key: str
     attacker_user_id: Optional[str] = None
     defender_user_id: Optional[str] = None
+    difficulty: str = "medium"
 
     @field_validator("mode")
     @classmethod
     def _validate_mode(cls, v: str) -> str:
         if v not in _MODES:
             raise ValueError(f"mode must be one of {_MODES}")
+        return v
+
+    @field_validator("difficulty")
+    @classmethod
+    def _validate_difficulty(cls, v: str) -> str:
+        if v not in _DIFFICULTIES:
+            raise ValueError(f"difficulty must be one of {_DIFFICULTIES}")
         return v
 
 
@@ -98,6 +107,7 @@ def _match_summary(match: ArenaMatch) -> dict:
         "id": match.id,
         "mode": match.mode,
         "archetype_key": match.archetype_key,
+        "difficulty": match.difficulty,
         "status": match.status,
         "attacker_user_id": match.attacker_user_id,
         "defender_user_id": match.defender_user_id,
@@ -158,6 +168,7 @@ async def create_match(
         mode=payload.mode,
         attacker_user_id=attacker_user_id,
         defender_user_id=defender_user_id,
+        difficulty=payload.difficulty,
         status="lobby",
         created_at=datetime.utcnow(),
     )

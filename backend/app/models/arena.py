@@ -30,6 +30,19 @@ class ArenaMatch(Base):
         default="lobby",
         server_default="lobby",
     )
+    # Threaded through to the AI attacker/defender bot policies (Phase D/E) —
+    # see app/websocket/handlers.py's _run_arena_attacker_bot /
+    # _apply_defender_bot_response_locked, which now read this column instead
+    # of always using the hardcoded _DEFAULT_BOT_DIFFICULTY /
+    # _DEFAULT_DEFENDER_BOT_DIFFICULTY constants (those constants remain the
+    # fallback default — "medium" — for matches created before this column
+    # existed or with no difficulty specified).
+    difficulty: Mapped[str] = mapped_column(
+        SAEnum("easy", "medium", "hard", name="arena_match_difficulty"),
+        nullable=False,
+        default="medium",
+        server_default="medium",
+    )
     started_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     completed_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     final_org_state_cache: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)

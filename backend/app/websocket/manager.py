@@ -244,12 +244,34 @@ def build_alert_event(alert: dict, index: int, total: int) -> dict:
     }
 
 
+
+# Extra per-option fields that, when present on an authored gate's option
+# dict, are passed through onto the wire alongside {index, text}. Scripted
+# (Scenario.decision_tree) gate options never set any of these keys — they
+# only ever carry "text"/"consequence_if_chosen" — so this is purely
+# additive for that path. Live Arena Mode's decision gates
+# (_build_arena_decision_gate in handlers.py) DO set these, because the
+# defender client has to send a real {action_type, payload} back over
+# `defender_action` (there is no server-side "chosen_option_index ->
+# action" lookup for arena the way submit_command_decision does for
+# scripted scenarios) — so the option's response_action_type and whichever
+# id field(s) it needs must reach the browser.
+_DECISION_GATE_OPTION_PASSTHROUGH_FIELDS = ("response_action_type", "host_id", "credential_id", "segment_id")
+
+
 def build_decision_gate_event(gate: dict) -> dict:
+    options = []
+    for i, opt in enumerate(gate["options"]):
+        entry = {"index": i, "text": opt["text"]}
+        for field in _DECISION_GATE_OPTION_PASSTHROUGH_FIELDS:
+            if field in opt:
+                entry[field] = opt[field]
+        options.append(entry)
     return {
         "type": "decision_gate",
         "gate_id": gate["id"],
         "context_summary": gate["context_summary"],
-        "options": [{"index": i, "text": opt["text"]} for i, opt in enumerate(gate["options"])],
+        "options": options,
         "server_time": datetime.utcnow().isoformat(),
     }
 
