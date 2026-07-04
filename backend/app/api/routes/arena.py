@@ -108,6 +108,36 @@ def _defender_initial_view(state) -> dict:
     }
 
 
+def _spectator_initial_view(state) -> dict:
+    """Live Breach Events Phase 5 — the initial snapshot sent to a
+    third-party spectator connecting to a LIVE Event match. This must leak
+    LESS than either participant view, not just "a third option": a real
+    outside observer of a live event shouldn't start out knowing anything
+    beyond what's already publicly inferable about the org's coarse shape
+    (this happens to be exactly the same shape the attacker itself starts
+    knowing, per `_attacker_initial_view` above — used here as the ceiling,
+    not exceeded).
+
+    Deliberately excludes, even though the defender's own initial view
+    includes them: the host list itself (hostnames encode role, e.g.
+    "...-DC-01"/"...-SCADA-01", which is host-level detail neither
+    participant's own INITIAL view assumes a bystander could infer),
+    per-segment `monitored` flags (the defender's own detection tooling
+    visibility, not something observable from outside), and of course
+    anything from the defender's credential/CVE internals or the
+    attacker's discovered intel. Host-level facts only become visible to a
+    spectator incrementally, as PUBLICLY OBSERVABLE outcomes of actions
+    already taken (e.g. "a host became compromised" / "a host was
+    isolated") — see `_build_spectator_action_event` in
+    app/websocket/handlers.py, which derives exactly those two facts from
+    an OrgState diff rather than ever forwarding a raw action/alert."""
+    return {
+        "segment_count": len(state.segments),
+        "segments": [{"id": s.id, "name": s.name} for s in state.segments],
+        "host_count": len(state.hosts),
+    }
+
+
 def _match_summary(match: ArenaMatch) -> dict:
     return {
         "id": match.id,
@@ -916,3 +946,42 @@ async def get_arena_event_status(
         "matches": [_match_summary(m) for m in matches],
         "leaderboard": leaderboard,
     }
+
+
+# ── Live Breach Events Phase 5: spectator mode ──────────────────────────────
+#
+# GET /arena/events/{id}/live-matches — no auth, same reasoning as every
+# other public route in this section: `GET /arena/events/{id}/status` above
+# already publicly returns every match under an event (terminal or not,
+# including raw attacker_user_id/defender_user_id via _match_summary) — this
+# route is just a status="active"-filtered view of those same rows, so a
+# spectator UI can build a "pick a live match to watch" list without having
+# to fetch the whole event payload (leaderboard, every terminal match) first.
+# `spectator_count` is the one new field, read from the in-process
+# `manager.arena_spectators` bookkeeping (app/websocket/manager.py) — never
+# persisted, since it's inherently transient live-connection state, same
+# category of thing as `manager.arena_queue`.
+
+@router.get("/events/{event_id}/live-matches")
+async def list_event_live_matches(
+    event_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Currently-active matches under a Live Event, for a spectator to pick
+    from. 404 for an unknown event_id (mirrors get_arena_event_status)."""
+    event_result = await db.execute(select(ArenaEvent).where(ArenaEvent.id == event_id))
+    event = event_result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="Arena event not found")
+
+    matches_result = await db.execute(
+        select(ArenaMatch)
+        .where(ArenaMatch.event_id == event_id, ArenaMatch.status == "active")
+        .order_by(ArenaMatch.started_at)
+    )
+    matches = matches_result.scalars().all()
+
+    return [
+        {**_match_summary(m), "spectator_count": manager.arena_spectator_count(m.id)}
+        for m in matches
+    ]

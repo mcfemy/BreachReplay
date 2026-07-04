@@ -23,7 +23,7 @@ from app.core.logging import set_request_context, setup_logging
 from app.core.redis import get_redis
 from app.core.security import limiter, sentry_before_send
 from app.db.session import engine
-from app.websocket.handlers import simulation_ws_handler, arena_ws_handler
+from app.websocket.handlers import simulation_ws_handler, arena_ws_handler, arena_spectator_ws_handler
 
 if settings.SENTRY_DSN:
     sentry_sdk.init(
@@ -246,8 +246,19 @@ async def websocket_session(websocket: WebSocket, session_id: str):
 @app.websocket("/ws/arena/{match_id}")
 async def websocket_arena(websocket: WebSocket, match_id: str):
     """Live Arena Mode match connection (Phase C). Mirrors /ws/session/{id}'s
-    rate-limit + deferred-auth-frame pattern exactly (BR-ARC-02 / BR-SEC-01)."""
-    # 1. Per-IP rate limit before completing the upgrade (BR-ARC-02)
+    rate-limit + deferred-auth-frame pattern exactly (BR-ARC-02 / BR-SEC-01).
+
+    Live Breach Events Phase 5: the first frame may ALSO be
+    `{"type": "spectate"}` (no token) instead of `{"type": "auth", ...}` —
+    routed to `arena_spectator_ws_handler`, which is itself hard-gated
+    server-side on `match.event_id is not None` (re-derived from the DB,
+    never trusted from this frame or anywhere else client-supplied) —
+    spectating is meant to be public/anonymous ONLY for Live Event matches,
+    so this branch does zero JWT verification. The `{"type": "auth", ...}`
+    path below for real participants is completely unchanged."""
+    # 1. Per-IP rate limit before completing the upgrade (BR-ARC-02) —
+    #    applies identically to both the auth and spectate paths, since it
+    #    runs before either first-frame type is even read.
     client_ip = _get_client_ip(websocket)
     r = await get_redis()
     if not await _ws_rate_allowed(r, client_ip):
@@ -257,17 +268,28 @@ async def websocket_arena(websocket: WebSocket, match_id: str):
     # 2. Complete the HTTP → WebSocket upgrade
     await websocket.accept()
 
-    # 3. First message must be an auth frame within 3 s (BR-SEC-01 / BR-BUG-01)
+    # 3. First message must arrive within 3 s (BR-SEC-01 / BR-BUG-01) and be
+    #    either {"type": "auth", "token": ...} or {"type": "spectate"}.
     try:
         raw = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)
-        auth_msg = json.loads(raw)
-        if auth_msg.get("type") != "auth":
-            await websocket.close(code=4001)
-            return
-        token = auth_msg.get("token", "")
+        first_msg = json.loads(raw)
     except (asyncio.TimeoutError, json.JSONDecodeError, Exception):
         await websocket.close(code=4001)
         return
+
+    first_type = first_msg.get("type")
+
+    if first_type == "spectate":
+        # No JWT verification at all — public/anonymous by design. The
+        # event_id gate lives inside arena_spectator_ws_handler itself
+        # (re-checked against the DB), not here.
+        await arena_spectator_ws_handler(websocket, match_id)
+        return
+
+    if first_type != "auth":
+        await websocket.close(code=4001)
+        return
+    token = first_msg.get("token", "")
 
     # 4. Verify JWT
     try:

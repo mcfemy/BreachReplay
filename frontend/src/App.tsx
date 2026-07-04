@@ -28,6 +28,7 @@ const PublicReplayPage = lazy(() => import("./pages/PublicReplayPage"));
 const GlobalIndexPage = lazy(() => import("./pages/GlobalIndexPage"));
 const ArenaEventsPage = lazy(() => import("./pages/ArenaEventsPage"));
 const ArenaEventDetailPage = lazy(() => import("./pages/ArenaEventDetailPage"));
+const ArenaSpectatePage = lazy(() => import("./pages/ArenaSpectatePage"));
 const OrgUploadPage = lazy(() => import("./pages/OrgUploadPage"));
 const TeamsPage = lazy(() => import("./pages/TeamsPage"));
 const NotFoundPage = lazy(() => import("./pages/NotFoundPage"));
@@ -71,6 +72,7 @@ export default function App() {
             <Route path="/global-index" element={<GlobalIndexPage />} />
             <Route path="/arena/events" element={<ArenaEventsPage />} />
             <Route path="/arena/events/:eventId" element={<ArenaEventDetailPage />} />
+            <Route path="/arena/events/:eventId/watch/:matchId" element={<ArenaSpectatePage />} />
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
 
             {/* Authenticated routes — all get the sidebar via AppShell */}

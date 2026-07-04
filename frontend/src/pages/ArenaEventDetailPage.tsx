@@ -66,6 +66,14 @@ interface EventStatusResponse {
   leaderboard: LeaderboardEntry[];
 }
 
+// Live Breach Events Phase 5 — GET /arena/events/{id}/live-matches's shape
+// (verified against backend/app/api/routes/arena.py's list_event_live_matches:
+// _match_summary's fields plus one new spectator_count field, read from
+// manager.arena_spectators' in-process bookkeeping — never persisted).
+interface LiveMatchSummary extends MatchSummary {
+  spectator_count: number;
+}
+
 interface QueueStatusResponse {
   status: "not_queued" | "waiting" | "matched";
   match_id: string | null;
@@ -145,6 +153,7 @@ export default function ArenaEventDetailPage() {
   const [data, setData] = useState<EventStatusResponse | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [liveMatches, setLiveMatches] = useState<LiveMatchSummary[]>([]);
 
   const [joinFlow, setJoinFlow] = useState<"idle" | "waiting" | "error">("idle");
   const [joinError, setJoinError] = useState<string | null>(null);
@@ -166,14 +175,34 @@ export default function ArenaEventDetailPage() {
     }
   }
 
+  // Live Breach Events Phase 5 — a spectator-picker fetch, kept separate
+  // from fetchStatus (different endpoint/shape: status="active"-filtered
+  // matches only, plus spectator_count) but polled on the exact same
+  // interval below so there's only one timer, not two. Best-effort: a
+  // failed fetch here just means no Watch links render this tick, never
+  // blocks the rest of the page.
+  async function fetchLiveMatches() {
+    if (!eventId) return;
+    try {
+      const resp = await axiosInstance.get<LiveMatchSummary[]>(`/arena/events/${eventId}/live-matches`);
+      setLiveMatches(resp.data);
+    } catch {
+      // best-effort — see comment above
+    }
+  }
+
   useEffect(() => {
     fetchStatus();
+    fetchLiveMatches();
     // Poll every 4s — matches ArenaLobbyPage's Quick Match cadence. A live
     // event's joined_count/leaderboard changes as matches resolve, and this
     // same endpoint opportunistically drains the AI-fallback queue once the
     // join window closes (see arena.py docstring), so polling here also
     // helps that happen promptly for anyone with this page open.
-    statusPollRef.current = setInterval(fetchStatus, 4000);
+    statusPollRef.current = setInterval(() => {
+      fetchStatus();
+      fetchLiveMatches();
+    }, 4000);
     return () => {
       if (statusPollRef.current) clearInterval(statusPollRef.current);
       if (queuePollRef.current) clearInterval(queuePollRef.current);
@@ -315,6 +344,39 @@ export default function ArenaEventDetailPage() {
           {event.status === "cancelled" && (
             <div className="border border-gray-800 rounded-xl p-6 bg-gray-900/40 text-center text-gray-500 text-sm">
               This event has been cancelled.
+            </div>
+          )}
+
+          {/* Live Breach Events Phase 5 — spectator entry point. Only
+              meaningful while the event is actually live (matches under
+              live-matches are status="active" by construction — a
+              scheduled/completed/cancelled event never has any). */}
+          {event.status === "live" && liveMatches.length > 0 && (
+            <div className="border border-gray-800 rounded-xl bg-gray-900/40 overflow-hidden">
+              <div className="px-5 py-3 border-b border-gray-800">
+                <h2 className="text-xs font-bold uppercase tracking-widest text-gray-400">
+                  👁 Watch Live Matches
+                </h2>
+              </div>
+              <div className="divide-y divide-gray-800/60">
+                {liveMatches.map((m) => (
+                  <div key={m.id} className="flex items-center gap-3 px-5 py-3 text-xs">
+                    <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse shrink-0" />
+                    <span className="flex-1 text-gray-400">
+                      Match {m.id.slice(0, 8)} · {m.mode.replace(/_/g, " ")}
+                    </span>
+                    <span className="text-gray-600">
+                      {m.spectator_count} watching
+                    </span>
+                    <Link
+                      to={`/arena/events/${eventId}/watch/${m.id}`}
+                      className="px-3 py-1.5 rounded bg-cyan-700 hover:bg-cyan-600 text-white font-bold uppercase tracking-wider transition-colors text-[10px]"
+                    >
+                      Watch
+                    </Link>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

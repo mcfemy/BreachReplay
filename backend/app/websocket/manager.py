@@ -72,6 +72,23 @@ class ConnectionManager:
         self.arena_queue: Dict[str, dict] = {}
         self._arena_queue_lock: asyncio.Lock = asyncio.Lock()
 
+        # ── Live Breach Events Phase 5: spectator broadcast ──────────────
+        # match_id -> set of spectator websockets. Deliberately a SEPARATE
+        # structure from arena_connections, NOT a third key inside that
+        # dict: arena_connections' fixed 2-role {"attacker": ws,
+        # "defender": ws} shape is load-bearing everywhere it's read
+        # (get_arena_connection/register_arena_connection/
+        # unregister_arena_connection all assume exactly those two keys,
+        # e.g. _notify_arena_action_result's attacker_ws/defender_ws
+        # lookups) — overloading it with an unboundedly-sized third
+        # "spectator" key would break that invariant for every existing
+        # call site. Modeled on the existing generic broadcast()/
+        # session_size() pattern (session_id -> Set[WebSocket]) instead of
+        # send_personal, since a match's spectators are a broadcast room
+        # (potentially many anonymous watchers), not one addressable
+        # recipient.
+        self.arena_spectators: Dict[str, Set[WebSocket]] = {}
+
     def get_arena_match_lock(self, match_id: str) -> asyncio.Lock:
         if match_id not in self.arena_match_locks:
             self.arena_match_locks[match_id] = asyncio.Lock()
@@ -114,6 +131,40 @@ class ConnectionManager:
         """
         self.arena_match_locks.pop(match_id, None)
         self.arena_defender_bot_responses.pop(match_id, None)
+
+    def register_arena_spectator(self, match_id: str, websocket: WebSocket) -> None:
+        self.arena_spectators.setdefault(match_id, set()).add(websocket)
+
+    def unregister_arena_spectator(self, match_id: str, websocket: WebSocket) -> None:
+        spectators = self.arena_spectators.get(match_id)
+        if spectators is not None:
+            spectators.discard(websocket)
+            if not spectators:
+                del self.arena_spectators[match_id]
+
+    async def broadcast_to_arena_spectators(self, match_id: str, message: dict) -> None:
+        """Broadcast a (caller-already-redacted) event to every spectator
+        socket currently watching this match. Mirrors broadcast()'s exact
+        dead-socket-cleanup pattern: send to each socket, collect any that
+        raise, discard them after the loop rather than mutating the set
+        while iterating it. Safe no-op when the match has zero spectators
+        (the overwhelmingly common case — _notify_arena_action_result calls
+        this unconditionally for every action on every match, so this must
+        never do real work, let alone raise, when nobody is watching)."""
+        spectators = self.arena_spectators.get(match_id)
+        if not spectators:
+            return
+        dead = set()
+        for ws in spectators:
+            try:
+                await ws.send_json(message)
+            except Exception:
+                dead.add(ws)
+        for ws in dead:
+            spectators.discard(ws)
+
+    def arena_spectator_count(self, match_id: str) -> int:
+        return len(self.arena_spectators.get(match_id, set()))
 
     def get_pause_event(self, session_id: str) -> asyncio.Event:
         if session_id not in self.pause_events:

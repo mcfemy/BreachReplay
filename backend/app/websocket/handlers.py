@@ -33,6 +33,19 @@ from app.services import arena_rating_service
 
 logger = logging.getLogger(__name__)
 
+# Live Breach Events Phase 5: `_spectator_initial_view` lives in
+# app/api/routes/arena.py alongside `_attacker_initial_view`/
+# `_defender_initial_view` (the existing "what's plausible for an observer
+# to know" redaction precedent it's directly modeled on/against) rather
+# than being duplicated here. `_match_summary` is the same match-metadata
+# serializer GET /arena/events/{id}/status and GET /arena/events/{id}/
+# live-matches already return publicly — reused here so the spectator WS's
+# initial frame never drifts from what's already public knowledge via
+# those REST routes. Importing at module level (not lazily inside the
+# handler) is safe here: app.api.routes.arena has no import back onto this
+# module, so there is no cycle.
+from app.api.routes.arena import _spectator_initial_view, _match_summary
+
 # Fields the investigation panel (Phase 3) can pivot on. Values are matched against
 # each hidden IOC's `matches_on` dict first (exact field match), falling back to a
 # case-insensitive substring match over `raw_log`/`description` so hidden entries
@@ -855,6 +868,61 @@ async def _apply_defender_bot_response_locked(
     }
 
 
+def _build_spectator_action_event(role: str, result: dict) -> dict:
+    """Live Breach Events Phase 5 — the ONE spectator-facing event built
+    per action, deliberately derived from an `OrgState` DIFF (prev_state vs
+    new_state) rather than ever forwarding `action_type`/`payload`/`alert`
+    verbatim. This keeps the spectator feed limited to exactly the two
+    "publicly observable outcome" facts the plan calls out — a host became
+    compromised, or a host was isolated — and nothing about which
+    credential/CVE/technique/detection-rule made it happen, mirroring
+    `_defender_initial_view`'s "sees monitoring is on, not which rules
+    exist" redaction discipline one level further.
+
+    `host_id` values here are opaque (spectators are never given a
+    hostname/role mapping via `_spectator_initial_view` — see that
+    function's docstring), so this reveals "some host, identified only by
+    an id a spectator has no way to resolve to a name/role, changed
+    state" — not which specific machine or why.
+
+    `result["new_state"]` already reflects any synchronous AI-defender
+    reaction applied inside `_execute_arena_action` for
+    `human_attacks_vs_ai` matches (see that function's docstring) — so one
+    call here, at the single call site in `_notify_arena_action_result`,
+    correctly captures the full turn's net effect regardless of match
+    mode, without needing a second call for the bot's reaction."""
+    prev_state = result["prev_state"]
+    new_state = result["new_state"]
+
+    def _was_compromised(host_id: str) -> bool:
+        prev_host = prev_state.get_host(host_id)
+        return bool(prev_host and prev_host.compromise_level != "none")
+
+    def _was_isolated(host_id: str) -> bool:
+        prev_host = prev_state.get_host(host_id)
+        return bool(prev_host and prev_host.isolated)
+
+    hosts_newly_compromised = [
+        h.id for h in new_state.hosts
+        if h.compromise_level != "none" and not _was_compromised(h.id)
+    ]
+    hosts_newly_isolated = [
+        h.id for h in new_state.hosts
+        if h.isolated and not _was_isolated(h.id)
+    ]
+
+    return {
+        "type": "spectator_action",
+        "sequence_number": result["sequence_number"],
+        "actor": role,
+        "hosts_newly_compromised": hosts_newly_compromised,
+        "hosts_newly_isolated": hosts_newly_isolated,
+        "match_completed": result["match_completed"],
+        "match_status": result["match_status"],
+        "server_time": datetime.utcnow().isoformat(),
+    }
+
+
 async def _notify_arena_action_result(
     match_id: str, role: str, action_type: str, payload: dict, result: dict, match_mode: str = "pvp",
     difficulty: str = "medium",
@@ -978,6 +1046,20 @@ async def _notify_arena_action_result(
                 "sequence_number": sequence_number,
                 "rating_change": rating_changes.get("defender"),
             }))
+
+    # Live Breach Events Phase 5: broadcast a redacted event to this match's
+    # spectators (public, no-auth watchers of a Live Event match — see
+    # arena_spectator_ws_handler below). Safe no-op when nobody is watching
+    # (broadcast_to_arena_spectators mirrors the generic broadcast()'s
+    # early-return for an absent/empty set), so this runs unconditionally
+    # for every action on every match rather than only when
+    # match.event_id is set — cheaper than re-querying the match row here
+    # just to skip the call, and correctness doesn't depend on it either
+    # way since a non-event match simply never has any spectators
+    # registered against its match_id in the first place.
+    await manager.broadcast_to_arena_spectators(
+        match_id, _build_spectator_action_event(role, result),
+    )
 
 
 # ── Live Arena Mode (Phase D) — AI attacker policy bot driver ───────────────
@@ -1312,4 +1394,83 @@ async def arena_ws_handler(websocket: WebSocket, match_id: str, user_id: str):
     except WebSocketDisconnect:
         manager.disconnect(match_id, websocket)
         manager.unregister_arena_connection(match_id, role, websocket)
+
+
+# ── Live Breach Events Phase 5 — public spectator connection ───────────────
+#
+# Design notes (see docs/plans/twinkly-popping-llama.md, Phase 5):
+#
+# This is a genuinely SEPARATE code path from arena_ws_handler above, not a
+# third role value threaded through it, because a spectator:
+#   1. needs no user_id/JWT at all — the connection is public/anonymous by
+#      design (see app/main.py's websocket_arena, which routes a first
+#      frame of {"type": "spectate"} here with zero JWT verification,
+#      completely unlike the {"type": "auth", "token": ...} path that
+#      still gates arena_ws_handler unchanged);
+#   2. must never be allowed to submit attacker_action/defender_action —
+#      there is no "role" here to check a message type against, so the
+#      receive loop below simply never routes ANY inbound message content
+#      toward _execute_arena_action, regardless of what a message claims
+#      its type is;
+#   3. is hard-gated server-side to `match.event_id is not None`,
+#      RE-DERIVED FROM THE DB on every single connection attempt — never
+#      trust a client's claim that a match is event-scoped. Restricting
+#      spectating to Live Event matches only is what avoids the general
+#      "can anyone watch my private 1v1 match" consent problem for v1:
+#      joining a publicly-scheduled event is itself implicit opt-in, a
+#      normal ad-hoc/queue-matched PvP or vs-AI match is not.
+async def arena_spectator_ws_handler(websocket: WebSocket, match_id: str) -> None:
+    """Public, anonymous, read-only spectator connection for a Live Event
+    arena match. Caller (app/main.py's websocket_arena) has already called
+    websocket.accept() before this function is ever invoked, exactly like
+    arena_ws_handler's own calling convention.
+
+    Sends one initial `spectator_init` event (match metadata already public
+    via GET /arena/events/{id}/status, plus `_spectator_initial_view`'s
+    redacted state snapshot), then loops on receive_text() purely to detect
+    disconnect (and answer `ping`) — never to accept a real game action."""
+    async with AsyncSessionLocal() as db:
+        match, action_dicts = await _load_match_and_actions(db, match_id)
+        if not match:
+            await websocket.close(code=4004)
+            return
+        if match.event_id is None:
+            # Hard gate, re-checked against the DB every time — never
+            # trust anything the client claims about event-scoping. See
+            # the module-level design note above for the consent
+            # rationale (v1 scopes spectating to Live Event matches only).
+            await websocket.close(code=4003)
+            return
+
+    state, _ = replay(match.seed, match.archetype_key, action_dicts)
+
+    manager.register_arena_spectator(match_id, websocket)
+    try:
+        await manager.send_personal(websocket, {
+            "type": "spectator_init",
+            "match": _match_summary(match),
+            "state": _spectator_initial_view(state),
+            "server_time": datetime.utcnow().isoformat(),
+        })
+
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            # A spectator has nothing legitimate to send except `ping` —
+            # any other message type (including attacker_action/
+            # defender_action) is silently ignored rather than routed
+            # anywhere near _execute_arena_action. No error is sent back
+            # for unrecognized types: an anonymous, unauthenticated socket
+            # probing message shapes doesn't need a helpful error channel.
+            if msg.get("type") == "ping":
+                await manager.send_personal(websocket, build_system_event("pong"))
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        manager.unregister_arena_spectator(match_id, websocket)
 
