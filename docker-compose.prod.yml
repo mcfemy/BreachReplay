@@ -37,7 +37,18 @@ services:
       redis:
         condition: service_healthy
     restart: always
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
+    # Single worker is deliberate, not a default: Live Arena Mode's realtime
+    # state (WS connection routing, matchmaking queue, spectator registry,
+    # the Live Breach Events Phase 4/5 background sweep loop) all live in
+    # one in-process ConnectionManager singleton per app/websocket/manager.py.
+    # With >1 uvicorn worker, each is a separate OS process with its own
+    # independent singleton, and nginx (nginx/breachreplay.conf) has no
+    # upstream/ip_hash config giving one client's connections session
+    # affinity to a specific worker — two matched players (or a spectator
+    # and the match they're watching) could silently land on different
+    # workers and never see each other. Do not raise this without first
+    # moving that shared state to Redis or adding real sticky routing.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
 
   worker:
     build:
