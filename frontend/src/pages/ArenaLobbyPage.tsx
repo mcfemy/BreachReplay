@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/auth";
+import ArenaHowItWorksModal from "../components/ArenaHowItWorksModal";
+
+const ARENA_HOW_IT_WORKS_SEEN_KEY = "br_arena_onboarded";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 type Mode = "pvp" | "human_defends_vs_ai" | "human_attacks_vs_ai";
@@ -83,6 +86,16 @@ interface QueueStatusResponse {
 export default function ArenaLobbyPage() {
   const navigate = useNavigate();
   const { user } = useAuthStore();
+
+  // New-user onboarding: auto-shown once per browser (mirrors OnboardingModal's
+  // localStorage-gated convention, scoped to its own key since this is
+  // Arena-specific, not the app-wide welcome flow), reopenable anytime via
+  // the "How It Works" button below.
+  const [showHowItWorks, setShowHowItWorks] = useState(() => !localStorage.getItem(ARENA_HOW_IT_WORKS_SEEN_KEY));
+  function dismissHowItWorks() {
+    localStorage.setItem(ARENA_HOW_IT_WORKS_SEEN_KEY, "1");
+    setShowHowItWorks(false);
+  }
 
   const [flow, setFlow] = useState<FlowState>("select");
   const [mode, setMode] = useState<Mode | null>(null);
@@ -318,13 +331,24 @@ export default function ArenaLobbyPage() {
             A real, deterministic simulated org — attacker and defender both act against the SAME
             live state. No scripted outcomes, no repeat matches.
           </p>
-          <button
-            onClick={() => navigate("/arena/leaderboard")}
-            className="mt-4 text-xs text-yellow-500 hover:text-yellow-400 font-bold uppercase tracking-widest transition-colors"
-          >
-            🏆 View Arena Leaderboard
-          </button>
+          <div className="mt-4 flex items-center justify-center gap-4">
+            <button
+              onClick={() => navigate("/arena/leaderboard")}
+              className="text-xs text-yellow-500 hover:text-yellow-400 font-bold uppercase tracking-widest transition-colors"
+            >
+              🏆 View Arena Leaderboard
+            </button>
+            <span className="text-gray-700">·</span>
+            <button
+              onClick={() => setShowHowItWorks(true)}
+              className="text-xs text-cyan-500 hover:text-cyan-400 font-bold uppercase tracking-widest transition-colors"
+            >
+              ❓ How It Works
+            </button>
+          </div>
         </div>
+
+        <ArenaHowItWorksModal open={showHowItWorks} onClose={dismissHowItWorks} />
 
         {error && (
           <div className="border border-red-500/40 bg-red-500/10 rounded-lg p-3 mb-6 text-sm text-red-300">
