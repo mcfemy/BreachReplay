@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
+import FreshIncidentTicker from "../components/FreshIncidentTicker";
 
 interface Scenario {
   id: string;
@@ -88,6 +89,11 @@ export default function ScenarioLibraryPage() {
             <a href="/settings" className="text-breach-muted hover:text-breach-text transition-colors uppercase tracking-wider">Settings</a>
           </div>
         </div>
+
+        {/* Fresh Incident Ticker — breaking-news strip, distinct from the
+            2-col feature-spotlight grid below; placed first so the "new real
+            incident" urgency is the first thing users see on landing. */}
+        <FreshIncidentTicker />
 
         {/* Search mode banner when AI is active */}
         {semantic && (

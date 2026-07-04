@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.db.session import get_db
 from app.models.scenario import Scenario
 from app.models.user import User
-from app.schemas.scenario import ScenarioCreate, ScenarioOut, ScenarioDetail, IndustryVertical, Difficulty
+from app.schemas.scenario import ScenarioCreate, ScenarioOut, ScenarioDetail, ScenarioRecentOut, IndustryVertical, Difficulty
 from app.core.security import get_current_user, require_admin
 
 
@@ -95,6 +95,34 @@ async def list_scenarios(
 
     result = await db.execute(q)
     return [ScenarioOut.model_validate(s) for s in result.scalars().all()]
+
+
+@router.get("/recent", response_model=List[ScenarioRecentOut])
+async def list_recent_scenarios(
+    limit: int = Query(10, ge=1, le=25),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Live Breach Events Phase 2 — Fresh Incident Ticker. Dedicated endpoint
+    # (not a query-param on list_scenarios) so its shape/caching stay
+    # independent of the filterable library listing. Registered before
+    # /{scenario_id} below so FastAPI doesn't try to match "recent" as a
+    # scenario_id path param.
+    #
+    # Simpler filter than list_scenarios: no org-private carve-out, since the
+    # ticker is meant to surface freshly-ingested public incidents (the kind
+    # of content this feature is about), not an org's own private uploads —
+    # those wouldn't read as "breaking news" to the wider audience the
+    # ticker's FOMO framing targets.
+    q = (
+        select(Scenario)
+        .where(Scenario.status == "approved")
+        .where(Scenario.is_private == False)  # noqa: E712
+        .order_by(Scenario.created_at.desc())
+        .limit(limit)
+    )
+    result = await db.execute(q)
+    return [ScenarioRecentOut.model_validate(s) for s in result.scalars().all()]
 
 
 @router.get("/{scenario_id}", response_model=ScenarioDetail)

@@ -127,3 +127,18 @@ class ScenarioDetail(ScenarioOut):
     pressure_injections: Optional[Any]
     debrief_skeleton: Optional[Any]
     compression_ratio: float
+
+
+class ScenarioRecentOut(BaseModel):
+    """Lightweight payload for the Fresh Incident Ticker (Live Breach Events
+    Phase 2) — deliberately not ScenarioOut, which carries the full library
+    card shape. Keep this in sync with GET /scenarios/recent only."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    title: str
+    source_type: str
+    source_reference: Optional[str]
+    industry_vertical: Optional[str]
+    created_at: datetime
