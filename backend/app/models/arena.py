@@ -48,6 +48,13 @@ class ArenaMatch(Base):
     final_org_state_cache: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
+    # Live Breach Events Phase 1 — lazily generated (not backfilled) public
+    # share token. Only ever set via POST /arena/matches/{id}/share, and only
+    # once the match has reached a terminal status. Presence of a token does
+    # NOT by itself grant public access to non-terminal matches — the public
+    # GET /arena/public/replay/{share_token} route re-checks match.status.
+    share_token: Mapped[str] = mapped_column(String(32), nullable=True, unique=True, index=True)
+
     attacker: Mapped["User"] = relationship("User", foreign_keys=[attacker_user_id])
     defender: Mapped["User"] = relationship("User", foreign_keys=[defender_user_id])
     actions: Mapped[list["ArenaAction"]] = relationship(

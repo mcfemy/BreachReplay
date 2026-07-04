@@ -1,9 +1,13 @@
 """
 User profile, XP, achievements, and global leaderboard.
 """
+import re
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func, text
+from sqlalchemy.exc import IntegrityError
 
 from app.db.session import get_db
 from app.models.user import User
@@ -11,6 +15,12 @@ from app.core.security import get_current_user
 from app.services.xp_service import CAREER_TIERS, ACHIEVEMENTS, compute_tier, xp_to_next_tier
 
 router = APIRouter(prefix="/profile", tags=["profile"])
+
+# Separate router (distinct prefix) for the Live Breach Events Phase 1
+# public-profile opt-in settings — kept in this file since it's the existing
+# home of user-profile-adjacent concerns, but registered under /users in
+# app/api/__init__.py to match the plan's PATCH /users/me/public-profile path.
+users_router = APIRouter(prefix="/users", tags=["users"])
 
 
 def _tier_progress(xp: int) -> dict:
@@ -162,3 +172,79 @@ async def get_all_achievements():
         {"key": k, **v}
         for k, v in ACHIEVEMENTS.items()
     ]
+
+
+# ── Live Breach Events Phase 1: public-profile opt-in ──────────────────────
+#
+# Opt-in only: full_name may already be a real name pulled in via OAuth, and
+# must never appear on a public replay page (GET /arena/public/replay/{token})
+# unless the user has explicitly enabled arena_profile_public AND set a handle.
+
+_HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
+
+
+class PublicProfileUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    public_display_handle: str | None = Field(default=None)
+    arena_profile_public: bool | None = Field(default=None)
+
+    @field_validator("public_display_handle")
+    @classmethod
+    def _validate_handle(cls, v: str | None) -> str | None:
+        if v is not None and not _HANDLE_RE.match(v):
+            raise ValueError(
+                "public_display_handle must be 3-20 characters, letters/digits/underscore only"
+            )
+        return v
+
+
+@users_router.get("/me/public-profile")
+async def get_public_profile(
+    current_user: User = Depends(get_current_user),
+):
+    """Read-only hydration for the opt-in public-profile settings — same
+    shape the PATCH below returns. No side effects."""
+    return {
+        "public_display_handle": current_user.public_display_handle,
+        "arena_profile_public": current_user.arena_profile_public,
+    }
+
+
+@users_router.patch("/me/public-profile")
+async def update_public_profile(
+    payload: PublicProfileUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Set the opt-in public display handle and/or public-profile toggle used
+    by public Arena replay links. Uniqueness is pre-checked (same convention
+    as email uniqueness at registration in auth.py's `register`) as a fast
+    path, but two requests can race between that pre-check and commit — the
+    `IntegrityError` handler below is the actual guarantee, catching the
+    loser of that race and turning it into the same clean 409 rather than an
+    unhandled 500."""
+    if payload.public_display_handle is not None:
+        existing = await db.execute(
+            select(User).where(
+                User.public_display_handle == payload.public_display_handle,
+                User.id != current_user.id,
+            )
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=409, detail="This display handle is already taken")
+        current_user.public_display_handle = payload.public_display_handle
+
+    if payload.arena_profile_public is not None:
+        current_user.arena_profile_public = payload.arena_profile_public
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="This display handle is already taken")
+    await db.refresh(current_user)
+    return {
+        "public_display_handle": current_user.public_display_handle,
+        "arena_profile_public": current_user.arena_profile_public,
+    }

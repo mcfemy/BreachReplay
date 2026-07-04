@@ -17,6 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select, or_, desc
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
@@ -343,6 +344,189 @@ async def explore_match(
         "alternate_action": alternate_dict,
         "state": alt_state.to_dict(),
         "events": alt_events,
+    }
+
+
+# ── Live Breach Events Phase 1: public share links ──────────────────────────
+#
+# Any completed match can get a public, no-login-required URL — the primary
+# organic-growth loop (posted to Discord/Twitter/LinkedIn). Two routes:
+#   POST /arena/matches/{id}/share            — auth, participant-only, mints/returns the token
+#   GET  /arena/public/replay/{share_token}    — no auth at all, redacted summary only
+#
+# Deliberately does NOT proxy to explore_match's branching-replay logic —
+# that endpoint accepts arbitrary caller-supplied hypothetical actions with
+# no rate limiting, and opening it publicly would multiply abuse surface for
+# a "nice to have." Out of scope for this phase.
+
+@router.post("/matches/{match_id}/share")
+async def share_match(
+    match_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate (or idempotently return) a public share token for a completed
+    match. Same 403 "participant only" guard as `get_match`."""
+    result = await db.execute(select(ArenaMatch).where(ArenaMatch.id == match_id))
+    match = result.scalar_one_or_none()
+    if not match:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if current_user.id not in (match.attacker_user_id, match.defender_user_id):
+        raise HTTPException(status_code=403, detail="Not a participant in this match")
+    if match.status not in _COMPLETED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail="Sharing is only available once a match has completed",
+        )
+
+    if match.share_token:
+        return {"share_token": match.share_token, "share_url_path": f"/replay/{match.share_token}"}
+
+    # Re-fetch with a row-level lock right before the mint-and-commit
+    # section: two participants (e.g. attacker + defender) hitting this
+    # endpoint at the same moment would otherwise each generate a
+    # *different* random token for the same match, and since the tokens
+    # differ the unique constraint never fires — the second COMMIT would
+    # silently overwrite the first writer's token. Locking the row makes
+    # the second request block until the first transaction commits, then
+    # see the now-set share_token below and return it idempotently instead
+    # of overwriting it.
+    locked_result = await db.execute(
+        select(ArenaMatch).where(ArenaMatch.id == match_id).with_for_update()
+    )
+    match = locked_result.scalar_one_or_none()
+    if not match:
+        raise HTTPException(status_code=404, detail="Match not found")
+    if match.share_token:
+        return {"share_token": match.share_token, "share_url_path": f"/replay/{match.share_token}"}
+
+    # secrets.token_urlsafe(16) has enough entropy that a collision is
+    # vanishingly unlikely, but the column is unique — retry a handful of
+    # times on IntegrityError as defense-in-depth (the row lock above is
+    # the primary fix for the concurrent-mint race above; this loop now
+    # mainly guards against a true random-token collision).
+    for _ in range(5):
+        candidate = secrets.token_urlsafe(16)
+        match.share_token = candidate
+        try:
+            await db.commit()
+            break
+        except IntegrityError:
+            await db.rollback()
+            # Re-attach match to the session after rollback before retrying.
+            result = await db.execute(
+                select(ArenaMatch).where(ArenaMatch.id == match_id).with_for_update()
+            )
+            match = result.scalar_one_or_none()
+            if match is None:
+                raise HTTPException(status_code=404, detail="Match not found")
+            if match.share_token:
+                return {"share_token": match.share_token, "share_url_path": f"/replay/{match.share_token}"}
+    else:
+        raise HTTPException(status_code=500, detail="Could not generate a unique share token")
+
+    return {"share_token": match.share_token, "share_url_path": f"/replay/{match.share_token}"}
+
+
+def _public_participant_label(user: Optional[User], role_placeholder: str) -> str:
+    """Resolve a participant's public-facing label: their opted-in display
+    handle if they've explicitly enabled arena_profile_public, otherwise a
+    stable per-role placeholder ("Player A"/"Player B") — never randomized,
+    so repeat views of the same link are consistent, and never the raw
+    user_id or full_name (full_name may be a real OAuth name)."""
+    if user and user.arena_profile_public and user.public_display_handle:
+        return user.public_display_handle
+    return role_placeholder
+
+
+@router.get("/public/replay/{share_token}")
+async def get_public_replay(
+    share_token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Public, no-auth match replay summary — the link posted to Discord/
+    Twitter/LinkedIn. Hard-gated to terminal statuses only as defense-in-
+    depth (a token is only ever minted for a completed match in the first
+    place, but this route never trusts that alone). Reads state from
+    `final_org_state_cache` rather than calling `replay()` — avoiding that
+    recomputation on a public, potentially crawled endpoint is the whole
+    point of the cache.
+
+    NOTE: this route is intentionally unauthenticated and has no rate
+    limiting applied. slowapi (see app.core.security.limiter) is already
+    used elsewhere in this codebase (auth.py, ingestion.py) — if this route
+    sees real abuse/crawling volume, apply the same `@limiter.limit(...)`
+    decorator convention used there. Left as a follow-up per the phase 1 plan
+    rather than adding it speculatively now.
+    """
+    result = await db.execute(select(ArenaMatch).where(ArenaMatch.share_token == share_token))
+    match = result.scalar_one_or_none()
+    if not match:
+        raise HTTPException(status_code=404, detail="Replay not found")
+    if match.status not in _COMPLETED_STATUSES:
+        # Never expose in-progress match state on a public route — treat a
+        # non-terminal match exactly like an unknown token (404, not 400),
+        # since a token is only ever minted for an already-terminal match.
+        raise HTTPException(status_code=404, detail="Replay not found")
+
+    attacker_user, defender_user = None, None
+    if match.attacker_user_id:
+        attacker_result = await db.execute(select(User).where(User.id == match.attacker_user_id))
+        attacker_user = attacker_result.scalar_one_or_none()
+    if match.defender_user_id:
+        defender_result = await db.execute(select(User).where(User.id == match.defender_user_id))
+        defender_user = defender_result.scalar_one_or_none()
+
+    actions_result = await db.execute(
+        select(ArenaAction)
+        .where(ArenaAction.match_id == match.id)
+        .order_by(ArenaAction.sequence_number)
+    )
+    action_rows = actions_result.scalars().all()
+    action_dicts = [
+        {
+            "sequence_number": a.sequence_number,
+            "actor": a.actor,
+            "action_type": a.action_type,
+            "payload": a.payload,
+        }
+        for a in action_rows
+    ]
+
+    # final_org_state_cache is populated by _mark_match_completed_if_needed
+    # (app/websocket/handlers.py) at the moment a match reaches a terminal
+    # status — never None for a match that passed the status check above,
+    # but guard defensively anyway rather than assuming.
+    state = match.final_org_state_cache or {}
+
+    # events (detected/alert) shape mirrors what get_match returns today, but
+    # replay() isn't called here — the alert/detected metadata already lives
+    # on the persisted ArenaAction payload is NOT captured that way (get_match
+    # derives it from replay()'s event stream). Since the whole point of this
+    # route is avoiding replay() recomputation, the public timeline exposes
+    # the actor/action_type/sequence_number from the real action log directly
+    # (no detected/alert annotations) rather than recomputing them.
+    events = [
+        {
+            "sequence_number": a["sequence_number"],
+            "actor": a["actor"],
+            "action_type": a["action_type"],
+        }
+        for a in action_dicts
+    ]
+
+    return {
+        "archetype_key": match.archetype_key,
+        "difficulty": match.difficulty,
+        "mode": match.mode,
+        "status": match.status,
+        "started_at": match.started_at.isoformat() if match.started_at else None,
+        "completed_at": match.completed_at.isoformat() if match.completed_at else None,
+        "action_count": len(action_dicts),
+        "attacker_label": _public_participant_label(attacker_user, "Player A"),
+        "defender_label": _public_participant_label(defender_user, "Player B"),
+        "state": state,
+        "events": events,
     }
 
 

@@ -39,5 +39,13 @@ class User(Base):
     arena_losses: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     arena_matches_played: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
+    # Live Breach Events Phase 1 — public share links (opt-in only: full_name
+    # may already be a real name pulled in from OAuth, so it must never be
+    # shown on a public replay page by default). arena_profile_public defaults
+    # False for every existing row via server_default; public_display_handle
+    # is nullable/unique and only meaningful once arena_profile_public is True.
+    public_display_handle: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, unique=True, index=True)
+    arena_profile_public: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+
     organization: Mapped["Organization"] = relationship("Organization", back_populates="users")
     session_participants: Mapped[list["SessionParticipant"]] = relationship("SessionParticipant", back_populates="user")

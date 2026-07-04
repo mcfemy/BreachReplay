@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { axiosInstance, api } from "../lib/api";
 import { useAuthStore } from "../store/auth";
@@ -537,6 +537,144 @@ function MFASection() {
   );
 }
 
+// ── Live Breach Events Phase 1 — opt-in public Arena replay profile ───────────
+// Public replay pages (/replay/:shareToken) never show a real name/email by
+// default; a user must explicitly opt in here and choose a display handle
+// before either appears on a shared match link. Hydration reads via
+// GET /users/me/public-profile; saves go through PATCH /users/me/public-profile
+// (same response shape).
+interface PublicProfileData {
+  public_display_handle: string | null;
+  arena_profile_public: boolean;
+}
+
+const HANDLE_RE = /^[A-Za-z0-9_]{3,20}$/;
+
+function PublicProfileSection() {
+  const queryClient = useQueryClient();
+
+  const { data: publicProfile, isLoading, isError } = useQuery<PublicProfileData>({
+    queryKey: ["my-public-profile"],
+    queryFn: () => axiosInstance.get("/users/me/public-profile").then((r) => r.data),
+  });
+
+  const [handle, setHandle] = useState("");
+  const [isPublic, setIsPublic] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
+  const [feedback, setFeedback] = useState<{ kind: "success" | "error"; message: string } | null>(null);
+
+  useEffect(() => {
+    if (publicProfile && !hydrated) {
+      setHandle(publicProfile.public_display_handle || "");
+      setIsPublic(publicProfile.arena_profile_public);
+      setHydrated(true);
+    }
+  }, [publicProfile, hydrated]);
+
+  const handleValid = handle.length === 0 || HANDLE_RE.test(handle);
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      axiosInstance
+        .patch("/users/me/public-profile", {
+          ...(handle.length > 0 ? { public_display_handle: handle } : {}),
+          arena_profile_public: isPublic,
+        })
+        .then((r) => r.data),
+    onSuccess: (data: PublicProfileData) => {
+      setFeedback({ kind: "success", message: "Saved." });
+      queryClient.setQueryData(["my-public-profile"], data);
+    },
+    onError: (err: any) => {
+      const status = err?.response?.status;
+      const detail = err?.response?.data?.detail;
+      if (status === 409) {
+        setFeedback({ kind: "error", message: "This handle is already taken." });
+      } else if (status === 422) {
+        setFeedback({
+          kind: "error",
+          message: typeof detail === "string" ? detail : "Handle must be 3-20 characters, letters/digits/underscore only.",
+        });
+      } else {
+        setFeedback({ kind: "error", message: err?.message || "Failed to save." });
+      }
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
+        <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-3">Public Arena Replay Profile</h2>
+        <div className="flex justify-center py-6">
+          <div className="w-6 h-6 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin" />
+        </div>
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
+        <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-3">Public Arena Replay Profile</h2>
+        <p className="text-xs text-breach-accent">Failed to load your public profile settings. Please refresh the page.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
+      <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-1">Public Arena Replay Profile</h2>
+      <p className="text-[9px] text-gray-600 mb-4">
+        Opt in to show a display handle on public Arena match replay links (e.g. shared to Discord/Twitter/LinkedIn).
+        Off by default — your real name/email is never shown publicly either way.
+      </p>
+
+      <div className="space-y-3 max-w-md">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={isPublic}
+            onChange={(e) => { setIsPublic(e.target.checked); setFeedback(null); }}
+            className="w-4 h-4 accent-yellow-500"
+          />
+          <span className="text-xs text-breach-text">Show my display handle on public replay links</span>
+        </label>
+
+        <div>
+          <label className="block text-xs text-breach-muted uppercase tracking-wider mb-1">Display handle</label>
+          <input
+            type="text"
+            value={handle}
+            onChange={(e) => { setHandle(e.target.value); setFeedback(null); }}
+            placeholder="e.g. shadow_analyst"
+            maxLength={20}
+            className={`w-full bg-breach-bg border text-breach-text px-3 py-2 rounded text-sm focus:outline-none ${
+              handleValid ? "border-breach-border focus:border-breach-blue" : "border-red-500/60"
+            }`}
+          />
+          <p className={`text-[9px] mt-1 ${handleValid ? "text-gray-600" : "text-breach-accent"}`}>
+            3-20 characters, letters/digits/underscore only.
+          </p>
+        </div>
+
+        {feedback && (
+          <p className={`text-xs ${feedback.kind === "success" ? "text-green-400" : "text-breach-accent"}`}>
+            {feedback.message}
+          </p>
+        )}
+
+        <button
+          onClick={() => saveMutation.mutate()}
+          disabled={saveMutation.isPending || !handleValid}
+          className="text-xs px-3 py-1.5 rounded border border-breach-border text-breach-muted hover:text-breach-text hover:border-green-500/40 transition-colors disabled:opacity-50"
+        >
+          {saveMutation.isPending ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function UserProfilePage() {
   const { user: authUser } = useAuthStore();
   const queryClient = useQueryClient();
@@ -777,6 +915,9 @@ export default function UserProfilePage() {
 
         {/* Security */}
         <MFASection />
+
+        {/* Public Arena replay sharing opt-in */}
+        <PublicProfileSection />
 
       </div>
     </div>

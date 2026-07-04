@@ -61,6 +61,11 @@ interface MatchEvent {
   alert: { severity: string; description: string; source_system: string; raw_log?: string } | null;
 }
 
+interface ShareResponse {
+  share_token: string;
+  share_url_path: string;
+}
+
 interface ExploreResponse {
   match_id: string;
   at_sequence_number: number;
@@ -120,6 +125,12 @@ export default function ArenaDebriefPage() {
   const [exploring, setExploring] = useState(false);
   const [exploreError, setExploreError] = useState<string | null>(null);
   const [exploreResult, setExploreResult] = useState<ExploreResponse | null>(null);
+
+  // ── Live Breach Events Phase 1: "Share this match" ──────────────────────
+  const [sharing, setSharing] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!matchId) return;
@@ -214,6 +225,27 @@ export default function ArenaDebriefPage() {
     }
   }
 
+  async function runShare() {
+    if (!matchId) return;
+    setSharing(true);
+    setShareError(null);
+    try {
+      const result = await api.post<ShareResponse>(`/arena/matches/${matchId}/share`, {});
+      setShareUrl(window.location.origin + result.share_url_path);
+      setCopied(false);
+    } catch (e: any) {
+      setShareError(e.message || "Failed to generate share link");
+    } finally {
+      setSharing(false);
+    }
+  }
+
+  function copyShareUrl() {
+    if (!shareUrl) return;
+    navigator.clipboard.writeText(shareUrl);
+    setCopied(true);
+  }
+
   return (
     <div className="min-h-screen bg-[#040712] flex flex-col font-mono text-slate-200">
       {/* Top bar — mirrors ArenaMatchPage.tsx's conventions */}
@@ -241,6 +273,32 @@ export default function ArenaDebriefPage() {
       {!isComplete && (
         <div className="px-5 py-3 text-center text-xs text-yellow-500 bg-yellow-950/10 border-b border-yellow-900/30">
           This match hasn't completed yet — the debrief/exploration view is only meaningful once a match is over.
+        </div>
+      )}
+
+      {/* ── Share this match — Live Breach Events Phase 1 ── */}
+      {isComplete && (
+        <div className="px-5 py-3 border-b border-slate-800 bg-slate-950/40 flex items-center gap-3 flex-wrap">
+          {!shareUrl ? (
+            <button
+              onClick={runShare}
+              disabled={sharing}
+              className="text-xs px-3 py-1.5 rounded bg-cyan-700 hover:bg-cyan-600 disabled:opacity-40 text-white font-bold uppercase tracking-wider transition-colors"
+            >
+              {sharing ? "Generating link…" : "🔗 Share This Match"}
+            </button>
+          ) : (
+            <>
+              <span className="text-[11px] text-slate-400 truncate max-w-[420px]">{shareUrl}</span>
+              <button
+                onClick={copyShareUrl}
+                className="text-[10px] px-3 py-1.5 rounded border border-cyan-700/60 text-cyan-400 hover:bg-cyan-950/30 font-bold uppercase tracking-wider transition-colors"
+              >
+                {copied ? "Copied!" : "Copy Link"}
+              </button>
+            </>
+          )}
+          {shareError && <span className="text-[11px] text-red-400">{shareError}</span>}
         </div>
       )}
 
