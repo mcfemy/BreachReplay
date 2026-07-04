@@ -430,6 +430,11 @@ DEFENDER_ACTION_TYPES = (
     "acknowledge",
 )
 
+# Phase J: guarantees the defender gets a minimum number of real actions/
+# turns before a match can end, instead of an attacker being able to end
+# the match in a handful of moves.
+_MIN_ACTIONS_BEFORE_IMPACT_ELIGIBLE = 6
+
 # action_type -> representative MITRE technique_id, reusing redteam.py's
 # PHASE_MOVES vocabulary so alerts read consistently with solo Red Team
 # Mode. Used only for alert flavor / detection-rule matching, not gameplay
@@ -710,6 +715,11 @@ def apply_attacker_action(state: OrgState, action: dict, rng: random.Random) -> 
             1 for h in state.hosts if h.compromise_level in ("admin", "domain_admin")
         )
         if high_compromise_host_count < _MIN_HIGH_COMPROMISE_HOSTS:
+            return state, False, None
+        # Not enough turns have elapsed yet — guarantees the defender gets a
+        # minimum number of real actions before a match can end, instead of
+        # an attacker being able to end the match in a handful of moves.
+        if sequence_number < _MIN_ACTIONS_BEFORE_IMPACT_ELIGIBLE:
             return state, False, None
 
         backups_immutable = bool(state.global_flags.get("backups_immutable"))

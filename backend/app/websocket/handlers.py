@@ -1005,9 +1005,11 @@ _DEFAULT_BOT_DIFFICULTY = "medium"
 
 # Pacing between bot moves — mirrors _stream_alerts' `interval = 3.0 /
 # speed_multiplier` convention (handlers.py) so bot play feels like a real
-# opponent instead of spamming actions instantly. No speed_multiplier
-# concept exists for arena matches yet, so this is a fixed, realistic pace.
-_BOT_MOVE_INTERVAL_SECONDS = 3.0
+# opponent instead of spamming actions instantly. Difficulty-keyed (Phase J)
+# so easy gives newer players more wall-clock time to notice/use their
+# free-form defender actions, while hard keeps pressure tight; medium keeps
+# the original pace so existing balance/tests are unaffected.
+_BOT_MOVE_INTERVAL_SECONDS = {"easy": 4.5, "medium": 3.0, "hard": 2.0}
 
 # Hard ceiling as defense-in-depth. The loop is finite-by-construction (the
 # candidate builders in arena_ai_attacker.py filter out no-ops, and defender
@@ -1081,7 +1083,12 @@ async def _run_arena_attacker_bot(match_id: str, difficulty: str = _DEFAULT_BOT_
             if result["match_completed"]:
                 return
 
-            await asyncio.sleep(_BOT_MOVE_INTERVAL_SECONDS)
+            # `difficulty` is already normalized to "easy"/"medium"/"hard" by
+            # every call site (_maybe_start_arena_attacker_bot normalizes via
+            # _normalize_defender_bot_difficulty before this loop ever
+            # starts) — the .get fallback is defense-in-depth only, mirroring
+            # _notify_arena_defender_bot_response's identical pattern above.
+            await asyncio.sleep(_BOT_MOVE_INTERVAL_SECONDS.get(difficulty, _BOT_MOVE_INTERVAL_SECONDS["medium"]))
         else:
             logger.warning(
                 "Arena bot for match %s hit the %d-step safety cap without reaching a terminal "

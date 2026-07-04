@@ -79,6 +79,40 @@ async def setup_redis():
     redis_module._pool = None
 
 
+@pytest.fixture(autouse=True)
+async def dispose_app_engine_pool_after_test():
+    """Pre-existing test-infra gap, unrelated to any feature under test:
+    several arena tests (test_arena_ai_attacker.py, test_arena_ai_defender.py)
+    talk to the real DB via `app.db.session.AsyncSessionLocal` /
+    `app.db.session.engine` directly (see ensure_test_user_row's docstring
+    above for why), rather than this file's own separate SQLite
+    `engine`/`db` fixture (line ~23-25 above, always sqlite+aiosqlite,
+    unconditionally).
+
+    `app.db.session.engine`, by contrast, is built from `Settings.DATABASE_URL`,
+    which is only sqlite in environments where nothing already exported a
+    real `DATABASE_URL` before this file's `os.environ.setdefault(...)` call
+    above runs (true in CI, which has no `backend/.env` and no DB service).
+    When this suite is run locally via `docker compose run backend pytest`,
+    `docker-compose.yml`'s `env_file: ./backend/.env` has already set a real
+    Postgres `DATABASE_URL` in the process environment before Python even
+    starts, so the `setdefault` above is a no-op and `app.db.session.engine`
+    is a real asyncpg pool (`pool_pre_ping=True`) — a Postgres FK violation
+    from Phase J's test fixes (see ensure_test_user_row) was reproduced and
+    confirmed exactly this way. Under that pool, a connection checked out by
+    one test can outlive its event loop (pytest-asyncio creates a new loop
+    per test function), and the next test to reuse it triggers
+    pool_pre_ping's keep-alive probe against the dead loop, raising
+    `RuntimeError: ... got Future ... attached to a different loop`. Disposing
+    the pool after every test forces a fresh connection under the current
+    loop instead. Under CI's sqlite/NullPool engine this dispose() is a
+    harmless no-op (no pool to dispose) — safe in both environments, only
+    load-bearing in the Postgres one."""
+    yield
+    from app.db.session import engine as _real_app_engine
+    await _real_app_engine.dispose()
+
+
 @pytest.fixture(scope="session", autouse=True)
 async def setup_database():
     async with engine.begin() as conn:
@@ -99,6 +133,46 @@ async def db():
         finally:
             await session.close()
             await transaction.rollback()
+
+
+async def ensure_test_user_row(user_id: str, email: str | None = None) -> None:
+    """Idempotently ensure a `User` row with the given literal id exists in
+    the DB that `app.db.session.AsyncSessionLocal` is bound to.
+
+    Several arena tests (test_arena_ai_attacker.py, test_arena_ai_defender.py)
+    exercise the real persistence path via `AsyncSessionLocal` directly
+    (rather than the `db`/`test_org` fixtures above, which run against a
+    fully separate, always-rolled-back SQLite connection — see
+    test_bot_loop_drives_match_to_completion_via_execute_arena_action's
+    docstring for why) and create an ArenaMatch row referencing a literal
+    placeholder id like "attacker-1"/"defender-1" for attacker_user_id /
+    defender_user_id. Those columns are real `ForeignKey("users.id")`
+    columns with no DEFERRABLE clause, so Postgres enforces the constraint
+    immediately on INSERT — a literal placeholder id with no backing `users`
+    row raises ForeignKeyViolationError. This helper creates that backing
+    row (once; safe to call repeatedly / from multiple tests) so those
+    tests' literal ids are valid.
+    """
+    from app.db.session import AsyncSessionLocal
+    from app.core.security import hash_password
+    from app.models.user import User
+    from sqlalchemy import select
+
+    async with AsyncSessionLocal() as db:
+        existing = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+        if existing is not None:
+            return
+        db.add(
+            User(
+                id=user_id,
+                email=email or f"{user_id}@test.breachreplay.invalid",
+                hashed_password=hash_password("StrongPass1!"),
+                full_name=user_id,
+                role="analyst",
+                organization_id=None,
+            )
+        )
+        await db.commit()
 
 
 @pytest.fixture

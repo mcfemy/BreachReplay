@@ -553,7 +553,14 @@ def test_deploy_impact_succeeds_once_two_hosts_at_admin():
     assert state2.get_host("host-b").compromise_level == "admin"
 
     state3, detected, alert = apply_attacker_action(
-        state2, {"action_type": "deploy_impact", "payload": {"host_id": "host-a"}}, random.Random(3)
+        state2,
+        # sequence_number must meet _MIN_ACTIONS_BEFORE_IMPACT_ELIGIBLE (6):
+        # deploy_impact is gated on a minimum turn count so the defender
+        # always gets a real number of turns before a match can end. This
+        # test's intent (impact succeeds once 2 hosts are at admin) is
+        # unaffected by that gate — it just also needs to satisfy it.
+        {"action_type": "deploy_impact", "payload": {"host_id": "host-a"}, "sequence_number": 6},
+        random.Random(3),
     )
     assert detected is True
     assert alert is not None

@@ -215,6 +215,13 @@ export default function ArenaMatchPage() {
     sendDefenderAction(opt.response_action_type, payload);
   }
 
+  // Phase J: free-form SOC console actions, usable at any time (not gated
+  // behind a decision gate) — same WS message shape as the gate-driven
+  // path above, just invoked directly from the persistent console panel.
+  function handleDefenderFreeAction(actionType: string, payload: Record<string, unknown>) {
+    sendDefenderAction(actionType, payload);
+  }
+
   const NOTIF_CLS = {
     success: "bg-green-950/95 border-green-500 text-green-300",
     error: "bg-red-950/95 border-red-500 text-red-300",
@@ -353,10 +360,14 @@ export default function ArenaMatchPage() {
 
         {role === "defender" && !isComplete && (
           <DefenderView
+            hosts={hosts}
+            segments={segments}
+            credentials={credentials}
             alerts={alerts}
             currentGate={currentGate}
             lastDecisionResult={lastDecisionResult}
             onOption={handleDefenderGateOption}
+            onFreeAction={handleDefenderFreeAction}
           />
         )}
 
@@ -535,15 +546,108 @@ function AttackerView({
 
 // ── Defender view (SimulationRoomPage-style: slate/blue Tailwind) ──────────
 function DefenderView({
-  alerts, currentGate, lastDecisionResult, onOption,
+  hosts, segments, credentials,
+  alerts, currentGate, lastDecisionResult, onOption, onFreeAction,
 }: {
+  hosts: Host[]; segments: Segment[]; credentials: Credential[];
   alerts: { timestamp: string; severity: string; source_system: string; rule_id: string; description: string; raw_log?: string }[];
   currentGate: { gate_id: string; context_summary: string; options: { index: number; text: string; response_action_type?: string; host_id?: string; credential_id?: string; segment_id?: string }[] } | null;
   lastDecisionResult: { is_correct: boolean; rationale: string; consequence_applied: string; action_type?: string } | null;
   onOption: (opt: { response_action_type?: string; host_id?: string; credential_id?: string; segment_id?: string }) => void;
+  onFreeAction: (actionType: string, payload: Record<string, unknown>) => void;
 }) {
+  const enabledHarvestedCreds = credentials.filter((c) => c.harvested && !c.disabled);
+
   return (
     <div className="flex flex-1 overflow-hidden">
+      {/* Left: SOC Console — persistent org visibility + free-form actions,
+          modeled directly on AttackerView's "Org Intel" panel so the
+          defender has the same ambient awareness the attacker does. */}
+      <div className="w-72 border-r border-slate-800 p-4 overflow-y-auto shrink-0 bg-slate-950/80">
+        <div className="text-xs text-slate-500 uppercase tracking-widest mb-3 font-bold">SOC Console</div>
+
+        <div className="mb-4">
+          <div className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Segments</div>
+          <div className="space-y-1">
+            {segments.map((s) => (
+              <div key={s.id} className="text-[11px] border border-slate-800 rounded px-2 py-1">
+                <div className="flex justify-between">
+                  <span className="text-slate-300">{s.name}</span>
+                  <span className={s.monitored ? "text-blue-400" : "text-slate-600"}>{s.monitored ? "monitored" : "unmonitored"}</span>
+                </div>
+                {!s.monitored && (
+                  <button
+                    onClick={() => onFreeAction("increase_monitoring", { segment_id: s.id })}
+                    className="mt-1 w-full text-[9px] uppercase tracking-wider font-bold py-1 rounded bg-blue-700/70 hover:bg-blue-600 text-white transition-colors"
+                  >
+                    Increase Monitoring
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="mb-4">
+          <div className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Hosts ({hosts.length})</div>
+          <div className="space-y-1">
+            {hosts.map((h) => (
+              <div key={h.id} className={`text-[10px] border rounded px-2 py-1 ${h.isolated ? "border-slate-800 opacity-40" : "border-slate-800"}`}>
+                <div className="flex justify-between">
+                  <span className="text-slate-300 truncate">{h.hostname}</span>
+                  <span className={COMPROMISE_COLOR[h.compromise_level]}>{h.compromise_level}</span>
+                </div>
+                <div className="text-slate-600">
+                  {h.role}{h.isolated ? " · ISOLATED" : ""}{h.edr_installed ? " · EDR" : ""}
+                  {h.unpatched_cves.length > 0 ? ` · ${h.unpatched_cves.length} CVE${h.unpatched_cves.length === 1 ? "" : "s"}` : ""}
+                </div>
+                <div className="flex gap-1 mt-1">
+                  <button
+                    onClick={() => onFreeAction("isolate_host", { host_id: h.id })}
+                    disabled={h.isolated}
+                    className="flex-1 text-[9px] uppercase tracking-wider font-bold py-1 rounded bg-red-800/70 hover:bg-red-700 disabled:opacity-30 disabled:hover:bg-red-800/70 text-white transition-colors"
+                  >
+                    Isolate
+                  </button>
+                  {h.unpatched_cves.length > 0 && (
+                    <button
+                      onClick={() => onFreeAction("patch_host", { host_id: h.id })}
+                      className="flex-1 text-[9px] uppercase tracking-wider font-bold py-1 rounded bg-emerald-800/70 hover:bg-emerald-700 text-white transition-colors"
+                    >
+                      Patch
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <div className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Harvested Credentials</div>
+          {enabledHarvestedCreds.length === 0 ? (
+            <p className="text-[10px] text-slate-700">None harvested yet (or all disabled).</p>
+          ) : (
+            <div className="space-y-1">
+              {enabledHarvestedCreds.map((c) => (
+                <div key={c.id} className="text-[10px] border border-slate-800 rounded px-2 py-1">
+                  <div className="flex justify-between text-slate-300">
+                    <span>{c.username}</span>
+                    <span className="text-slate-500">{c.privilege}</span>
+                  </div>
+                  <button
+                    onClick={() => onFreeAction("disable_credential", { credential_id: c.id })}
+                    className="mt-1 w-full text-[9px] uppercase tracking-wider font-bold py-1 rounded bg-blue-700/70 hover:bg-blue-600 text-white transition-colors"
+                  >
+                    Disable
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Alert feed */}
       <div className="flex-1 flex flex-col overflow-hidden border-r border-slate-800">
         <div className="px-4 py-2 bg-slate-950/50 border-b border-slate-800 flex items-center justify-between shrink-0">

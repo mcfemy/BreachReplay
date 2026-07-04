@@ -329,10 +329,17 @@ async def test_reactive_defender_bot_responds_via_execute_arena_action():
     use."""
     from app.db.session import AsyncSessionLocal
     from sqlalchemy import delete
+    from tests.conftest import ensure_test_user_row
 
     match_id = "test-defender-bot-reactive-match-9001"
     seed = 9001
     archetype_key = "energy_utility"
+
+    # attacker_user_id="attacker-1" below is a real ForeignKey("users.id")
+    # column enforced immediately (not deferred) by Postgres — ensure the
+    # backing row exists first (see conftest.py's ensure_test_user_row
+    # docstring for the full explanation).
+    await ensure_test_user_row("attacker-1")
 
     async with AsyncSessionLocal() as db:
         await db.execute(delete(ArenaAction).where(ArenaAction.match_id == match_id))
@@ -399,10 +406,13 @@ async def test_full_ai_defender_match_reaches_terminal_status_via_real_persisten
     the defender side."""
     from app.db.session import AsyncSessionLocal
     from sqlalchemy import delete
+    from tests.conftest import ensure_test_user_row
 
     match_id = "test-full-ai-defender-match-31338"
     seed = 31338
     archetype_key = "small_healthcare"
+
+    await ensure_test_user_row("attacker-1")
 
     async with AsyncSessionLocal() as db:
         await db.execute(delete(ArenaAction).where(ArenaAction.match_id == match_id))
@@ -519,10 +529,13 @@ async def test_defender_bot_response_survives_dead_attacker_connection():
     from app.db.session import AsyncSessionLocal
     from sqlalchemy import delete
     from app.websocket.handlers import _notify_arena_defender_bot_response
+    from tests.conftest import ensure_test_user_row
 
     match_id = "test-defender-bot-dead-attacker-match-5252"
     seed = 5252
     archetype_key = "energy_utility"
+
+    await ensure_test_user_row("attacker-1")
 
     async with AsyncSessionLocal() as db:
         await db.execute(delete(ArenaAction).where(ArenaAction.match_id == match_id))
@@ -611,10 +624,13 @@ async def test_defender_bot_response_ceiling_stops_reacting():
     from app.db.session import AsyncSessionLocal
     from sqlalchemy import delete
     from app.websocket.handlers import _MAX_DEFENDER_BOT_RESPONSES, _decision_gate_trigger
+    from tests.conftest import ensure_test_user_row
 
     match_id = "test-defender-bot-ceiling-match-6161"
     seed = 6161
     archetype_key = "small_healthcare"
+
+    await ensure_test_user_row("attacker-1")
 
     async with AsyncSessionLocal() as db:
         await db.execute(delete(ArenaAction).where(ArenaAction.match_id == match_id))
@@ -712,10 +728,13 @@ async def test_attacker_cannot_outrun_synchronous_defender_response():
     that host's compromise level (the original escalation), not two."""
     from app.db.session import AsyncSessionLocal
     from sqlalchemy import delete
+    from tests.conftest import ensure_test_user_row
 
     match_id = "test-attacker-cannot-outrun-defender-match-7373"
     seed = 7373
     archetype_key = "small_healthcare"
+
+    await ensure_test_user_row("attacker-1")
 
     async with AsyncSessionLocal() as db:
         await db.execute(delete(ArenaAction).where(ArenaAction.match_id == match_id))
@@ -850,6 +869,7 @@ async def test_arena_match_bookkeeping_cleaned_up_on_terminal_status():
     both dicts no longer carry an entry for this match_id afterwards."""
     from app.db.session import AsyncSessionLocal
     from sqlalchemy import delete
+    from tests.conftest import ensure_test_user_row
 
     # Reuses test_arena_ai_attacker.py's known-good
     # (seed=31337, archetype="small_healthcare") pair for a
@@ -861,6 +881,8 @@ async def test_arena_match_bookkeeping_cleaned_up_on_terminal_status():
     match_id = "test-arena-cleanup-on-terminal-match-8484"
     seed = 31337
     archetype_key = "small_healthcare"
+
+    await ensure_test_user_row("defender-1")
 
     async with AsyncSessionLocal() as db:
         await db.execute(delete(ArenaAction).where(ArenaAction.match_id == match_id))

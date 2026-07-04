@@ -227,10 +227,17 @@ async def test_bot_loop_drives_match_to_completion_via_execute_arena_action():
     from app.models.arena import ArenaAction
     from app.services.arena_ai_attacker import choose_attacker_action
     from app.websocket.handlers import _load_match_and_actions
+    from tests.conftest import ensure_test_user_row
 
     match_id = "test-bot-completion-match-31337"
     seed = 31337
     archetype_key = "small_healthcare"
+
+    # defender_user_id="defender-1" below is a real ForeignKey("users.id")
+    # column enforced immediately (not deferred) by Postgres — ensure the
+    # backing row exists before referencing it (see conftest.py's
+    # ensure_test_user_row docstring for the full explanation).
+    await ensure_test_user_row("defender-1")
 
     async with AsyncSessionLocal() as db:
         # Clean slate in case a previous failed run left rows behind.
@@ -353,10 +360,16 @@ async def test_bot_loop_stops_quietly_when_defender_connection_is_dead():
     from app.db.session import AsyncSessionLocal
     from sqlalchemy import delete
     from app.models.arena import ArenaAction
+    from tests.conftest import ensure_test_user_row
 
     match_id = "test-bot-dead-defender-match-4242"
     seed = 4242
     archetype_key = "small_healthcare"
+
+    # defender_user_id="defender-1" below is a real ForeignKey("users.id")
+    # column enforced immediately by Postgres — ensure the backing row
+    # exists first (see conftest.py's ensure_test_user_row docstring).
+    await ensure_test_user_row("defender-1")
 
     async with AsyncSessionLocal() as db:
         await db.execute(delete(ArenaAction).where(ArenaAction.match_id == match_id))
