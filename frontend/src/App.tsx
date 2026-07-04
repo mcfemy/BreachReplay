@@ -25,6 +25,7 @@ const ArenaLeaderboardPage = lazy(() => import("./pages/ArenaLeaderboardPage"));
 const LeaderboardPage = lazy(() => import("./pages/LeaderboardPage"));
 const CertificatePage = lazy(() => import("./pages/CertificatePage"));
 const PublicReplayPage = lazy(() => import("./pages/PublicReplayPage"));
+const GlobalIndexPage = lazy(() => import("./pages/GlobalIndexPage"));
 const OrgUploadPage = lazy(() => import("./pages/OrgUploadPage"));
 const TeamsPage = lazy(() => import("./pages/TeamsPage"));
 const NotFoundPage = lazy(() => import("./pages/NotFoundPage"));
@@ -65,6 +66,7 @@ export default function App() {
             <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/cert/:token" element={<CertificatePage />} />
             <Route path="/replay/:shareToken" element={<PublicReplayPage />} />
+            <Route path="/global-index" element={<GlobalIndexPage />} />
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
 
             {/* Authenticated routes — all get the sidebar via AppShell */}

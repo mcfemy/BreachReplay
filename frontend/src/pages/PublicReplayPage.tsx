@@ -31,6 +31,32 @@ interface PublicReplayData {
   events: PublicReplayEvent[];
 }
 
+// Global Incident Response Index (Live Breach Events Phase 3) cross-link —
+// same payload shape GlobalIndexPage.tsx reads, fetched here purely as a
+// best-effort enhancement (see below: any failure/low-data case just hides
+// the callout instead of touching the rest of the page).
+interface GlobalIndexBucket {
+  archetype_key?: string;
+  total_matches: number;
+  decisive_matches: number;
+  abandoned_count: number;
+  containment_rate: number;
+  attacker_win_rate: number;
+  avg_resolution_minutes: number | null;
+}
+
+interface GlobalIndexPayload {
+  overall: GlobalIndexBucket;
+  archetypes: GlobalIndexBucket[];
+  generated_at: string;
+  cache_ttl_seconds: number;
+}
+
+// Below this many decisive matches in the cohort, a "you beat X%" framing
+// reads as noise rather than a signal — skip the callout entirely rather
+// than headline a percentage computed from a handful of matches.
+const MIN_DECISIVE_MATCHES_FOR_CALLOUT = 5;
+
 const STATUS_STYLE: Record<string, { border: string; text: string; bg: string; icon: string; label: string }> = {
   attacker_won: { border: "border-red-500/50", text: "text-red-400", bg: "bg-red-500/10", icon: "💀", label: "Attacker Won" },
   defender_won: { border: "border-green-500/50", text: "text-green-400", bg: "bg-green-500/10", icon: "🛡️", label: "Defender Won" },
@@ -67,6 +93,26 @@ export default function PublicReplayPage() {
     retry: false,
     enabled: !!shareToken,
   });
+
+  // Best-effort "you beat X% of defenders/attackers" cross-link into the
+  // Global Incident Response Index. Fetched lazily (only once the replay is
+  // known and decisive) and never blocking/erroring the rest of the page —
+  // queryKey matches GlobalIndexPage.tsx's so the two pages share one cache
+  // entry when both are visited in the same session.
+  const { data: globalIndex } = useQuery<GlobalIndexPayload>({
+    queryKey: ["global-index"],
+    queryFn: () => axiosInstance.get("/arena/public/stats/global-index").then((r) => r.data),
+    retry: false,
+    enabled: !!replay && (replay.status === "attacker_won" || replay.status === "defender_won"),
+    staleTime: 60_000,
+  });
+
+  const archetypeStats = globalIndex?.archetypes.find((a) => a.archetype_key === replay?.archetype_key);
+  const showCohortCallout =
+    !!replay &&
+    !!archetypeStats &&
+    archetypeStats.decisive_matches >= MIN_DECISIVE_MATCHES_FOR_CALLOUT &&
+    (replay.status === "attacker_won" || replay.status === "defender_won");
 
   // Best-effort client-side Open Graph / Twitter Card tags — this is a plain
   // Vite SPA with no SSR/prerender path, so most link-unfurl bots (which
@@ -182,6 +228,27 @@ export default function PublicReplayPage() {
               </div>
             </div>
           </div>
+
+          {/* Global Incident Response Index cross-link */}
+          {showCohortCallout && archetypeStats && (
+            <div className="bg-[#090d16]/60 border border-cyan-500/30 rounded-lg p-5 text-center">
+              <p className="text-lg font-black text-cyan-300">
+                {replay.status === "attacker_won"
+                  ? `You beat ${(archetypeStats.attacker_win_rate * 100).toFixed(0)}% of defenders on this archetype.`
+                  : `You beat ${(archetypeStats.containment_rate * 100).toFixed(0)}% of attackers on this archetype.`}
+              </p>
+              <p className="text-[11px] text-slate-500 mt-1.5">
+                Based on {archetypeStats.decisive_matches} decisive matches worldwide on{" "}
+                {replay.archetype_key.replace(/_/g, " ")}.
+              </p>
+              <Link
+                to={`/global-index?archetype=${encodeURIComponent(replay.archetype_key)}`}
+                className="inline-block mt-3 text-xs text-cyan-400 hover:text-cyan-300 font-bold uppercase tracking-wider"
+              >
+                See the full Global Incident Response Index →
+              </Link>
+            </div>
+          )}
 
           {/* Timeline */}
           <div className="bg-[#090d16]/60 border border-slate-800 rounded-lg p-5">

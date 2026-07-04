@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { api, axiosInstance } from "../lib/api";
 
 // ── Live Breach Events Phase 2 — Fresh Incident Ticker ──────────────────────
@@ -84,21 +84,28 @@ export default function FreshIncidentTicker() {
       </span>
       <div className="flex items-center gap-2 overflow-x-auto">
         {scenarios.map((s) => (
-          <button
+          <div
             key={s.id}
-            onClick={() => launch(s.id)}
-            title={`Play ${s.title}`}
-            className="shrink-0 flex items-center gap-2 bg-breach-bg hover:bg-breach-border/40 border border-breach-border hover:border-breach-blue rounded-full px-3 py-1.5 transition-colors"
+            className="shrink-0 flex items-center gap-2 bg-breach-bg hover:bg-breach-border/40 border border-breach-border hover:border-breach-blue rounded-full pl-3 pr-1.5 py-1.5 transition-colors"
           >
-            <span className="text-[9px] font-bold uppercase tracking-widest text-breach-green bg-breach-green/10 border border-breach-green/30 rounded px-1.5 py-0.5">
-              New
-            </span>
-            <span className="text-xs" aria-hidden>
-              {SOURCE_ICON[s.source_type] ?? "⚡"}
-            </span>
-            <span className="text-xs font-medium text-breach-text max-w-[220px] truncate">{s.title}</span>
-            <span className="text-[10px] text-breach-muted">{timeAgo(s.created_at)}</span>
-          </button>
+            <button onClick={() => launch(s.id)} title={`Play ${s.title}`} className="flex items-center gap-2">
+              <span className="text-[9px] font-bold uppercase tracking-widest text-breach-green bg-breach-green/10 border border-breach-green/30 rounded px-1.5 py-0.5">
+                New
+              </span>
+              <span className="text-xs" aria-hidden>
+                {SOURCE_ICON[s.source_type] ?? "⚡"}
+              </span>
+              <span className="text-xs font-medium text-breach-text max-w-[220px] truncate">{s.title}</span>
+              <span className="text-[10px] text-breach-muted">{timeAgo(s.created_at)}</span>
+            </button>
+            <Link
+              to={`/global-index?scenario=${encodeURIComponent(s.id)}`}
+              title="See how the world is doing against this incident"
+              className="shrink-0 text-[9px] font-bold uppercase tracking-widest text-breach-blue hover:text-breach-text border-l border-breach-border pl-1.5 ml-0.5"
+            >
+              Global Stats →
+            </Link>
+          </div>
         ))}
       </div>
     </div>

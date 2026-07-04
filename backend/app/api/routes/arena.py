@@ -24,6 +24,7 @@ from app.db.session import get_db
 from app.models.arena import ArenaMatch, ArenaAction
 from app.models.user import User
 from app.core.security import get_current_user
+from app.core.stats_cache import TTLCache
 from app.services.org_simulation import ORG_ARCHETYPES, generate_org_state, replay
 from app.services import arena_matchmaking_service
 
@@ -528,6 +529,115 @@ async def get_public_replay(
         "state": state,
         "events": events,
     }
+
+
+# ── Live Breach Events Phase 3: public aggregate stats ──────────────────────
+#
+# GET /arena/public/stats/global-index — no auth, cohort-only aggregate rates
+# per archetype_key (never a per-user or per-match breakdown — see
+# _compute_archetype_bucket below, which only ever reads/returns counts and
+# derived rates). Cached in-process via app.core.stats_cache.TTLCache (see
+# that module's docstring for the Redis-vs-in-process reasoning) with a 5
+# minute TTL — comfortably inside the plan's stated 5-10 min window: short
+# enough that a burst of newly-completed matches shows up quickly, long
+# enough that a public, potentially crawled endpoint isn't re-aggregating
+# the whole arena_matches table on every hit. Migration 0026 adds the
+# compound (archetype_key, status, completed_at) index this query's WHERE
+# clause and grouping rely on.
+#
+# Containment/attacker-win rate definitions (documented here since this
+# feeds a public marketing page — a coherent story matters more than
+# capturing every edge case):
+#   - "terminal" match = completed_at IS NOT NULL AND status in
+#     (attacker_won, defender_won, abandoned).
+#   - "decisive" match = terminal AND status in (attacker_won, defender_won).
+#     Abandoned matches are EXCLUDED from the rate denominator entirely —
+#     an abandoned match (someone quit/disconnected) has no real winner, so
+#     folding it into either rate as an implicit loss for one side would
+#     misrepresent both sides' actual performance. abandoned_count is still
+#     reported per-bucket for transparency; it's just never a denominator.
+#   - containment_rate = defender_won / decisive_matches
+#   - attacker_win_rate = attacker_won / decisive_matches
+#   - avg_resolution_minutes = mean (completed_at - started_at) in minutes
+#     over decisive matches where BOTH timestamps are present (a row
+#     missing either is skipped, never treated as a 0-minute resolution).
+#   - Any bucket with zero decisive matches reports both rates as 0.0 and
+#     avg_resolution_minutes as None, rather than dividing by zero.
+
+_GLOBAL_INDEX_CACHE = TTLCache(ttl_seconds=300)
+_STATS_DECISIVE_STATUSES = ("attacker_won", "defender_won")
+
+
+def _compute_archetype_bucket(archetype_key: Optional[str], rows: list) -> dict:
+    """rows: iterable of objects with .status / .started_at / .completed_at
+    (either ArenaMatch instances or SQLAlchemy Row tuples from a column-only
+    select — both expose these as attributes)."""
+    total_matches = len(rows)
+    abandoned_count = sum(1 for r in rows if r.status == "abandoned")
+    decisive_rows = [r for r in rows if r.status in _STATS_DECISIVE_STATUSES]
+    decisive_matches = len(decisive_rows)
+    defender_wins = sum(1 for r in decisive_rows if r.status == "defender_won")
+    attacker_wins = sum(1 for r in decisive_rows if r.status == "attacker_won")
+
+    resolution_minutes = [
+        (r.completed_at - r.started_at).total_seconds() / 60.0
+        for r in decisive_rows
+        if r.started_at is not None and r.completed_at is not None
+    ]
+
+    bucket = {
+        "total_matches": total_matches,
+        "decisive_matches": decisive_matches,
+        "abandoned_count": abandoned_count,
+        "containment_rate": round(defender_wins / decisive_matches, 4) if decisive_matches else 0.0,
+        "attacker_win_rate": round(attacker_wins / decisive_matches, 4) if decisive_matches else 0.0,
+        "avg_resolution_minutes": (
+            round(sum(resolution_minutes) / len(resolution_minutes), 2) if resolution_minutes else None
+        ),
+    }
+    if archetype_key is not None:
+        bucket = {"archetype_key": archetype_key, **bucket}
+    return bucket
+
+
+@router.get("/public/stats/global-index")
+async def get_global_index_stats(db: AsyncSession = Depends(get_db)):
+    """The "Global Incident Response Index" — no auth. Per-archetype_key
+    containment rate / attacker-win rate / avg time-to-resolution, plus an
+    `overall` bucket aggregated across every archetype. Cohort counts/rates
+    only; never a user_id, match_id, or any per-match record."""
+    cached = _GLOBAL_INDEX_CACHE.get("global-index")
+    if cached is not None:
+        return cached
+
+    result = await db.execute(
+        select(
+            ArenaMatch.archetype_key,
+            ArenaMatch.status,
+            ArenaMatch.started_at,
+            ArenaMatch.completed_at,
+        ).where(
+            ArenaMatch.completed_at.isnot(None),
+            ArenaMatch.status.in_(_COMPLETED_STATUSES),
+        )
+    )
+    rows = result.all()
+
+    by_archetype: dict[str, list] = {}
+    for row in rows:
+        by_archetype.setdefault(row.archetype_key, []).append(row)
+
+    payload = {
+        "overall": _compute_archetype_bucket(None, rows),
+        "archetypes": [
+            _compute_archetype_bucket(key, archetype_rows)
+            for key, archetype_rows in sorted(by_archetype.items())
+        ],
+        "generated_at": datetime.utcnow().isoformat(),
+        "cache_ttl_seconds": _GLOBAL_INDEX_CACHE.ttl_seconds,
+    }
+    _GLOBAL_INDEX_CACHE.set("global-index", payload)
+    return payload
 
 
 @router.get("/matches")
