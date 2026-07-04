@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/auth";
@@ -289,13 +289,17 @@ export default function ArenaMatchPage() {
         </div>
       </div>
 
-      {/* Match complete banner */}
+      {/* Match complete banner — Phase K: real entrance instead of an instant
+          hard-swap. animate-bounce-in gives the whole banner a pop-in; the
+          status-conditional impact-flash/contained-glow layers a brief
+          red/green pulse on top for the win/loss moment specifically, since
+          this is the single highest-payoff emotional beat in the match. */}
       {isComplete && (
-        <div className={`px-5 py-4 border-b ${
+        <div className={`animate-bounce-in px-5 py-4 border-b ${
           status === "attacker_won"
-            ? "bg-red-950/30 border-red-800/40"
+            ? "bg-red-950/30 border-red-800/40 animate-impact-flash"
             : status === "defender_won"
-            ? "bg-green-950/30 border-green-800/40"
+            ? "bg-green-950/30 border-green-800/40 animate-contained-glow"
             : "bg-gray-900/30 border-gray-700/40"
         }`}>
           <div className="max-w-3xl mx-auto text-center">
@@ -381,6 +385,41 @@ export default function ArenaMatchPage() {
   );
 }
 
+// ── Phase K: shared host-change-flash tracker ───────────────────────────────
+// Both AttackerView's "Org Intel" panel and DefenderView's "SOC Console"
+// panel render the same host-row shape (Phase J duplication, left as-is) —
+// this hook is the one small piece of logic worth sharing between them: it
+// diffs each host's compromise_level/isolated against what was rendered last
+// time and returns a Set of host ids that just changed, so either view can
+// slap a `animate-host-flash` class on that row for ~1s.
+function useHostChangeFlash(hosts: Host[]): Set<string> {
+  const prevRef = useRef<Record<string, { compromise_level: string; isolated: boolean }>>({});
+  const [flashed, setFlashed] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    const prev = prevRef.current;
+    const changed = new Set<string>();
+    for (const h of hosts) {
+      const before = prev[h.id];
+      if (before && (before.compromise_level !== h.compromise_level || before.isolated !== h.isolated)) {
+        changed.add(h.id);
+      }
+    }
+    // Update the snapshot immediately (not just on cleanup) so the next
+    // diff compares against this render's values.
+    prevRef.current = Object.fromEntries(
+      hosts.map((h) => [h.id, { compromise_level: h.compromise_level, isolated: h.isolated }])
+    );
+    if (changed.size > 0) {
+      setFlashed(changed);
+      const t = setTimeout(() => setFlashed(new Set()), 1000);
+      return () => clearTimeout(t);
+    }
+  }, [hosts]);
+
+  return flashed;
+}
+
 // ── Attacker view (RedTeamPage-style: raw slate/gray/red Tailwind) ─────────
 function AttackerView({
   hosts, segments, credentials,
@@ -402,6 +441,7 @@ function AttackerView({
 }) {
   const reachableHosts = hosts.filter((h) => !h.isolated);
   const harvestedCreds = credentials.filter((c) => c.harvested && !c.disabled);
+  const flashedHosts = useHostChangeFlash(hosts);
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -425,7 +465,10 @@ function AttackerView({
           <div className="text-[10px] text-gray-600 uppercase tracking-widest mb-1">Hosts ({hosts.length})</div>
           <div className="space-y-1">
             {hosts.map((h) => (
-              <div key={h.id} className={`text-[10px] border rounded px-2 py-1 ${h.isolated ? "border-gray-800 opacity-40" : "border-gray-800"}`}>
+              <div
+                key={h.id}
+                className={`text-[10px] border rounded px-2 py-1 ${h.isolated ? "border-gray-800 opacity-40" : "border-gray-800"} ${flashedHosts.has(h.id) ? "animate-host-flash" : ""}`}
+              >
                 <div className="flex justify-between">
                   <span className="text-gray-300 truncate">{h.hostname}</span>
                   <span className={COMPROMISE_COLOR[h.compromise_level]}>{h.compromise_level}</span>
@@ -557,6 +600,7 @@ function DefenderView({
   onFreeAction: (actionType: string, payload: Record<string, unknown>) => void;
 }) {
   const enabledHarvestedCreds = credentials.filter((c) => c.harvested && !c.disabled);
+  const flashedHosts = useHostChangeFlash(hosts);
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -592,7 +636,10 @@ function DefenderView({
           <div className="text-[10px] text-slate-500 uppercase tracking-widest mb-1">Hosts ({hosts.length})</div>
           <div className="space-y-1">
             {hosts.map((h) => (
-              <div key={h.id} className={`text-[10px] border rounded px-2 py-1 ${h.isolated ? "border-slate-800 opacity-40" : "border-slate-800"}`}>
+              <div
+                key={h.id}
+                className={`text-[10px] border rounded px-2 py-1 ${h.isolated ? "border-slate-800 opacity-40" : "border-slate-800"} ${flashedHosts.has(h.id) ? "animate-host-flash" : ""}`}
+              >
                 <div className="flex justify-between">
                   <span className="text-slate-300 truncate">{h.hostname}</span>
                   <span className={COMPROMISE_COLOR[h.compromise_level]}>{h.compromise_level}</span>
@@ -656,7 +703,7 @@ function DefenderView({
         </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
           {alerts.map((alert, i) => (
-            <div key={i} className={`border border-slate-800 border-l-4 px-3 py-2 rounded text-[11px] ${SEV_BORDER[alert.severity] || "border-l-slate-600"}`}>
+            <div key={i} className={`animate-bounce-in border border-slate-800 border-l-4 px-3 py-2 rounded text-[11px] ${SEV_BORDER[alert.severity] || "border-l-slate-600"}`}>
               <div className="flex items-center gap-2 mb-1">
                 <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${SEV_BADGE[alert.severity] || "bg-slate-700 text-slate-300"}`}>
                   {alert.severity}
