@@ -22,11 +22,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.models.arena import ArenaMatch, ArenaAction
+from app.models.arena_event import ArenaEvent
 from app.models.user import User
 from app.core.security import get_current_user
 from app.core.stats_cache import TTLCache
 from app.services.org_simulation import ORG_ARCHETYPES, generate_org_state, replay
 from app.services import arena_matchmaking_service
+from app.services.arena_event_service import arena_event_summary
+from app.websocket.manager import manager
 
 router = APIRouter(prefix="/arena", tags=["arena"])
 
@@ -117,6 +120,8 @@ def _match_summary(match: ArenaMatch) -> dict:
         "started_at": match.started_at.isoformat() if match.started_at else None,
         "completed_at": match.completed_at.isoformat() if match.completed_at else None,
         "created_at": match.created_at.isoformat() if match.created_at else None,
+        # Live Breach Events Phase 4 — None for matches not paired under an event.
+        "event_id": match.event_id,
     }
 
 
@@ -672,13 +677,26 @@ async def list_my_matches(
 
 @router.post("/queue/join")
 async def join_matchmaking_queue(
+    event_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Join the PvP matchmaking queue. Idempotent — calling this again while
     already queued (or already matched but not yet polled) just returns the
-    current state instead of creating a duplicate entry."""
-    return await arena_matchmaking_service.join_queue(db, current_user.id)
+    current state instead of creating a duplicate entry.
+
+    Live Breach Events Phase 4: pass `?event_id=...` to join that event's
+    OWN pool instead of the ad-hoc pool — pairing is then scoped only
+    against other players queued for the same event, and the resulting
+    match uses the event's fixed seed/archetype_key/difficulty. 404 if
+    `event_id` doesn't exist; 400 if the event has been cancelled.
+    """
+    try:
+        return await arena_matchmaking_service.join_queue(db, current_user.id, event_id=event_id)
+    except arena_matchmaking_service.EventNotFoundError:
+        raise HTTPException(status_code=404, detail="Arena event not found")
+    except arena_matchmaking_service.EventNotJoinableError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/queue/status")
@@ -736,3 +754,165 @@ async def get_arena_leaderboard(
         }
         for i, u in enumerate(users)
     ]
+
+
+# ── Live Breach Events Phase 4: scheduled synchronized live events ─────────
+#
+# GET /arena/events/{id}/status — deliberately NO AUTH, same reasoning as
+# Phase 1's public replay route and Phase 3's public global-index: the
+# plan's own framing of the frontend's ArenaEventsPage.tsx explicitly calls
+# an event's live leaderboard/ticker "public-readable, itself good
+# shareable content" — that's the whole growth-loop point of this feature,
+# so gating it behind auth would work against it. Contrast with
+# GET /arena/matches/{id}, which stays participant-only: that route exposes
+# a specific in-progress match's live, possibly-still-secret org state. This
+# route only ever returns aggregate counts plus already-decided (terminal)
+# match outcomes — nothing live-and-hidden about any one player's state.
+#
+# Leaderboard definition (documented here, matching the public-stats
+# section's precedent for writing the rationale down rather than just the
+# code): one entry per DECISIVE match in the event (status in
+# attacker_won/defender_won — an abandoned match has no winner to rank,
+# same "decisive" convention _compute_archetype_bucket already uses),
+# representing the WINNING side only, sorted fastest-win-first by
+# resolution_seconds (completed_at - started_at). This is the simplest
+# coherent "cohort leaderboard" given what's on ArenaMatch already, without
+# reimplementing Phase I's separate ELO system (arena_rating_service.py) —
+# ELO still updates normally and independently for every event match
+# exactly like any other match; this leaderboard is a per-event view only.
+
+def _event_leaderboard_entry(match: ArenaMatch, users_by_id: dict) -> Optional[dict]:
+    if match.status not in _STATS_DECISIVE_STATUSES:
+        return None
+    if not match.started_at or not match.completed_at:
+        # Same "skip, never treat as 0-minute" rule the public stats bucket uses.
+        return None
+
+    winner_is_attacker = match.status == "attacker_won"
+    winner_user_id = match.attacker_user_id if winner_is_attacker else match.defender_user_id
+    user = users_by_id.get(winner_user_id) if winner_user_id else None
+    # This route is public/no-auth (see section comment above) — never echo
+    # a raw email address here. Reuse Phase 1's opt-in public-label pattern
+    # (_public_participant_label, above): a winner's opted-in display handle
+    # if set, otherwise a generic non-identifying placeholder.
+    display_name = _public_participant_label(user, "Player") if user else "AI Bot"
+    resolution_seconds = (match.completed_at - match.started_at).total_seconds()
+
+    return {
+        "match_id": match.id,
+        "user_id": winner_user_id,
+        "display_name": display_name,
+        "won": True,
+        "winner_role": "attacker" if winner_is_attacker else "defender",
+        "resolution_seconds": round(resolution_seconds, 1),
+    }
+
+
+@router.get("/events")
+async def list_public_arena_events(
+    status: Optional[str] = None,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+):
+    """Public, no-auth browse listing for ArenaEventsPage.tsx (frontend
+    "browse upcoming/live/past" per the Phase 4 plan). `GET /admin/arena/events`
+    (admin.py) already lists every event, but it's gated behind `require_admin`
+    and can't serve a public browse page — this route is the minimal
+    read-only counterpart, mirroring the same no-auth precedent already
+    established by `GET /arena/public/replay/{token}` and
+    `GET /arena/public/stats/global-index` above: no per-user data, no
+    mutation, just `arena_event_summary()` (the same serializer the admin
+    route and `GET /arena/events/{id}/status` both already use, so the three
+    never drift on shape).
+
+    Optional `?status=` filter (scheduled/live/completed/cancelled); results
+    are newest-`starts_at`-first, capped at 100 per page.
+    """
+    limit = max(1, min(limit, 100))
+    query = select(ArenaEvent).order_by(desc(ArenaEvent.starts_at)).limit(limit)
+    if status is not None:
+        if status not in ("scheduled", "live", "completed", "cancelled"):
+            raise HTTPException(status_code=400, detail="Invalid status filter")
+        query = query.where(ArenaEvent.status == status)
+    result = await db.execute(query)
+    events = result.scalars().all()
+    return [arena_event_summary(e) for e in events]
+
+
+@router.get("/events/{event_id}/status")
+async def get_arena_event_status(
+    event_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """{event, joined_count, matches, leaderboard} for a scheduled
+    synchronized event. No auth (see section comment above).
+
+    Opportunistically drains the AI-fallback-fill for this event
+    (`arena_matchmaking_service.fill_unmatched_event_queue_with_ai`) once
+    its join window has closed (`event.status != "scheduled"`) — this
+    endpoint runs in the `backend` (uvicorn) process, the one that actually
+    owns `app.websocket.manager.manager`'s in-memory queue, and the plan's
+    own frontend convention has clients poll this exact endpoint while an
+    event is live, so it's the natural, always-correct-process place to do
+    it. See app/services/arena_event_service.py's module docstring for why
+    the Celery Beat transition task deliberately does NOT do this itself.
+    No-op once this event's queue is already empty.
+
+    `joined_count` = distinct humans who have engaged with this event at
+    all: everyone already paired into a match under this event (attacker or
+    defender side, excluding the null/bot side) PLUS anyone still waiting
+    in the in-process queue for this event who hasn't been paired yet.
+    """
+    event_result = await db.execute(select(ArenaEvent).where(ArenaEvent.id == event_id))
+    event = event_result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="Arena event not found")
+
+    if event.status != "scheduled":
+        await arena_matchmaking_service.fill_unmatched_event_queue_with_ai(db, event_id)
+
+    matches_result = await db.execute(
+        select(ArenaMatch).where(ArenaMatch.event_id == event_id).order_by(ArenaMatch.created_at)
+    )
+    matches = matches_result.scalars().all()
+
+    matched_user_ids = set()
+    for m in matches:
+        if m.attacker_user_id:
+            matched_user_ids.add(m.attacker_user_id)
+        if m.defender_user_id:
+            matched_user_ids.add(m.defender_user_id)
+
+    waiting_count = sum(
+        1
+        for entry in manager.arena_queue.values()
+        if entry.get("event_id") == event_id and entry["matched_match_id"] is None
+    )
+    joined_count = len(matched_user_ids) + waiting_count
+
+    winner_user_ids = {
+        (m.attacker_user_id if m.status == "attacker_won" else m.defender_user_id)
+        for m in matches
+        if m.status in _STATS_DECISIVE_STATUSES
+    }
+    winner_user_ids.discard(None)
+    users_by_id = {}
+    if winner_user_ids:
+        users_result = await db.execute(select(User).where(User.id.in_(winner_user_ids)))
+        users_by_id = {u.id: u for u in users_result.scalars().all()}
+
+    leaderboard = sorted(
+        (
+            entry
+            for entry in (_event_leaderboard_entry(m, users_by_id) for m in matches)
+            if entry is not None
+        ),
+        key=lambda e: e["resolution_seconds"],
+    )
+
+    return {
+        "event": arena_event_summary(event),
+        "joined_count": joined_count,
+        "matches": [_match_summary(m) for m in matches],
+        "leaderboard": leaderboard,
+    }

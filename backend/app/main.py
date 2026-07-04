@@ -1,8 +1,9 @@
 import asyncio
 import json
+import logging
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import redis.asyncio as aioredis
 import sentry_sdk
@@ -33,11 +34,45 @@ if settings.SENTRY_DSN:
         send_default_pii=False,
     )
 
+logger = logging.getLogger(__name__)
+
+# Live Breach Events Phase 4 — "no one is left unmatched" safety net. See
+# app.services.arena_matchmaking_service.sweep_closed_event_queues's
+# docstring for why this must run as a background loop INSIDE this exact
+# `backend` (uvicorn) process rather than a Celery task: only this process
+# holds the real `manager.arena_queue` in-memory state. 20s keeps stragglers
+# waiting no more than one extra poll interval past an event's official
+# close, without hammering the DB on every tick.
+_ARENA_EVENT_QUEUE_SWEEP_INTERVAL_SECONDS = 20
+
+
+async def _arena_event_queue_sweep_loop():
+    from app.db.session import AsyncSessionLocal
+    from app.services import arena_matchmaking_service
+
+    while True:
+        await asyncio.sleep(_ARENA_EVENT_QUEUE_SWEEP_INTERVAL_SECONDS)
+        try:
+            async with AsyncSessionLocal() as db:
+                await arena_matchmaking_service.sweep_closed_event_queues(db)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # One bad iteration (e.g. a transient DB hiccup) must never kill
+            # this loop permanently — log and try again next tick.
+            logger.exception("arena event queue sweep iteration failed")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
-    yield
+    sweep_task = asyncio.create_task(_arena_event_queue_sweep_loop())
+    try:
+        yield
+    finally:
+        sweep_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await sweep_task
 
 
 app = FastAPI(

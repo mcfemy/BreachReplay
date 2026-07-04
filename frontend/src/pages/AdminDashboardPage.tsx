@@ -98,6 +98,19 @@ interface PrivateScenario {
   version_history?: any[];
 }
 
+interface ArenaEvent {
+  id: string;
+  title: string;
+  scenario_id: string | null;
+  archetype_key: string;
+  difficulty: string;
+  seed: number;
+  starts_at: string;
+  ends_at: string;
+  status: "scheduled" | "live" | "completed" | "cancelled";
+  created_at: string;
+}
+
 interface ReadinessTrend {
   week: string;
   sessions: number;
@@ -147,9 +160,26 @@ interface ComplianceAnalytics {
 }
 
 
+// Live Breach Events Phase 4 — same two archetype keys ArenaLobbyPage.tsx's
+// manual match-creation form already hardcodes (ORG_ARCHETYPES isn't exposed
+// over the API as a listable resource — see that file's comment on the same
+// tradeoff). Duplicated here rather than shared/exported since it's two
+// entries and this codebase doesn't currently have a shared constants module
+// for it; swap both for a real GET /arena/archetypes-backed picker together
+// if that ever gets added.
+const ARENA_ARCHETYPES = [
+  { key: "small_healthcare", label: "Regional Clinic Network (Healthcare)" },
+  { key: "energy_utility", label: "Regional Energy Utility (Energy / OT)" },
+];
+
+function toDatetimeLocalValue(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export default function AdminDashboardPage() {
-  const [activeTab, setActiveTab] = useState<"users" | "ingest" | "review" | "audit" | "compliance">("users");
-  
+  const [activeTab, setActiveTab] = useState<"users" | "ingest" | "review" | "audit" | "compliance" | "events">("users");
+
   // States
   const [users, setUsers] = useState<User[]>([]);
   const [documents, setDocuments] = useState<BreachDocument[]>([]);
@@ -157,6 +187,23 @@ export default function AdminDashboardPage() {
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  // Live Breach Events Phase 4 — admin-scheduled synchronized arena events
+  const [arenaEvents, setArenaEvents] = useState<ArenaEvent[]>([]);
+  const [eventTitle, setEventTitle] = useState("");
+  const [eventScenarioId, setEventScenarioId] = useState("");
+  const [eventArchetypeKey, setEventArchetypeKey] = useState(ARENA_ARCHETYPES[0].key);
+  const [eventDifficulty, setEventDifficulty] = useState<"easy" | "medium" | "hard">("medium");
+  const [eventStartsAt, setEventStartsAt] = useState(() => {
+    const d = new Date(Date.now() + 60 * 60 * 1000); // default: 1h from now
+    return toDatetimeLocalValue(d);
+  });
+  const [eventEndsAt, setEventEndsAt] = useState(() => {
+    const d = new Date(Date.now() + 2 * 60 * 60 * 1000); // default: 2h from now
+    return toDatetimeLocalValue(d);
+  });
+  const [creatingEvent, setCreatingEvent] = useState(false);
+  const [eventFormError, setEventFormError] = useState("");
   
   // Ingestion File Upload
   const [uploading, setUploading] = useState(false);
@@ -239,6 +286,9 @@ export default function AdminDashboardPage() {
       } else if (activeTab === "compliance") {
         const data = await api.get<ComplianceAnalytics>("/admin/compliance-analytics");
         setComplianceData(data);
+      } else if (activeTab === "events") {
+        const data = await api.get<ArenaEvent[]>("/admin/arena/events");
+        setArenaEvents(data);
       }
     } catch (err: any) {
       setError(err.message || "Failed to load admin panel data");
@@ -333,6 +383,46 @@ export default function AdminDashboardPage() {
     }
   }
 
+  // --- Live Breach Events Phase 4: create/schedule an ArenaEvent ---
+  async function handleCreateEvent() {
+    setEventFormError("");
+    if (!eventTitle.trim()) {
+      setEventFormError("Title is required");
+      return;
+    }
+    const startsAtDate = new Date(eventStartsAt);
+    const endsAtDate = new Date(eventEndsAt);
+    if (endsAtDate <= startsAtDate) {
+      setEventFormError("End time must be after start time");
+      return;
+    }
+    setCreatingEvent(true);
+    try {
+      // datetime-local input values have no timezone info — the browser
+      // parses them as local time when constructing a Date, so .toISOString()
+      // below converts to the UTC ISO string POST /admin/arena/events expects
+      // (ArenaEvent.starts_at/ends_at are naive-UTC columns, same convention
+      // as every other datetime this backend stores).
+      const body: Record<string, unknown> = {
+        title: eventTitle.trim(),
+        archetype_key: eventArchetypeKey,
+        difficulty: eventDifficulty,
+        starts_at: startsAtDate.toISOString(),
+        ends_at: endsAtDate.toISOString(),
+      };
+      if (eventScenarioId.trim()) body.scenario_id = eventScenarioId.trim();
+
+      const created = await api.post<ArenaEvent>("/admin/arena/events", body);
+      setArenaEvents((prev) => [created, ...prev]);
+      setEventTitle("");
+      setEventScenarioId("");
+    } catch (err: any) {
+      setEventFormError(err.message || "Failed to schedule event");
+    } finally {
+      setCreatingEvent(false);
+    }
+  }
+
   async function handleApproveAll() {
     setApprovingAll(true);
     try {
@@ -397,6 +487,14 @@ export default function AdminDashboardPage() {
             }`}
           >
             Compliance & Analytics
+          </button>
+          <button
+            onClick={() => setActiveTab("events")}
+            className={`px-6 py-2.5 font-bold uppercase tracking-wider transition-colors border-b-2 ${
+              activeTab === "events" ? "border-breach-blue text-breach-blue" : "border-transparent text-breach-muted hover:text-breach-text"
+            }`}
+          >
+            Live Breach Events
           </button>
         </div>
 
@@ -1187,6 +1285,140 @@ export default function AdminDashboardPage() {
                     <div className="p-6 border-t border-breach-border bg-breach-bg/30 text-[10px] text-breach-muted leading-normal">
                       🛡️ These tabletop exercise logs serve as official training evidence under annual compliance parameters defined in **SOC 2 Type II (CC7.3)**, **NIST SP 800-53 (AT-3)**, and **ISO 27001 (A.7.2.2)**.
                     </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* PANEL 6: LIVE BREACH EVENTS (Phase 4) */}
+            {activeTab === "events" && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Create/schedule form */}
+                <div className="bg-breach-surface border border-breach-border rounded p-6 space-y-4">
+                  <h3 className="text-xs font-bold text-breach-text uppercase tracking-wider border-b border-breach-border pb-2">
+                    Schedule a Live Event
+                  </h3>
+
+                  <div>
+                    <label className="text-[9px] text-breach-muted uppercase tracking-wider font-bold block mb-1">Title</label>
+                    <input
+                      value={eventTitle}
+                      onChange={(e) => setEventTitle(e.target.value)}
+                      placeholder="e.g. Live Replay: Colonial Pipeline"
+                      className="w-full bg-breach-bg border border-breach-border text-breach-text text-xs px-3 py-2 rounded focus:outline-none focus:border-breach-blue"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[9px] text-breach-muted uppercase tracking-wider font-bold block mb-1">
+                      Scenario ID <span className="normal-case text-breach-muted/60">(optional — descriptive/marketing link only)</span>
+                    </label>
+                    <input
+                      value={eventScenarioId}
+                      onChange={(e) => setEventScenarioId(e.target.value)}
+                      placeholder="paste a scenario id, or leave blank"
+                      className="w-full bg-breach-bg border border-breach-border text-breach-text text-xs px-3 py-2 rounded focus:outline-none focus:border-breach-blue font-mono"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[9px] text-breach-muted uppercase tracking-wider font-bold block mb-1">Archetype</label>
+                      <select
+                        value={eventArchetypeKey}
+                        onChange={(e) => setEventArchetypeKey(e.target.value)}
+                        className="w-full bg-breach-bg border border-breach-border text-breach-text text-xs px-2 py-2 rounded focus:outline-none"
+                      >
+                        {ARENA_ARCHETYPES.map((a) => (
+                          <option key={a.key} value={a.key}>{a.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-breach-muted uppercase tracking-wider font-bold block mb-1">Difficulty</label>
+                      <select
+                        value={eventDifficulty}
+                        onChange={(e) => setEventDifficulty(e.target.value as "easy" | "medium" | "hard")}
+                        className="w-full bg-breach-bg border border-breach-border text-breach-text text-xs px-2 py-2 rounded focus:outline-none"
+                      >
+                        <option value="easy">Easy</option>
+                        <option value="medium">Medium</option>
+                        <option value="hard">Hard</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3">
+                    <div>
+                      <label className="text-[9px] text-breach-muted uppercase tracking-wider font-bold block mb-1">Starts At (your local time)</label>
+                      <input
+                        type="datetime-local"
+                        value={eventStartsAt}
+                        onChange={(e) => setEventStartsAt(e.target.value)}
+                        className="w-full bg-breach-bg border border-breach-border text-breach-text text-xs px-3 py-2 rounded focus:outline-none focus:border-breach-blue"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] text-breach-muted uppercase tracking-wider font-bold block mb-1">Ends At (your local time)</label>
+                      <input
+                        type="datetime-local"
+                        value={eventEndsAt}
+                        onChange={(e) => setEventEndsAt(e.target.value)}
+                        className="w-full bg-breach-bg border border-breach-border text-breach-text text-xs px-3 py-2 rounded focus:outline-none focus:border-breach-blue"
+                      />
+                    </div>
+                  </div>
+
+                  {eventFormError && (
+                    <div className="bg-breach-accent/15 border border-breach-accent/30 text-breach-accent p-2.5 rounded text-[10px] font-mono">
+                      {eventFormError}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={handleCreateEvent}
+                    disabled={creatingEvent}
+                    className="w-full bg-breach-blue hover:bg-blue-600 disabled:opacity-50 text-black py-2.5 rounded text-xs uppercase tracking-widest font-bold transition-colors"
+                  >
+                    {creatingEvent ? "Scheduling..." : "+ Schedule Event"}
+                  </button>
+                  <p className="text-[9px] text-breach-muted/70 leading-relaxed">
+                    A fixed random seed is generated server-side at creation — every match paired under this event plays the identical scenario.
+                  </p>
+                </div>
+
+                {/* Existing events list */}
+                <div className="lg:col-span-2 bg-breach-surface border border-breach-border rounded overflow-hidden">
+                  <h3 className="text-xs font-bold text-breach-text uppercase tracking-wider border-b border-breach-border px-6 py-4">
+                    Scheduled / Live / Past Events
+                  </h3>
+                  <div className="divide-y divide-breach-border/60 max-h-[560px] overflow-y-auto">
+                    {arenaEvents.map((ev) => (
+                      <div key={ev.id} className="px-6 py-4 flex items-center justify-between gap-4 text-xs">
+                        <div className="min-w-0">
+                          <div className="font-semibold text-breach-text truncate">{ev.title}</div>
+                          <div className="text-[9px] text-breach-muted mt-0.5">
+                            {ev.archetype_key.replace(/_/g, " ")} · {ev.difficulty} · seed {ev.seed}
+                          </div>
+                          <div className="text-[9px] text-breach-muted mt-0.5">
+                            {new Date(ev.starts_at).toLocaleString()} → {new Date(ev.ends_at).toLocaleString()}
+                          </div>
+                        </div>
+                        <span className={`shrink-0 text-[9px] font-bold uppercase tracking-widest font-mono px-2 py-1 rounded border ${
+                          ev.status === "live" ? "text-red-400 border-red-500/30 bg-red-500/10" :
+                          ev.status === "scheduled" ? "text-breach-blue border-breach-blue/30 bg-breach-blue/10" :
+                          ev.status === "completed" ? "text-green-400 border-green-500/30 bg-green-500/10" :
+                          "text-breach-muted border-breach-border bg-breach-bg"
+                        }`}>
+                          {ev.status}
+                        </span>
+                      </div>
+                    ))}
+                    {arenaEvents.length === 0 && (
+                      <div className="px-6 py-12 text-center text-xs text-breach-muted">
+                        No Live Breach Events scheduled yet. Use the form to schedule the first one.
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

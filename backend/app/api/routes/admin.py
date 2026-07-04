@@ -1,9 +1,10 @@
+import secrets
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.db.session import get_db
 from app.models.user import User
@@ -11,11 +12,14 @@ from app.models.audit_log import AuditLog
 from app.models.scenario import Scenario
 from app.models.team import Team, TeamMember
 from app.models.content_assignment import ContentAssignment
+from app.models.arena_event import ArenaEvent
 from app.schemas.user import UserOut
 from app.schemas.scenario import ScenarioOut
 from app.core.security import require_admin, get_current_user
 from app.services.audit import log_action
 from app.services import mastery_service
+from app.services.org_simulation import ORG_ARCHETYPES
+from app.services.arena_event_service import arena_event_summary
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -903,3 +907,110 @@ async def list_assignments(
         }
         for a in assignments
     ]
+
+
+# ── Live Breach Events Phase 4: admin-scheduled synchronized events ────────
+
+class ArenaEventCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=255)
+    scenario_id: Optional[str] = None
+    archetype_key: str
+    difficulty: str = "medium"
+    starts_at: datetime
+    ends_at: datetime
+
+    @field_validator("difficulty")
+    @classmethod
+    def _validate_difficulty(cls, v: str) -> str:
+        if v not in ("easy", "medium", "hard"):
+            raise ValueError("difficulty must be one of easy, medium, hard")
+        return v
+
+
+@router.post("/arena/events", status_code=status.HTTP_201_CREATED)
+async def create_arena_event(
+    payload: ArenaEventCreatePayload,
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """Admin-only: schedule a new Live Breach Events Phase 4 synchronized
+    arena event (many players join at `starts_at`, all play the identical
+    seed/archetype/difficulty, watch a shared live leaderboard tick — see
+    ArenaEvent's model docstring).
+
+    `scenario_id`, if given, is DESCRIPTIVE/MARKETING METADATA ONLY — it
+    ties this event's copy/ticker/share content to a real ingested incident
+    by name. It does not affect simulation: the match itself always runs
+    off `archetype_key` + `seed`, unchanged. Validated against the
+    scenario library (any scenario this admin's org can see — same
+    visibility rule `create_assignment` above already uses) purely so a
+    typo'd/nonexistent id doesn't silently ship broken marketing copy.
+
+    `seed` is auto-generated here via `secrets.randbelow` (non-deterministic
+    choice of the event's STARTING conditions is fine — the same reasoning
+    `POST /arena/matches` already documents for an individual match's seed)
+    since the plan doesn't have the admin specify one; once set, it's fixed
+    for every match this event ever pairs.
+    """
+    if payload.archetype_key not in ORG_ARCHETYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown archetype_key. Valid keys: {sorted(ORG_ARCHETYPES.keys())}",
+        )
+
+    # ArenaEvent.starts_at/ends_at are naive DateTime columns (no
+    # timezone=True), matching every other datetime column in this codebase.
+    # The real frontend form sends `.toISOString()` (always "Z"-suffixed),
+    # which Pydantic v2 parses into a tz-AWARE datetime — asyncpg rejects
+    # binding a tz-aware value into a naive `TIMESTAMP WITHOUT TIME ZONE`
+    # column. Normalize to naive UTC here before either the ends_at/starts_at
+    # comparison below or the ArenaEvent row construction, so a tz-aware
+    # payload (real frontend) and a naive one (e.g. datetime.utcnow() in
+    # tests) both behave identically.
+    starts_at = payload.starts_at.astimezone(timezone.utc).replace(tzinfo=None) if payload.starts_at.tzinfo else payload.starts_at
+    ends_at = payload.ends_at.astimezone(timezone.utc).replace(tzinfo=None) if payload.ends_at.tzinfo else payload.ends_at
+
+    if ends_at <= starts_at:
+        raise HTTPException(status_code=400, detail="ends_at must be after starts_at")
+
+    if payload.scenario_id:
+        scenario_res = await db.execute(
+            select(Scenario).where(
+                Scenario.id == payload.scenario_id,
+                Scenario.status == "approved",
+                (Scenario.is_private == False) | (Scenario.owner_org_id == current_admin.organization_id),  # noqa: E712
+            )
+        )
+        if not scenario_res.scalar_one_or_none():
+            raise HTTPException(status_code=400, detail="scenario_id not found or not approved")
+
+    event = ArenaEvent(
+        title=payload.title,
+        scenario_id=payload.scenario_id,
+        archetype_key=payload.archetype_key,
+        difficulty=payload.difficulty,
+        seed=secrets.randbelow(2**31 - 1),
+        starts_at=starts_at,
+        ends_at=ends_at,
+        status="scheduled",
+    )
+    db.add(event)
+    await db.commit()
+    await db.refresh(event)
+
+    return arena_event_summary(event)
+
+
+@router.get("/arena/events")
+async def list_arena_events(
+    db: AsyncSession = Depends(get_db),
+    current_admin: User = Depends(require_admin),
+):
+    """Admin-only listing of all scheduled/live/completed/cancelled arena
+    events, newest-scheduled first — the admin dashboard's management view.
+    (The public, no-auth per-event status/leaderboard lives at
+    GET /arena/events/{id}/status in app/api/routes/arena.py.)"""
+    result = await db.execute(select(ArenaEvent).order_by(ArenaEvent.starts_at.desc()))
+    events = result.scalars().all()
+    return [arena_event_summary(e) for e in events]

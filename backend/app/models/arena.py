@@ -55,11 +55,22 @@ class ArenaMatch(Base):
     # GET /arena/public/replay/{share_token} route re-checks match.status.
     share_token: Mapped[str] = mapped_column(String(32), nullable=True, unique=True, index=True)
 
+    # Live Breach Events Phase 4 — nullable: only set for matches paired
+    # under a scheduled ArenaEvent (either normal event-scoped PvP pairing
+    # or the AI-fallback fill for stragglers), never backfilled for matches
+    # created before this column existed or created outside an event
+    # (ad-hoc queue / POST /arena/matches). Descriptive/join-scope only —
+    # the simulation itself still runs off this row's own seed/archetype_key
+    # columns, which are simply COPIED from the event at match-creation
+    # time, not read live from the event afterward.
+    event_id: Mapped[str] = mapped_column(String, ForeignKey("arena_events.id"), nullable=True, index=True)
+
     attacker: Mapped["User"] = relationship("User", foreign_keys=[attacker_user_id])
     defender: Mapped["User"] = relationship("User", foreign_keys=[defender_user_id])
     actions: Mapped[list["ArenaAction"]] = relationship(
         "ArenaAction", back_populates="match", cascade="all, delete-orphan"
     )
+    event: Mapped["ArenaEvent"] = relationship("ArenaEvent", back_populates="matches")
 
 
 class ArenaAction(Base):

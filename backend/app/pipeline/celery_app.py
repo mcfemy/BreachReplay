@@ -5,7 +5,7 @@ celery_app = Celery(
     "breachreplay",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL,
-    include=["app.pipeline.tasks"],
+    include=["app.pipeline.tasks", "app.services.arena_event_service"],
 )
 
 _WEEK = 604800   # seconds
@@ -61,6 +61,15 @@ celery_app.conf.update(
         "weekly-slack-snippet": {
             "task": "app.pipeline.tasks.send_weekly_slack_snippet",
             "schedule": _WEEK,
+        },
+        # Live Breach Events Phase 4 — ArenaEvent state machine
+        # (scheduled -> live -> completed). Every 60s: fine-grained enough
+        # that a scheduled event's start time feels "live" promptly without
+        # hammering the DB every few seconds like the arena queue's
+        # in-process polling does.
+        "minutely-arena-event-transitions": {
+            "task": "app.services.arena_event_service.transition_arena_events_task",
+            "schedule": 60,
         },
     },
 )

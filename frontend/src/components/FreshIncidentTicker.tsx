@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, Link } from "react-router-dom";
 import { api, axiosInstance } from "../lib/api";
+import { parseUtc } from "../lib/utcDate";
 
 // ── Live Breach Events Phase 2 — Fresh Incident Ticker ──────────────────────
 // "Breaking news" strip surfacing the newest approved, non-private scenarios
@@ -32,9 +33,9 @@ const SOURCE_ICON: Record<string, string> = {
 function timeAgo(iso: string): string {
   // Backend serializes created_at (a naive UTC datetime column) without a
   // timezone suffix — new Date() would otherwise parse it as local time,
-  // skewing "time ago" by the viewer's UTC offset.
-  const utcIso = /[Zz]|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`;
-  const diffMs = Date.now() - new Date(utcIso).getTime();
+  // skewing "time ago" by the viewer's UTC offset. parseUtc() (lib/utcDate.ts)
+  // was extracted from this exact logic for reuse by the Phase 4 event pages.
+  const diffMs = Date.now() - parseUtc(iso).getTime();
   const minutes = Math.floor(diffMs / 60000);
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes}m ago`;
