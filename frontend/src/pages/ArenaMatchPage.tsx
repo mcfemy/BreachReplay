@@ -543,9 +543,10 @@ function AttackerView({
               <select
                 value={selectedCredential}
                 onChange={(e) => setSelectedCredential(e.target.value)}
-                className="w-full bg-gray-950 border border-gray-800 text-gray-300 text-xs p-1.5 rounded"
+                disabled={harvestedCreds.length === 0}
+                className="w-full bg-gray-950 border border-gray-800 text-gray-300 text-xs p-1.5 rounded disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <option value="">— select —</option>
+                <option value="">{harvestedCreds.length === 0 ? "no harvested credentials yet" : "— select —"}</option>
                 {harvestedCreds.map((c) => <option key={c.id} value={c.id}>{c.username}</option>)}
               </select>
             </div>
