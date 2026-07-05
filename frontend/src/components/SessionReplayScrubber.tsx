@@ -22,7 +22,19 @@ export default function SessionReplayScrubber({ decisions }: SessionReplayScrubb
   useEffect(() => {
     if (isPlaying) {
       playInterval.current = setInterval(() => {
-        setActiveIndex((prev) => Math.min(prev + 1, decisions.length - 1));
+        // Stop only once a step-forward genuinely has nowhere left to go —
+        // checking this inside the tick (not as a separate effect reacting
+        // to every isPlaying/activeIndex change) avoids auto-stopping the
+        // instant Play is clicked while already sitting on the last frame
+        // (which is always true when there's a single decision, and is
+        // otherwise true any time playback is resumed at the end).
+        setActiveIndex((prev) => {
+          if (prev >= decisions.length - 1) {
+            setIsPlaying(false);
+            return prev;
+          }
+          return prev + 1;
+        });
       }, 5000);
     } else {
       if (playInterval.current) clearInterval(playInterval.current);
@@ -33,12 +45,18 @@ export default function SessionReplayScrubber({ decisions }: SessionReplayScrubb
     };
   }, [isPlaying, decisions.length]);
 
-  // Stop playback when the last decision is reached
-  useEffect(() => {
-    if (isPlaying && activeIndex >= decisions.length - 1) {
+  function handleTogglePlay() {
+    if (isPlaying) {
       setIsPlaying(false);
+      return;
     }
-  }, [activeIndex, decisions.length, isPlaying]);
+    // "Play" at the end restarts from the beginning, matching standard
+    // replay-button semantics, instead of doing nothing.
+    if (activeIndex >= decisions.length - 1) {
+      setActiveIndex(0);
+    }
+    setIsPlaying(true);
+  }
 
   if (!decisions || decisions.length === 0) {
     return (
@@ -78,8 +96,10 @@ export default function SessionReplayScrubber({ decisions }: SessionReplayScrubb
         </div>
         <div className="flex gap-2">
           <button
-            onClick={() => setIsPlaying(!isPlaying)}
-            className={`flex items-center gap-2 px-4 py-1.5 rounded text-xs uppercase tracking-wider font-bold transition-all duration-300 ${
+            onClick={handleTogglePlay}
+            disabled={decisions.length <= 1}
+            title={decisions.length <= 1 ? "Only one milestone recorded — nothing to step through" : undefined}
+            className={`flex items-center gap-2 px-4 py-1.5 rounded text-xs uppercase tracking-wider font-bold transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none ${
               isPlaying
                 ? "bg-breach-yellow text-black shadow-[0_0_15px_rgba(234,179,8,0.2)]"
                 : "bg-breach-blue text-white shadow-[0_0_15px_rgba(59,130,246,0.2)]"
