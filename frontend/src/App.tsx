@@ -33,6 +33,9 @@ const OrgUploadPage = lazy(() => import("./pages/OrgUploadPage"));
 const TeamsPage = lazy(() => import("./pages/TeamsPage"));
 const NotFoundPage = lazy(() => import("./pages/NotFoundPage"));
 const AuthCallbackPage = lazy(() => import("./pages/AuthCallbackPage"));
+const SecurityPage = lazy(() => import("./pages/SecurityPage"));
+const PrivacyPolicyPage = lazy(() => import("./pages/PrivacyPolicyPage"));
+const TermsOfServicePage = lazy(() => import("./pages/TermsOfServicePage"));
 
 const queryClient = new QueryClient();
 
@@ -74,6 +77,9 @@ export default function App() {
             <Route path="/arena/events/:eventId" element={<ArenaEventDetailPage />} />
             <Route path="/arena/events/:eventId/watch/:matchId" element={<ArenaSpectatePage />} />
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
+            <Route path="/security" element={<SecurityPage />} />
+            <Route path="/privacy" element={<PrivacyPolicyPage />} />
+            <Route path="/terms" element={<TermsOfServicePage />} />
 
             {/* Authenticated routes — all get the sidebar via AppShell */}
             <Route element={<AuthenticatedShell />}>

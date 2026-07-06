@@ -460,6 +460,9 @@ export default function LandingPage() {
             <span className="ml-4">© 2026 BreachReplay. All rights reserved.</span>
           </div>
           <div className="flex gap-6">
+            <Link to="/security" className="hover:text-gray-400 transition-colors">Security</Link>
+            <Link to="/privacy" className="hover:text-gray-400 transition-colors">Privacy</Link>
+            <Link to="/terms" className="hover:text-gray-400 transition-colors">Terms</Link>
             <a href="mailto:hello@breachreplay.com" className="hover:text-gray-400 transition-colors">Contact</a>
             <Link to="/login" className="hover:text-gray-400 transition-colors">Sign in</Link>
             <Link to="/register" className="hover:text-gray-400 transition-colors">Register</Link>

@@ -1,50 +1,81 @@
 # BreachReplay
 
-BreachReplay is a professional-grade, AI-powered incident response training platform designed to convert real-world cybersecurity breach disclosures and threat advisories into interactive, multi-tenant SOC team tabletop simulations.
+BreachReplay is a cybersecurity incident-response training platform that converts real-world
+breach disclosures and threat advisories (CISA, SEC filings, public post-mortems) into
+interactive, multi-tenant SOC tabletop simulations — plus a live, real-time attacker-vs-defender
+"Arena" mode with no equivalent among existing IR training tools.
+
+Live at [breachreplay.com](https://breachreplay.com).
 
 ---
 
-## 🚀 Technology Stack
+## What it does
 
-* **Backend Engine**: FastAPI, SQLAlchemy Async, Uvicorn, PostgreSQL with pgvector (for future semantic storage)
-* **Real-Time Communication**: Event-driven WebSockets with sub-second multiplayer presence tracking and interactive voting lobbies
-* **Asynchronous Task Queue**: Celery, Redis connection pools, pypdf document parsing
-* **Artificial Intelligence**: Anthropic Claude Sonnet API integration with exponential backoff retries and input sanitization guardrails
-* **Frontend Application**: React, Vite, TypeScript, Zustand, TailwindCSS with curated, harmonious dark-mode HSL styling
-* **Containerization & Scale**: Horizontal Pod Autoscaling (HPA) blueprints, lightweight Docker workers, and Kubernetes orchestrations
+**Scenario-based tabletop training**
+- A weekly ingestion pipeline pulls real breach disclosures (CISA advisories, SEC filings, RSS
+  feeds) and an AI pipeline (Claude) extracts them into playable scenarios, tagged against MITRE
+  ATT&CK techniques and reviewed via an admin draft/approval workflow.
+- Solo or multiplayer (role-based commander seats, live presence, voting lobbies) incident-response
+  sessions with branching decision gates and a live SIEM-style alert feed.
+- Post-simulation debrief: AI-generated performance report, NIST SP 800-61 / MITRE ATT&CK coverage
+  mapping, decision audit log, and a shareable completion certificate.
+
+**Live Arena Mode** — real-time PvP and AI-driven Red vs Blue
+- Human vs human, human vs AI-attacker, or human vs AI-defender matches on a shared, seeded,
+  deterministic simulated organization (hosts, credentials, network segments) — same seed always
+  reproduces the same incident, different seeds give effectively unlimited scenarios.
+- ELO-based ranking and leaderboard, matchmaking queue, and a multiverse branching-replay debrief
+  (rewind to any past action and see what a different choice would have produced).
+- Scheduled synchronized Live Events with public countdown/leaderboard pages, anonymous spectator
+  mode for in-progress matches, and shareable public replay links with aggregate "you beat X% of…"
+  stats (Global Incident Response Index).
+
+**Spaced-repetition learning**
+- A supplementary "Daily Drill" of knowledge checks, weighted toward each user's weakest MITRE
+  techniques via a mastery-tracking service — separate from the main decision-gate flow.
+
+**Enterprise integrations**
+- SAML 2.0 SSO (SP-initiated, custom implementation) for corporate identity federation.
+- SIEM webhook streaming (Splunk HTTP Event Collector, Microsoft Sentinel) so simulation alerts can
+  flow into a customer's real security tooling.
+- A Slack slash command for pulling scenario snippets directly into a workspace.
+- Stripe-based billing for Enterprise subscriptions.
 
 ---
 
-## 🗺️ Hardened Development Journey (Completed)
+## Technology stack
 
-We have successfully implemented and verified all six core development phases of the BreachReplay system:
+- **Backend**: FastAPI, SQLAlchemy (async), PostgreSQL with pgvector, Celery + Redis for scheduled
+  and background work (weekly ingestion, Live Arena event scheduling, matchmaking sweeps).
+- **Real-time**: WebSockets for multiplayer presence, live Arena match orchestration, and spectator
+  broadcasts.
+- **AI**: Anthropic Claude API for scenario extraction from source documents and AI-assisted
+  debrief grading.
+- **Frontend**: React, Vite, TypeScript, Zustand, TailwindCSS.
+- **Infra**: AWS (EC2, S3), Docker Compose, nginx, Let's Encrypt TLS, hardened security headers,
+  scale-to-zero cost control via a CloudWatch-triggered Lambda.
 
-* **Phase 0 — Hardened Backend Foundation**: Asynchronous database models, route-level Role-Based Access Control (RBAC), and basic Claude ingestion.
-* **Phase 1 — Auth Session Hardening**: Server-side opaque refresh token rotation in Redis and a complete backend Pytest suite with 55 hermetic test cases.
-* **Phase 2 — Frontend MVP Hardening**: OIDC-style token refreshes, 401 interception retries, and post-simulation debrief timelines.
-* **Phase 3 — Document Ingestion & Admin UI**: Drag-and-drop PDF disclosures ingestion interface, draft review states, and audit log auditing portals.
-* **Phase 4 — Collaborative Multiplayer**: Interactive commander seats, participant voting lobbies, presence synchronization, and facilitator custom alert injects.
-* **Phase 5 — Debrief & Compliance Reporting**: CISO-level ReportLab PDF generation, NIST SP 800-61 / MITRE ATT&CK coverage maps, and auditor-ready CSV training logs.
-* **Phase 6 — Platform Scale**: Resilient database connection pooling, AWS S3 storage streams with local fallbacks, tenant onboarding APIs, subscription upload quotas, and scalable Kubernetes HPA blueprints.
+See [breachreplay.com/security](https://breachreplay.com/security) for the current security and
+data-handling posture.
 
 ---
 
-## 🔮 Future Enhancements for a World-Class Platform
+## Status
 
-To move beyond the core architecture and build an industry-leading, enterprise-grade cybersecurity simulator, the following capabilities have been scheduled for development:
+Core tabletop simulation, ingestion pipeline, and compliance debrief reporting are live in
+production, alongside a fully shipped Live Arena Mode (data model through ranking/spectator
+polish) and the Live Breach Events initiative (shareable replays, live ticker, public stats,
+scheduled events, spectator mode). SAML SSO, SIEM streaming, and Slack integration are implemented
+for Enterprise accounts. A formal third-party security audit (e.g. SOC 2 Type II) has not yet been
+completed — see the security page for specifics.
 
-### 🎮 1. Advanced Interactive Simulation & Gamification
-* **Multi-Branching Decision Trees**: Shift from linear timelines to branching choice paths (e.g., Choose-Your-Own-Adventure format). A team’s containment decision directly changes downstream injects, splitting the narrative into dramatic recovery or active compromise scenarios.
-* **Live AI Facilitation**: Integrate a dynamic Claude-powered facilitator that monitors lobby chat logs and injects reactive threat actions based on the team's live communication behavior.
-* **Threat Hunting sandbox**: Embed interactive terminal environments or mock packet viewers where players must run real CLI commands to find IOCs (Indicators of Compromise) or identify the malicious IP required to unlock a decision gate.
-* **Role-Specific Alert Feeds**: Segment alert feeds by role so that network logs stream to the Network Specialist and media inquiries to the PR Lead, forcing authentic cross-functional collaboration.
+---
 
-### 🛡️ 2. Enterprise Security, SSO & Compliance
-* **SAML SSO / OIDC Auth**: Integrate corporate identity federations (e.g., Azure Active Directory, Okta, Ping Identity) to satisfy enterprise onboarding requirements.
-* **Immutable Compliance Evidence**: Store CSV and PDF audit packages in read-only WORM storage (e.g., AWS S3 Object Lock) signed with organizational asymmetric private keys, ensuring training logs cannot be retroactively edited.
-* **Granular Security Quotas**: Implement advanced, CISO-managed tenant controls over maximum concurrent simulations, analyst seat ceilings, and custom log retention horizons.
+## Roadmap
 
-### 🔌 3. SIEM & Corporate Integrations
-* **SIEM Alert Streaming**: Expose webhooks or syslog relays allowing the simulation engine to stream mock attack alerts directly into the customer's staging SIEM (e.g., Splunk, Microsoft Sentinel). This forces SOC analysts to use their real corporate tools to discover, investigate, and solve the simulated breach.
-* **Incident Response Policy RAG**: Leverage pgvector embeddings to index the organization's custom Incident Response guidelines. The Claude debrief engine will then grade the team's tabletop performance *specifically* against their own company playbooks instead of generic NIST frameworks.
-* **Extracted Scenario LLM Evaluator**: Insert an automated LLM evaluator (e.g., self-reflection loops) to grade the logical consistency and gameplay quality of new AI-extracted breach documents before they are submitted for administrator publishing.
+- Multi-branching decision trees for the core tabletop flow (beyond Arena's existing branching
+  replay).
+- Threat-hunting sandbox (interactive terminal / mock packet viewer for IOC discovery).
+- Immutable, WORM-stored compliance evidence exports for audit packages.
+- IR-policy RAG: grade tabletop performance against a customer's own playbooks, not just generic
+  frameworks.
