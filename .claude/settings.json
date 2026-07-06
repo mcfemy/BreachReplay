@@ -1,6 +1,5 @@
 {
   "permissions": {
-    "defaultMode": "bypassPermissions",
     "allow": [
       "Bash(*)",
       "Edit(*)",
@@ -11,8 +10,11 @@
       "WebFetch(*)",
       "WebSearch(*)",
       "mcp__supabase__*",
-      "Skill(*)"
-    ]
+      "Skill(*)",
+      "PowerShell(ssh -i $KEY -o StrictHostKeyChecking=no ec2-user@32.195.1.149 \"cd /home/ec2-user/breachreplay && docker compose -f docker-compose.prod.yml --env-file .env.prod ps --format 'table {{.Name}}\\\\t{{.Status}}'\" 2>&1)",
+      "PowerShell($KEY = \"C:\\\\Users\\\\mcfem\\\\OneDrive\\\\Desktop\\\\AWS_Training\\\\BreachReplay\\\\breachreplay-key.pem\")"
+    ],
+    "defaultMode": "bypassPermissions"
   },
   "skipDangerousModePermissionPrompt": true
 }

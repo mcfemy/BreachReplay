@@ -114,3 +114,8 @@ ipython_config.py
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# ── Runtime-generated artifacts — not source ─────────────────────────────────
+backend/app/uploads/
+*.tar.gz
+lambda/*.zip
