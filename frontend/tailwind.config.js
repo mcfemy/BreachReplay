@@ -15,9 +15,20 @@ export default {
           text: "#f9fafb",
           muted: "#6b7280",
         },
+        // Phase 1+ design tokens (BREACHREPLAY_GAME_OVERHAUL_SPEC.md section 1).
+        // Mirrors frontend/src/theme/tokens.ts — additive, doesn't touch `breach` above.
+        void: "#0B0F14",
+        panel: "#121A23",
+        phosphor: "#FFB454",
+        bleed: "#E5484D",
+        contain: "#3DD68C",
+        dim: "#8A97A5",
       },
       fontFamily: {
         mono: ["JetBrains Mono", "Fira Code", "Consolas", "monospace"],
+        display: ["Space Grotesk", "sans-serif"],
+        term: ["IBM Plex Mono", "monospace"],
+        body: ["Inter", "sans-serif"],
       },
       keyframes: {
         "bounce-in": {

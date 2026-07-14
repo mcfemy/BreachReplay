@@ -14,6 +14,8 @@ from app.models.knowledge_check import KnowledgeCheck, UserKnowledgeCheckAttempt
 from app.models.content_assignment import ContentAssignment
 from app.models.arena import ArenaMatch, ArenaAction
 from app.models.arena_event import ArenaEvent
+from app.models.teaser_event import TeaserEvent
+from app.models.xp_transaction import XPTransaction
 
 __all__ = [
     "Base",
@@ -40,4 +42,6 @@ __all__ = [
     "ArenaMatch",
     "ArenaAction",
     "ArenaEvent",
+    "TeaserEvent",
+    "XPTransaction",
 ]

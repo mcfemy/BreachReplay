@@ -3,6 +3,21 @@ import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import { useAuthStore } from "../store/auth";
 import { API_BASE } from "../lib/config";
+import { teaserApi, consumeStashedTeaserToken } from "../lib/teaser";
+
+/** Conversion continuity (Phase 1 teaser): best-effort, never blocks
+ * navigation. Mirrors RegisterPage.tsx's claim call for the OAuth path —
+ * sessionStorage survives the full-page redirect to the OAuth provider and
+ * back, since it's the same tab/browsing context throughout. */
+async function claimStashedTeaserToken(): Promise<void> {
+  const teaserToken = consumeStashedTeaserToken();
+  if (!teaserToken) return;
+  try {
+    await teaserApi.claim(teaserToken);
+  } catch {
+    // Ignore — the account still exists and works without the claim.
+  }
+}
 
 export default function AuthCallbackPage() {
   const navigate = useNavigate();
@@ -20,13 +35,15 @@ export default function AuthCallbackPage() {
         .get(`${API_BASE}/auth/me`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         })
-        .then(({ data }) => {
+        .then(async ({ data }) => {
           localStorage.setItem("br_user", JSON.stringify(data));
           useAuthStore.setState({ user: data });
+          await claimStashedTeaserToken();
           navigate("/scenarios", { replace: true });
         })
-        .catch(() => {
+        .catch(async () => {
           // Tokens are stored — navigate anyway; startup sync will fix profile
+          await claimStashedTeaserToken();
           navigate("/scenarios", { replace: true });
         });
     } else {

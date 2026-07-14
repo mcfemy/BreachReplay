@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/auth";
+import { teaserApi, consumeStashedTeaserToken } from "../lib/teaser";
 
 const API_BASE = import.meta.env.VITE_API_URL || "/api/v1";
 
@@ -34,6 +35,19 @@ export default function RegisterPage() {
     try {
       const data = await api.post<{ access_token: string; refresh_token: string; user: any }>("/auth/register", form);
       setAuth(data.access_token, data.refresh_token, data.user);
+
+      // Conversion continuity (Phase 1 teaser): if this signup followed a
+      // completed no-auth teaser run, attach it now so the achievement is
+      // pre-earned. Best-effort — a failure here must never block signup.
+      const teaserToken = consumeStashedTeaserToken();
+      if (teaserToken) {
+        try {
+          await teaserApi.claim(teaserToken);
+        } catch {
+          // Ignore — the account still exists and works without the claim.
+        }
+      }
+
       navigate("/scenarios");
     } catch (err: any) {
       setError(err.message);

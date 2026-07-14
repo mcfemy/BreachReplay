@@ -7,6 +7,7 @@ import { useAuthStore } from "./store/auth";
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const RegisterPage = lazy(() => import("./pages/RegisterPage"));
 const LandingPage = lazy(() => import("./pages/LandingPage"));
+const TeaserLandingPage = lazy(() => import("./pages/TeaserLandingPage"));
 const ScenarioLibraryPage = lazy(() => import("./pages/ScenarioLibraryPage"));
 const SimulationRoomPage = lazy(() => import("./pages/SimulationRoomPage"));
 const SessionMultiplayerLobbyPage = lazy(() => import("./pages/SessionMultiplayerLobbyPage"));
@@ -65,7 +66,11 @@ export default function App() {
         <Suspense fallback={PageLoader}>
           <Routes>
             {/* Public routes */}
-            <Route path="/" element={<LandingPage />} />
+            {/* Phase 1 teaser is live at "/". Roll back with a one-line
+                change: swap the element back to <LandingPage />. The old
+                page is untouched and still fully functional. */}
+            <Route path="/" element={<TeaserLandingPage />} />
+            <Route path="/classic" element={<LandingPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/register" element={<RegisterPage />} />
             <Route path="/pricing" element={<PricingPage />} />
