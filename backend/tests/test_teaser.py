@@ -2,9 +2,11 @@ from datetime import datetime, timedelta
 
 import pytest
 from jose import jwt as jose_jwt
+from sqlalchemy import func, select
 
 from app.core.config import settings
 from app.core.security import limiter
+from app.models.teaser_event import TeaserEvent
 
 pytestmark = pytest.mark.asyncio
 
@@ -52,6 +54,40 @@ async def test_answer_wrong_choice_bleeds_to_two_more_hosts(client):
     body = resp.json()
     assert body["correct"] is False
     assert body["node_states"] == {"MAIL-01": "compromised", "DC-01": "compromised", "FIN-03": "compromised"}
+
+
+async def test_answer_is_first_answer_wins_and_writes_a_single_decision(client, db):
+    """A token's first /answer is final. Re-calling with a different node must
+    return the original outcome (no answer correction) and must not write more
+    decided/completed rows (no funnel inflation)."""
+    data = await _start(client)
+    token = data["teaser_token"]
+
+    # First answer is a wrong pick.
+    first = await client.post("/api/v1/teaser/answer", json={
+        "teaser_token": token,
+        "chosen_node_id": "DC-01",
+    })
+    assert first.status_code == 200
+    assert first.json()["correct"] is False
+
+    # Second answer tries to switch to the correct node — must be ignored.
+    second = await client.post("/api/v1/teaser/answer", json={
+        "teaser_token": token,
+        "chosen_node_id": "MAIL-01",
+    })
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+    # Exactly one decided and one completed row were written (the test runs in
+    # an isolated, rolled-back transaction, so these are this token's only rows).
+    for event_type in ("teaser_decided", "teaser_completed"):
+        count = await db.scalar(
+            select(func.count())
+            .select_from(TeaserEvent)
+            .where(TeaserEvent.event_type == event_type)
+        )
+        assert count == 1, f"expected exactly one {event_type} row, found {count}"
 
 
 async def test_answer_rejects_a_node_not_offered_as_a_choice(client):

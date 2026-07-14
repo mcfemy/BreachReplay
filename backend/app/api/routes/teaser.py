@@ -91,15 +91,10 @@ async def start_teaser(request: Request, db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.post("/answer")
-@limiter.limit("20/minute")
-async def answer_teaser(request: Request, payload: TeaserAnswerRequest, db: AsyncSession = Depends(get_db)):
-    token_id = _verify_teaser_token(payload.teaser_token)
-
-    if payload.chosen_node_id not in teaser_data.DECISION["node_choices"]:
-        raise HTTPException(status_code=400, detail="Invalid node choice")
-
-    correct = payload.chosen_node_id == teaser_data.TEASER_CORRECT_NODE_ID
+def _build_answer_response(correct: bool) -> dict:
+    """Deterministic answer payload for a given outcome. Shared by the fresh
+    path and the first-answer-wins replay path so a repeated /answer call
+    reconstructs the exact same body from the stored outcome."""
     if correct:
         node_states = {teaser_data.TEASER_CORRECT_NODE_ID: "contained"}
         consequence_text = teaser_data.CONSEQUENCE_CORRECT
@@ -109,6 +104,38 @@ async def answer_teaser(request: Request, payload: TeaserAnswerRequest, db: Asyn
             node_states[node_id] = "compromised"
         consequence_text = teaser_data.CONSEQUENCE_WRONG
 
+    return {
+        "correct": correct,
+        "node_states": node_states,
+        "consequence_text": consequence_text,
+        "end_card_text": teaser_data.END_CARD_TEXT,
+    }
+
+
+@router.post("/answer")
+@limiter.limit("20/minute")
+async def answer_teaser(request: Request, payload: TeaserAnswerRequest, db: AsyncSession = Depends(get_db)):
+    token_id = _verify_teaser_token(payload.teaser_token)
+
+    # First-answer-wins. If this token already recorded a decision, return that
+    # original outcome and write nothing. This blocks two abuses: (1) re-calling
+    # with a different node to "correct" a wrong pick, and (2) stacking
+    # duplicate decided/completed rows that would inflate the funnel counts.
+    # The incoming chosen_node_id is deliberately ignored on a replay, so the
+    # answer can't be revised after the fact.
+    prior_decided = await db.execute(
+        select(TeaserEvent)
+        .where(TeaserEvent.token_id == token_id, TeaserEvent.event_type == "teaser_decided")
+        .limit(1)
+    )
+    prior = prior_decided.scalar_one_or_none()
+    if prior is not None:
+        return _build_answer_response(prior.outcome == "correct")
+
+    if payload.chosen_node_id not in teaser_data.DECISION["node_choices"]:
+        raise HTTPException(status_code=400, detail="Invalid node choice")
+
+    correct = payload.chosen_node_id == teaser_data.TEASER_CORRECT_NODE_ID
     outcome = "correct" if correct else "wrong"
     now = datetime.utcnow()
     # "decided" and "completed" both fire off this single call — a teaser
@@ -120,12 +147,7 @@ async def answer_teaser(request: Request, payload: TeaserAnswerRequest, db: Asyn
                         scenario_key=teaser_data.SCENARIO_KEY, outcome=outcome, created_at=now))
     await db.commit()
 
-    return {
-        "correct": correct,
-        "node_states": node_states,
-        "consequence_text": consequence_text,
-        "end_card_text": teaser_data.END_CARD_TEXT,
-    }
+    return _build_answer_response(correct)
 
 
 @router.post("/claim")
