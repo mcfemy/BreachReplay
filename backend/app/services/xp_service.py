@@ -52,6 +52,8 @@ ACHIEVEMENTS = {
     "colonial_veteran":   {"title": "Colonial Veteran",   "desc": "Complete the Colonial Pipeline scenario",          "icon": "🛢️", "xp": 100},
     "log4shell_expert":   {"title": "Log4Shell Expert",   "desc": "Complete the Log4Shell scenario",                  "icon": "☕", "xp": 100},
     "solarwinds_hunter":  {"title": "SolarWinds Hunter",  "desc": "Complete the SolarWinds scenario",                 "icon": "🌐", "xp": 100},
+    # No-auth landing teaser (Phase 1)
+    "teaser_survivor":    {"title": "Teaser Survivor",    "desc": "Survived your first breach before signing up",    "icon": "🚨", "xp": 50},
 }
 
 
