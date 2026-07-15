@@ -16,6 +16,11 @@ from app.websocket.manager import (
     build_decision_gate_event,
     build_system_event,
     build_investigation_result_event,
+    build_run_resync_event,
+    build_state_delta_event,
+    build_clock_tick_event,
+    build_stage_advance_event,
+    build_run_end_event,
 )
 from app.pipeline.claude_client import generate_decision_commentary
 from app.services.siem_service import send_alert_to_siem, send_decision_to_siem
@@ -30,6 +35,8 @@ from app.services.org_simulation import (
     check_defender_containment,
 )
 from app.services import arena_rating_service
+from app.services import verb_engine
+from app.services.action_run_store import action_run_store
 
 logger = logging.getLogger(__name__)
 
@@ -1473,4 +1480,148 @@ async def arena_spectator_ws_handler(websocket: WebSocket, match_id: str) -> Non
         pass
     finally:
         manager.unregister_arena_spectator(match_id, websocket)
+
+
+# ── Phase 2 — action console core loop (Item 3) ─────────────────────────────
+#
+# Genuinely separate from simulation_ws_handler above: no shared message-
+# type branches, no shared ConnectionManager presence/vote/pause state, no
+# SimulationSession/SessionParticipant/SessionDecision involvement at all.
+# Org tabletop mode is structurally unreachable by anything below — the
+# same isolation arena_ws_handler already established for Arena mode
+# (see that section's own comment). The live game state lives in
+# app.services.action_run_store (verb_engine.RunState), not here or in
+# ConnectionManager — this handler only ever touches it through
+# action_run_store's own async API, and only ever sends the client the
+# narrow deltas that API returns.
+
+def _fired_stage_count(run_state) -> int:
+    clock = verb_engine.attacker_clock_seconds(run_state)
+    return sum(1 for s in run_state.compiled.stages if s.trigger_seconds <= clock)
+
+
+def _public_host_state(host) -> dict:
+    """The fog-of-war-safe shape for "this host's status changed" — id +
+    status only, never hostname/role (those are earned via a reveal verb;
+    see verb_engine._host_summary, which this deliberately mirrors)."""
+    return {"id": host.id, "compromise_level": host.compromise_level, "isolated": host.isolated}
+
+
+def _diff_public_host_states(old_world, new_world) -> list[dict]:
+    """Hosts whose (compromise_level, isolated) changed between two world
+    snapshots — covers both the player's own verb effect (e.g. isolate)
+    and attacker-driven stage progression uniformly; the map is allowed to
+    visibly show compromise/containment state for any host regardless of
+    whether that host's identity has been "revealed" yet (Phase 1's teaser
+    already establishes this: infection visibly spreads on the map without
+    a reveal action)."""
+    old_by_id = {h.id: (h.compromise_level, h.isolated) for h in old_world.hosts}
+    changed = []
+    for h in new_world.hosts:
+        if old_by_id.get(h.id) != (h.compromise_level, h.isolated):
+            changed.append(_public_host_state(h))
+    return changed
+
+
+async def action_run_ws_handler(websocket: WebSocket, run_id: str, user_id: str) -> None:
+    """Phase 2 action-mode run connection. Caller (app/main.py's
+    websocket_action_run) has already accepted the socket and verified the
+    JWT — this function is never reachable without a real user_id.
+
+    A `run_id` with no live entry in `action_run_store` means the
+    connecting user hasn't started it (via POST /action-runs) or it has
+    already ended — the socket is closed rather than accepting a
+    connection to nothing. A live run belonging to a DIFFERENT user is
+    rejected the same way (4003, mirroring arena_ws_handler's role-mismatch
+    close code). A live run already belonging to this user — including a
+    genuine reconnect after a dropped connection — resumes the stored
+    RunState via action_run_store.get(), never errors or restarts.
+    """
+    live = await action_run_store.get(run_id)
+    if live is None:
+        await websocket.close(code=4004)
+        return
+    if live.user_id is not None and live.user_id != user_id:
+        await websocket.close(code=4003)
+        return
+
+    await manager.connect(run_id, websocket)
+
+    try:
+        await manager.send_personal(websocket, build_run_resync_event(
+            live.run_state.elapsed_seconds,
+            verb_engine.attacker_clock_seconds(live.run_state),
+            live.cap_seconds,
+        ))
+
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await manager.send_personal(websocket, build_system_event("error", {"detail": "Invalid JSON"}))
+                continue
+
+            msg_type = msg.get("type")
+
+            if msg_type == "ping":
+                await manager.send_personal(websocket, build_system_event("pong"))
+                continue
+
+            if msg_type != "action.submit":
+                # Unknown/irrelevant message types are silently ignored —
+                # same convention arena_spectator_ws_handler uses.
+                continue
+
+            verb = msg.get("verb")
+            target = msg.get("target")
+
+            old_world = live.run_state.world
+            old_stage_count = _fired_stage_count(live.run_state)
+
+            try:
+                result, is_over = await action_run_store.apply_verb(run_id, verb, target)
+            except KeyError:
+                await manager.send_personal(websocket, build_system_event(
+                    "error", {"detail": "Run not found or already ended"},
+                ))
+                break
+
+            if result.error is not None:
+                await manager.send_personal(websocket, build_system_event("error", {"detail": result.error}))
+                continue
+
+            live = await action_run_store.get(run_id)
+            new_run_state = live.run_state
+
+            await manager.send_personal(websocket, build_state_delta_event(result.delta))
+            await manager.send_personal(websocket, build_clock_tick_event(
+                new_run_state.elapsed_seconds, verb_engine.attacker_clock_seconds(new_run_state),
+            ))
+
+            new_stage_count = _fired_stage_count(new_run_state)
+            if new_stage_count > old_stage_count:
+                final_stage = next((s for s in new_run_state.compiled.stages if s.is_final), None)
+                is_final_reached = (
+                    final_stage is not None
+                    and verb_engine.attacker_clock_seconds(new_run_state) >= final_stage.trigger_seconds
+                )
+                await manager.send_personal(websocket, build_stage_advance_event(
+                    new_stage_count,
+                    len(new_run_state.compiled.stages),
+                    is_final_reached,
+                    _diff_public_host_states(old_world, new_run_state.world),
+                ))
+
+            if is_over:
+                async with AsyncSessionLocal() as db:
+                    summary = await action_run_store.finalize(db, run_id)
+                if summary is not None:
+                    await manager.send_personal(websocket, build_run_end_event(summary))
+                break
+
+    except WebSocketDisconnect:
+        pass
+    finally:
+        manager.disconnect(run_id, websocket)
 

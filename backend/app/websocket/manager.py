@@ -352,3 +352,74 @@ def build_investigation_result_event(field: str, value: str, matches: list) -> d
         "matches": matches,
         "server_time": datetime.utcnow().isoformat(),
     }
+
+
+# ── Phase 2: action console core loop (Item 3) ───────────────────────────────
+#
+# Purely additive alongside the builders above — nothing here is read by
+# simulation_ws_handler/arena_ws_handler, and none of the existing builders
+# are touched. See app/services/action_run_store.py for RunState/VerbResult
+# and app/websocket/handlers.py's action_run_ws_handler for how these are
+# assembled from a verb_engine.apply_verb() call.
+
+def build_run_resync_event(elapsed_seconds: int, attacker_clock_seconds: int, cap_seconds: int) -> dict:
+    """Sent once, right after connect — covers both a fresh run's t=0 state
+    and a reconnect resuming a live run, so the client always has a known
+    clock baseline to render from instead of guessing at t=0."""
+    return {
+        "type": "run.resync",
+        "elapsed_seconds": elapsed_seconds,
+        "attacker_clock_seconds": attacker_clock_seconds,
+        "cap_seconds": cap_seconds,
+        "server_time": datetime.utcnow().isoformat(),
+    }
+
+
+def build_state_delta_event(delta: dict) -> dict:
+    """Wraps a verb_engine.VerbResult.delta as-is — that dict is already
+    the narrow, client-safe "what did I personally learn this call" payload
+    (see verb_engine.apply_verb's docstring); this builder adds nothing
+    except the envelope."""
+    return {
+        "type": "state.delta",
+        "delta": delta,
+        "server_time": datetime.utcnow().isoformat(),
+    }
+
+
+def build_clock_tick_event(elapsed_seconds: int, attacker_clock_seconds: int) -> dict:
+    return {
+        "type": "clock.tick",
+        "elapsed_seconds": elapsed_seconds,
+        "attacker_clock_seconds": attacker_clock_seconds,
+        "server_time": datetime.utcnow().isoformat(),
+    }
+
+
+def build_stage_advance_event(stages_fired: int, total_stages: int, is_final_reached: bool, newly_compromised_hosts: list) -> dict:
+    """Deliberately redacted, matching the anti-leak rule every other
+    Phase 2 surface follows: a progress count and the PUBLICLY OBSERVABLE
+    consequence (which host ids visibly changed compromise/isolation
+    state), never a stage id, mitre_technique, or target list — those stay
+    server-only (see action_engine.Stage / verb_engine's own delta
+    shaping)."""
+    return {
+        "type": "stage.advance",
+        "stages_fired": stages_fired,
+        "total_stages": total_stages,
+        "is_final_reached": is_final_reached,
+        "newly_compromised_hosts": newly_compromised_hosts,
+        "server_time": datetime.utcnow().isoformat(),
+    }
+
+
+def build_run_end_event(summary: dict) -> dict:
+    """`summary` is action_run_store.finalize()'s return dict as-is:
+    {action_run_id, outcome, score_breakdown, xp_awarded, new_achievements}
+    — all of it is already player-facing debrief content, nothing hidden
+    left to redact."""
+    return {
+        "type": "run.end",
+        **summary,
+        "server_time": datetime.utcnow().isoformat(),
+    }

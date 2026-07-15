@@ -1,0 +1,246 @@
+"""
+Tests for app.websocket.handlers.action_run_ws_handler (Phase 2, Item 3).
+
+WS-handler testing convention (see test_arena_spectator.py's module
+docstring for the full documented reasoning): starlette's
+TestClient.websocket_connect is incompatible with this suite's
+fakeredis-per-event-loop fixture, so action_run_ws_handler — which takes a
+plain `websocket` argument and only ever calls .send_json/.receive_text/
+.close on it — is tested by calling it directly with a minimal FakeWebSocket
+double, the same approach used for arena_spectator_ws_handler.
+
+Uses `app.db.session.AsyncSessionLocal` directly (not the `db`/`test_user`
+fixtures) for anything the handler itself will read/write: it opens its own
+AsyncSessionLocal() session internally (inside action_run_store.finalize),
+a different connection than the `db` fixture's single rolled-back
+transaction — writes made only through `db` would be invisible to it. This
+mirrors test_arena_ai_attacker.py's/test_arena_spectator.py's documented
+pattern exactly, including reusing conftest.ensure_test_user_row for the
+user row.
+"""
+import uuid
+
+import pytest
+from fastapi import WebSocketDisconnect
+
+from app.services import action_engine
+from app.services.action_run_store import action_run_store
+from app.websocket.handlers import action_run_ws_handler
+
+pytestmark = pytest.mark.asyncio
+
+# Short final-stage trigger (+2m = 120s) so tests that need a run to
+# naturally conclude (is_run_over -> True) don't have to burn an
+# unreasonable number of fake messages to get there.
+_FAST_DECISION_TREE = [
+    {"id": "gate-001", "trigger_timestamp": "+2m", "mitre_technique": "T1078",
+     "context_summary": "Suspicious VPN activity.", "options": [], "correct_index": 0,
+     "consequence_if_wrong": "Missed.", "rationale": "Correlate anomalies.", "nist_control_ref": "DE.AE-2"},
+]
+
+
+class FakeWebSocket:
+    """Minimal double for starlette's WebSocket — identical shape to
+    test_arena_spectator.py's FakeWebSocket, since action_run_ws_handler
+    calls the exact same three methods (.send_json/.receive_text/.close)."""
+
+    def __init__(self, incoming: list | None = None):
+        self.sent: list[dict] = []
+        self.closed_code: int | None = None
+        self._incoming = list(incoming or [])
+
+    async def send_json(self, message: dict) -> None:
+        self.sent.append(message)
+
+    async def receive_text(self) -> str:
+        if self._incoming:
+            return self._incoming.pop(0)
+        raise WebSocketDisconnect(code=1000)
+
+    async def close(self, code: int = 1000) -> None:
+        self.closed_code = code
+
+
+async def _make_scenario(decision_tree=None) -> "Scenario":
+    from app.db.session import AsyncSessionLocal
+    from app.models.scenario import Scenario
+
+    async with AsyncSessionLocal() as db:
+        scenario = Scenario(
+            id=str(uuid.uuid4()),
+            title="WS Handler Test Scenario",
+            source_type="manual",
+            source_reference=f"TEST-WS-{uuid.uuid4().hex[:8]}",
+            difficulty="practitioner",
+            industry_vertical="energy",
+            status="approved",
+            decision_tree=decision_tree if decision_tree is not None else _FAST_DECISION_TREE,
+            alert_sequence=[],
+        )
+        db.add(scenario)
+        await db.commit()
+        await db.refresh(scenario)
+        return scenario
+
+
+async def _start_live_run(scenario, user_id, seed=1, mode="scenario"):
+    compiled = action_engine.compile_scenario(scenario, seed)
+    run_id = str(uuid.uuid4())
+    await action_run_store.start_run(run_id, user_id, scenario.id, mode, compiled)
+    return run_id, compiled
+
+
+async def test_connect_to_unknown_run_closes_with_4004():
+    ws = FakeWebSocket()
+    await action_run_ws_handler(ws, "not-a-real-run-id", "some-user")
+    assert ws.closed_code == 4004
+    assert ws.sent == []
+
+
+async def test_connect_as_the_wrong_user_closes_with_4003():
+    from tests.conftest import ensure_test_user_row
+    await ensure_test_user_row("action-run-owner-1")
+    scenario = await _make_scenario()
+    run_id, _ = await _start_live_run(scenario, "action-run-owner-1")
+
+    ws = FakeWebSocket()
+    await action_run_ws_handler(ws, run_id, "some-other-user")
+    assert ws.closed_code == 4003
+    assert ws.sent == []
+
+    # Cleanup — this run was never finalized by the handler (it was
+    # rejected before that), so evict it directly to avoid leaking state
+    # into other tests sharing the process-wide singleton store.
+    async with action_run_store._lock:
+        action_run_store._runs.pop(run_id, None)
+
+
+async def test_fresh_connect_sends_a_run_resync_event_at_zero(request):
+    from tests.conftest import ensure_test_user_row
+    await ensure_test_user_row("action-run-owner-2")
+    scenario = await _make_scenario()
+    run_id, _ = await _start_live_run(scenario, "action-run-owner-2")
+
+    ws = FakeWebSocket(incoming=[])  # disconnects immediately after resync
+    await action_run_ws_handler(ws, run_id, "action-run-owner-2")
+
+    assert ws.sent[0]["type"] == "run.resync"
+    assert ws.sent[0]["elapsed_seconds"] == 0
+    assert ws.sent[0]["attacker_clock_seconds"] == 0
+    assert ws.sent[0]["cap_seconds"] == 600  # CAP_SECONDS_BY_MODE["scenario"]
+
+
+async def test_action_submit_returns_state_delta_and_clock_tick():
+    from tests.conftest import ensure_test_user_row
+    await ensure_test_user_row("action-run-owner-3")
+    scenario = await _make_scenario()
+    run_id, _ = await _start_live_run(scenario, "action-run-owner-3")
+
+    ws = FakeWebSocket(incoming=[
+        '{"type": "action.submit", "verb": "scan_network"}',
+    ])
+    await action_run_ws_handler(ws, run_id, "action-run-owner-3")
+
+    types = [m["type"] for m in ws.sent]
+    assert types[0] == "run.resync"
+    assert "state.delta" in types
+    assert "clock.tick" in types
+
+    delta_event = next(m for m in ws.sent if m["type"] == "state.delta")
+    assert "nodes" in delta_event["delta"]  # scan_network's own delta shape
+
+    tick_event = next(m for m in ws.sent if m["type"] == "clock.tick")
+    assert tick_event["elapsed_seconds"] == 45  # scan_network cost
+
+    # The run is still live (scenario mode's 600s cap, 120s final-stage
+    # trigger not yet reached with only one cheap verb spent) — clean up.
+    async with action_run_store._lock:
+        action_run_store._runs.pop(run_id, None)
+
+
+async def test_invalid_verb_sends_an_error_and_does_not_advance_the_clock():
+    from tests.conftest import ensure_test_user_row
+    await ensure_test_user_row("action-run-owner-4")
+    scenario = await _make_scenario()
+    run_id, _ = await _start_live_run(scenario, "action-run-owner-4")
+
+    ws = FakeWebSocket(incoming=[
+        '{"type": "action.submit", "verb": "hack_the_mainframe"}',
+    ])
+    await action_run_ws_handler(ws, run_id, "action-run-owner-4")
+
+    error_events = [m for m in ws.sent if m["type"] == "error"]
+    assert len(error_events) == 1
+
+    live = await action_run_store.get(run_id)
+    assert live is not None
+    assert live.run_state.elapsed_seconds == 0
+
+    async with action_run_store._lock:
+        action_run_store._runs.pop(run_id, None)
+
+
+async def test_ping_receives_pong():
+    from tests.conftest import ensure_test_user_row
+    await ensure_test_user_row("action-run-owner-5")
+    scenario = await _make_scenario()
+    run_id, _ = await _start_live_run(scenario, "action-run-owner-5")
+
+    ws = FakeWebSocket(incoming=['{"type": "ping"}'])
+    await action_run_ws_handler(ws, run_id, "action-run-owner-5")
+
+    assert any(m["type"] == "pong" for m in ws.sent)
+
+    async with action_run_store._lock:
+        action_run_store._runs.pop(run_id, None)
+
+
+async def test_reconnect_resumes_the_existing_run_state_not_a_fresh_one():
+    """The reconnect guarantee end to end: apply a verb (simulating a first
+    connection's activity), then make a wholly separate handler call
+    (simulating a fresh WS connection for the same run_id) and confirm the
+    resync reflects the ALREADY-spent clock, not zero."""
+    from tests.conftest import ensure_test_user_row
+    await ensure_test_user_row("action-run-owner-6")
+    scenario = await _make_scenario()
+    run_id, _ = await _start_live_run(scenario, "action-run-owner-6")
+
+    await action_run_store.apply_verb(run_id, "scan_network", None)
+
+    ws = FakeWebSocket(incoming=[])
+    await action_run_ws_handler(ws, run_id, "action-run-owner-6")
+
+    assert ws.sent[0]["type"] == "run.resync"
+    assert ws.sent[0]["elapsed_seconds"] == 45
+
+    async with action_run_store._lock:
+        action_run_store._runs.pop(run_id, None)
+
+
+async def test_run_over_triggers_finalize_and_a_run_end_event():
+    from tests.conftest import ensure_test_user_row
+    await ensure_test_user_row("action-run-owner-7")
+    scenario = await _make_scenario()
+    run_id, compiled = await _start_live_run(scenario, "action-run-owner-7")
+
+    final_stage = next(s for s in compiled.stages if s.is_final)
+    target_host_id = final_stage.compromises_host_ids[0]
+
+    # isolate (20s) + enough scan_network (45s each) to cross the +2m/120s
+    # final-stage trigger: 20 + 3*45 = 155s >= 120s.
+    ws = FakeWebSocket(incoming=[
+        f'{{"type": "action.submit", "verb": "isolate", "target": "{target_host_id}"}}',
+        '{"type": "action.submit", "verb": "scan_network"}',
+        '{"type": "action.submit", "verb": "scan_network"}',
+        '{"type": "action.submit", "verb": "scan_network"}',
+    ])
+    await action_run_ws_handler(ws, run_id, "action-run-owner-7")
+
+    run_end_events = [m for m in ws.sent if m["type"] == "run.end"]
+    assert len(run_end_events) == 1
+    assert run_end_events[0]["outcome"] == "win"
+    assert "score_breakdown" in run_end_events[0]
+
+    # finalize() evicts on completion — the handler must not leave a
+    # stale entry behind for a run that has already ended.
+    assert await action_run_store.get(run_id) is None
