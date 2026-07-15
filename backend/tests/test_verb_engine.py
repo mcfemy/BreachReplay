@@ -323,6 +323,42 @@ def test_no_verb_response_ever_leaks_unrevealed_hidden_state():
         assert host_id in (host_a, host_b)
 
 
+# ── is_run_over ───────────────────────────────────────────────────────────────
+
+def test_is_run_over_false_at_the_start():
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+    assert verb_engine.is_run_over(run, cap_seconds=480) is False
+
+
+def test_is_run_over_true_once_the_time_budget_is_exhausted():
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+    host_id = compiled.world.hosts[0].id
+    # query_logs = 30s/call; 480s cap needs 16 calls.
+    for _ in range(16):
+        run = verb_engine.apply_verb(run, "query_logs", host_id).run
+    assert run.elapsed_seconds >= 480
+    assert verb_engine.is_run_over(run, cap_seconds=480) is True
+
+
+def test_is_run_over_true_once_the_final_stage_has_fired_even_under_the_cap():
+    compiled = _compiled()
+    final = _final_stage(compiled)
+    run = verb_engine.new_run(compiled)
+    run = _run_clock_past(run, final.trigger_seconds)
+    # A generous cap that hasn't been reached — only the final-stage
+    # condition should trigger this.
+    assert run.elapsed_seconds < 10_000
+    assert verb_engine.is_run_over(run, cap_seconds=10_000) is True
+
+
+def test_is_run_over_respects_no_cap():
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+    assert verb_engine.is_run_over(run, cap_seconds=None) is False
+
+
 # ── determine_outcome / compute_score ────────────────────────────────────────
 
 def _final_stage(compiled):

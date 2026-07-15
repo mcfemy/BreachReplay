@@ -340,6 +340,33 @@ EVIDENCE_POINTS_PER_IOC = 100
 SPEED_BONUS_PER_SECOND_SAVED = 2
 
 
+def is_run_over(run: RunState, cap_seconds: Optional[int]) -> bool:
+    """True once further play cannot change the outcome — the stateful
+    layer (app.services.action_run_store) calls this after every applied
+    verb to decide whether to auto-finalize. Two conditions, either one
+    sufficient:
+
+    1. The run's time budget is exhausted: `elapsed_seconds` (the verb-cost
+       game clock, NOT real wall-clock time — see action_run_store's
+       module docstring for why those are tracked separately) has reached
+       `cap_seconds`.
+    2. The scenario's final stage has already fired on the attacker clock.
+       Every earlier stage, by construction (determine_outcome's own
+       is_final selection — action_engine._build_stages picks it by MAX
+       trigger_seconds), has an earlier trigger_seconds, so once the final
+       stage has fired the entire timeline has necessarily already played
+       out — no further verb can change win/partial/loss.
+
+    A scenario with no final stage at all (matches determine_outcome's
+    same edge case) can only end via the time budget."""
+    if cap_seconds is not None and run.elapsed_seconds >= cap_seconds:
+        return True
+    final_stage = next((s for s in run.compiled.stages if s.is_final), None)
+    if final_stage is None:
+        return False
+    return attacker_clock_seconds(run) >= final_stage.trigger_seconds
+
+
 def determine_outcome(run: RunState) -> str:
     """"win" | "partial" | "loss", per spec section 4: "contain the attack
     path before the final-stage event (exfil/encryption) fires. Partial
