@@ -2,10 +2,14 @@ name: Claude PR Review
 
 # Automated QA reviewer for Phase 2+ work. Applies REVIEW_CRITERIA.md
 # against PHASE2_STATE.md and docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md, runs
-# the real backend test suite itself, and posts a verdict. On APPROVED, it
-# reads PHASE2_STATE.md and posts a follow-up comment tagging @claude with
-# the next item's instructions — .github/workflows/claude.yml is what picks
-# that comment up and acts on it.
+# the real backend test suite itself, and posts a verdict. Ends at the
+# verdict — it does NOT dispatch the next item itself. A PR comment posted
+# via this job's GITHUB_TOKEN does not trigger other workflows (GitHub
+# deliberately suppresses that to prevent workflow recursion loops), so a
+# "@claude, do the next item" comment posted from here would silently
+# never fire — and dispatching on APPROVED would race ahead of the human
+# merge decision anyway. See .github/workflows/claude-dispatch.yml for
+# what actually kicks off the next item, on PR *merge* instead.
 #
 # Review-only by design: `permissions.contents: read` means the token this
 # job runs with cannot push to the repo even if something went wrong, and
@@ -128,19 +132,9 @@ jobs:
             item per number, each naming the exact file and criterion
             (from REVIEW_CRITERIA.md) it addresses.
 
-            ## Step 3 — on APPROVED only
-
-            If and only if your verdict is APPROVED: read
-            PHASE2_STATE.md's description of the next item, and post a
-            SEPARATE follow-up PR comment that:
-            - Starts with "@claude"
-            - Names the next item's number and title
-            - Pastes that item's instructions from PHASE2_STATE.md
-            - Asks for it to be implemented on its own branch and opened
-              as a new PR into phase-2-action-console, per this project's
-              established checkpoint rhythm (small, reviewable, one item
-              at a time)
-
-            Take no further action after Step 2 (or Step 3, when it
-            applies) — do not loop back and re-review, do not post
-            additional commentary.
+            Take no further action after posting the verdict — do not loop
+            back and re-review, do not post additional commentary, and do
+            not attempt to notify or dispatch anything else. A human
+            merges this PR after seeing VERDICT: APPROVED; what happens
+            next is handled by a separate workflow triggered on that
+            merge, not by anything in this job.

@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+  # No branches: filter — runs for PRs targeting any branch (e.g.
+  # phase-2-action-console), not just main. Phase 2 PRs otherwise get no
+  # CI besides claude-review.yml's own pytest run; two independent test
+  # gates is the point.
   pull_request:
-    branches: [main]
 
 jobs:
   test:
