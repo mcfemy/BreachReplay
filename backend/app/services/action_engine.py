@@ -30,7 +30,7 @@ from __future__ import annotations
 import hashlib
 import random
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Optional, Union
 
 from app.services.org_simulation import (
@@ -134,7 +134,15 @@ class Stage:
 class IOCPlacement:
     """One hidden_iocs entry from the scenario, bound to a specific
     synthesized host_id so a future `query logs <host>` / `image disk
-    <host>` verb can reveal it. Never sent to the client until earned."""
+    <host>` verb can reveal it. Never sent to the client until earned.
+
+    `matches_on` is the ORIGINAL scenario dict's matching hint (e.g.
+    {"ip": "185.220.101.34"}) — kept for the verb layer's server-side
+    `block ip <addr>` / future account-matching checks, which need the
+    real authored identifier. It is deliberately excluded from `to_dict()`:
+    `raw_log` (rewritten by _rewrite_raw_log_for_host) is what's safe to
+    reveal to a player; `matches_on` never is, since for a hostname-type
+    IOC it can literally be the answer to a later decision gate."""
 
     host_id: str
     description: str
@@ -142,6 +150,7 @@ class IOCPlacement:
     source_system: str
     rule_id: str
     raw_log: str
+    matches_on: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -313,6 +322,7 @@ def _place_iocs(hidden_iocs: list[dict], world: OrgState, seed: int) -> tuple[IO
             source_system=ioc.get("source_system", ""),
             rule_id=ioc.get("rule_id", ""),
             raw_log=_rewrite_raw_log_for_host(ioc.get("raw_log", ""), matches_on, host),
+            matches_on=dict(matches_on),
         ))
     return tuple(placements)
 

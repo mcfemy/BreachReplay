@@ -1,0 +1,325 @@
+"""
+Phase 2 — Action console core loop: verb application layer.
+
+BREACHREPLAY_GAME_OVERHAUL_SPEC.md section 4 / docs/PHASE2_KICKOFF.md Part B,
+Item 1. Sits directly on top of action_engine.py's compiler: given a
+CompiledRun and a `RunState` (this run's live, server-only progress), each of
+the 8 spec verbs advances the run clock by its fixed cost, applies its
+effect against the live world, and returns a narrow, client-safe delta of
+only what was newly revealed. `RunState`/`CompiledRun` themselves are never
+serialized to the client wholesale — see `apply_verb`'s docstring.
+
+Server-authoritative, deterministic, frozen-dataclass style throughout,
+matching action_engine.py and org_simulation.py's conventions: every
+state-changing function returns a NEW `RunState` rather than mutating
+anything in place.
+
+The WebSocket wiring that calls `apply_verb` per `action.submit` message and
+turns its delta into a `state.delta` broadcast is a later Phase 2 commit
+(Item 3), built on top of this one.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from typing import Optional
+
+from app.services.action_engine import CompiledRun, Host, IOCPlacement, OrgState
+
+# ── Verb vocabulary ──────────────────────────────────────────────────────────
+#
+# Costs are BREACHREPLAY_GAME_OVERHAUL_SPEC.md section 4's table, verbatim —
+# not tunable without a spec change.
+
+VERB_COSTS: dict[str, int] = {
+    "query_logs": 30,
+    "scan_network": 45,
+    "isolate": 20,
+    "image_disk": 90,
+    "interview_user": 60,
+    "block_ip": 15,
+    "reset_creds": 40,
+    "escalate": 0,
+}
+
+# Verbs that operate against a specific target string (host id / ip / account
+# username). "escalate" and "scan_network" are the two verbs with no target.
+_TARGETED_VERBS = frozenset(VERB_COSTS) - {"escalate", "scan_network"}
+
+ESCALATE_FREEZE_SECONDS = 60
+
+# Scoring amounts are provisional pending Item 3/4's real scoring formula
+# (feeding xp_service.award_xp) — tracked here only as penalty *events* with
+# a numeric weight, not a final score.
+ESCALATE_PENALTY = 100
+PRECISION_PENALTY = 50
+
+_COMPROMISE_LEVELS = ("none", "foothold", "admin", "domain_admin")
+
+
+@dataclass(frozen=True)
+class RunState:
+    """The full, server-only live state of an in-progress action-mode run.
+    Never sent to the client wholesale — verb handlers return only a
+    narrow `VerbResult.delta` of what changed. `world` reflects both the
+    attacker's stage progression AND every defender verb effect applied so
+    far (isolation, credential resets, ...) folded together, the same way
+    org_simulation.OrgState folds Arena actions."""
+
+    compiled: CompiledRun
+    world: OrgState
+    elapsed_seconds: int = 0
+    attacker_clock_offset: int = 0
+    escalate_used: bool = False
+    revealed_host_ids: frozenset = field(default_factory=frozenset)
+    discovered_ioc_keys: frozenset = field(default_factory=frozenset)  # {(host_id, rule_id)}
+    penalties: tuple = ()
+    action_log: tuple = ()
+
+
+@dataclass(frozen=True)
+class VerbResult:
+    run: RunState
+    delta: dict
+    error: Optional[str] = None
+
+
+def new_run(compiled: CompiledRun) -> RunState:
+    """A fresh RunState at t=0: no clock spent, nothing revealed, the
+    attacker hasn't advanced past t=0 yet (world == compiled.world,
+    identical to action_engine.world_state_at(compiled, 0))."""
+    return RunState(compiled=compiled, world=compiled.world)
+
+
+def attacker_clock_seconds(run: RunState) -> int:
+    """The attacker's own effective clock — always <= run.elapsed_seconds,
+    permanently lagging by `attacker_clock_offset` once `escalate` has been
+    used (a "management call" buys a fixed 60s of attacker inactivity, not
+    a time-boxed pause window)."""
+    return max(0, run.elapsed_seconds - run.attacker_clock_offset)
+
+
+def _attack_path_host_ids(compiled: CompiledRun) -> frozenset:
+    """Every host_id the attacker's stage timeline ever targets — used to
+    judge whether an `isolate`/`block_ip` call actually hit a real target
+    ("precision", per the spec's scoring bullet) or was wasted."""
+    ids: set = set()
+    for stage in compiled.stages:
+        ids.update(stage.compromises_host_ids)
+    return frozenset(ids)
+
+
+def _set_host_isolated(world: OrgState, host_id: str) -> OrgState:
+    if world.get_host(host_id) is None:
+        return world
+    new_hosts = tuple(
+        (replace(h, isolated=True) if h.id == host_id else h) for h in world.hosts
+    )
+    return OrgState(
+        hosts=new_hosts, segments=world.segments, credentials=world.credentials,
+        detection_rules=world.detection_rules, global_flags=world.global_flags,
+    )
+
+
+def _host_summary(host: Host) -> dict:
+    """The fog-of-war-safe view of a host once its existence is revealed
+    (query_logs/scan_network/image_disk): identity + current status, but
+    NOT unpatched_cves/edr_installed — those stay hidden until a deeper
+    verb (image_disk) earns them."""
+    return {
+        "id": host.id,
+        "hostname": host.hostname,
+        "role": host.role,
+        "network_segment_id": host.network_segment_id,
+        "compromise_level": host.compromise_level,
+        "isolated": host.isolated,
+    }
+
+
+def _advance_stages(compiled: CompiledRun, world: OrgState, from_clock: int, to_clock: int) -> OrgState:
+    """Apply every stage whose trigger_seconds falls in (from_clock,
+    to_clock] against `world`, respecting CURRENT isolation — an isolated
+    host never gets compromised further, matching org_simulation's "no
+    remediation, only containment" philosophy. Mirrors
+    action_engine.world_state_at's loop, but scoped to a window and folded
+    onto a live `world` (which may already carry defender verb effects)
+    instead of always starting fresh from compiled.world."""
+    if to_clock <= from_clock:
+        return world
+    for stage in compiled.stages:
+        if not (from_clock < stage.trigger_seconds <= to_clock):
+            continue
+        for host_id in stage.compromises_host_ids:
+            host = world.get_host(host_id)
+            if host is None or host.isolated:
+                continue
+            idx = _COMPROMISE_LEVELS.index(host.compromise_level)
+            next_level = _COMPROMISE_LEVELS[min(idx + 1, len(_COMPROMISE_LEVELS) - 1)]
+            if next_level == host.compromise_level:
+                continue
+            new_hosts = tuple(
+                (replace(h, compromise_level=next_level) if h.id == host_id else h)
+                for h in world.hosts
+            )
+            world = OrgState(
+                hosts=new_hosts, segments=world.segments, credentials=world.credentials,
+                detection_rules=world.detection_rules, global_flags=world.global_flags,
+            )
+    return world
+
+
+def _reveal_iocs_for_host(
+    compiled: CompiledRun, discovered_ioc_keys: frozenset, host_id: str,
+) -> tuple[list[dict], frozenset]:
+    """Every IOCPlacement bound to host_id that hasn't already been
+    discovered — returns (client-safe dicts to include in the delta, the
+    updated discovered_ioc_keys set). Shared by query_logs and image_disk."""
+    newly: list[IOCPlacement] = [
+        p for p in compiled.ioc_placements
+        if p.host_id == host_id and (p.host_id, p.rule_id) not in discovered_ioc_keys
+    ]
+    updated_keys = discovered_ioc_keys | {(p.host_id, p.rule_id) for p in newly}
+    return [p.to_dict() for p in newly], updated_keys
+
+
+def _log_entry(sequence_number: int, verb: str, target: Optional[str], elapsed_seconds: int, cost: int) -> dict:
+    return {
+        "sequence_number": sequence_number,
+        "verb": verb,
+        "target": target,
+        "elapsed_seconds": elapsed_seconds,
+        "cost": cost,
+    }
+
+
+def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbResult:
+    """Apply one of the 8 spec verbs against `run`. Server-authoritative and
+    pure: returns a NEW RunState plus a `delta` dict containing ONLY what
+    this call newly revealed — never the full CompiledRun/RunState, never
+    another host's unrevealed data, never a future/unfired Stage. A
+    rejected call (unknown verb, missing/invalid target, escalate reused)
+    returns the ORIGINAL `run` unchanged and an `error` string — validation
+    failures never spend clock time."""
+    if verb not in VERB_COSTS:
+        return VerbResult(run=run, delta={}, error=f"Unknown verb: {verb!r}")
+
+    if verb in _TARGETED_VERBS and not target:
+        return VerbResult(run=run, delta={}, error=f"Verb {verb!r} requires a target")
+
+    if verb == "escalate":
+        if run.escalate_used:
+            return VerbResult(run=run, delta={}, error="escalate already used this run")
+        new_run = replace(
+            run,
+            escalate_used=True,
+            attacker_clock_offset=run.attacker_clock_offset + ESCALATE_FREEZE_SECONDS,
+            penalties=run.penalties + ({"type": "escalate_used", "amount": ESCALATE_PENALTY},),
+        )
+        new_run = replace(
+            new_run,
+            action_log=new_run.action_log + (_log_entry(
+                len(new_run.action_log), "escalate", None, new_run.elapsed_seconds, 0,
+            ),),
+        )
+        return VerbResult(run=new_run, delta={"escalate_used": True, "frozen_seconds": ESCALATE_FREEZE_SECONDS})
+
+    world = run.world
+    revealed_host_ids = run.revealed_host_ids
+    discovered_ioc_keys = run.discovered_ioc_keys
+    penalties = run.penalties
+    delta: dict = {}
+
+    if verb in ("query_logs", "image_disk", "interview_user", "isolate"):
+        host = world.get_host(target)
+        if host is None:
+            return VerbResult(run=run, delta={}, error=f"Unknown host: {target!r}")
+
+    if verb == "query_logs":
+        revealed_host_ids = revealed_host_ids | {target}
+        revealed_iocs, discovered_ioc_keys = _reveal_iocs_for_host(
+            run.compiled, discovered_ioc_keys, target,
+        )
+        delta = {"host_id": target, "revealed_iocs": revealed_iocs}
+
+    elif verb == "scan_network":
+        revealed_host_ids = frozenset(h.id for h in world.hosts)
+        delta = {"nodes": [_host_summary(h) for h in world.hosts]}
+
+    elif verb == "isolate":
+        if not host.isolated:
+            world = _set_host_isolated(world, target)
+        on_path = target in _attack_path_host_ids(run.compiled)
+        if not on_path:
+            penalties = penalties + ({"type": "wrong_isolation", "host_id": target, "amount": PRECISION_PENALTY},)
+        delta = {"host_id": target, "isolated": True, "on_attack_path": on_path}
+
+    elif verb == "image_disk":
+        revealed_host_ids = revealed_host_ids | {target}
+        revealed_iocs, discovered_ioc_keys = _reveal_iocs_for_host(
+            run.compiled, discovered_ioc_keys, target,
+        )
+        delta = {
+            "host_id": target,
+            "revealed_iocs": revealed_iocs,
+            "forensics": {"unpatched_cves": list(host.unpatched_cves), "edr_installed": host.edr_installed},
+        }
+
+    elif verb == "interview_user":
+        creds = [c for c in world.credentials if target in c.valid_on_host_ids]
+        delta = {
+            "host_id": target,
+            "credentials": [{"credential_id": c.id, "username": c.username, "privilege": c.privilege} for c in creds],
+        }
+
+    elif verb == "block_ip":
+        matched = next(
+            (p for p in run.compiled.ioc_placements if p.matches_on.get("ip") == target),
+            None,
+        )
+        if matched is not None:
+            world = _set_host_isolated(world, matched.host_id)
+            discovered_ioc_keys = discovered_ioc_keys | {(matched.host_id, matched.rule_id)}
+            delta = {"correct": True, "host_id": matched.host_id}
+        else:
+            penalties = penalties + ({"type": "wrong_block_ip", "addr": target, "amount": PRECISION_PENALTY},)
+            delta = {"correct": False}
+
+    elif verb == "reset_creds":
+        matched = next(
+            (c for c in world.credentials if c.username == target and not c.disabled),
+            None,
+        )
+        if matched is not None:
+            new_creds = tuple(
+                (replace(c, disabled=True) if c.id == matched.id else c) for c in world.credentials
+            )
+            world = OrgState(
+                hosts=world.hosts, segments=world.segments, credentials=new_creds,
+                detection_rules=world.detection_rules, global_flags=world.global_flags,
+            )
+            delta = {"correct": True, "credential_id": matched.id}
+        else:
+            penalties = penalties + ({"type": "wrong_reset_creds", "account": target, "amount": PRECISION_PENALTY},)
+            delta = {"correct": False}
+
+    cost = VERB_COSTS[verb]
+    old_clock = attacker_clock_seconds(run)
+    interim = replace(
+        run,
+        world=world,
+        elapsed_seconds=run.elapsed_seconds + cost,
+        revealed_host_ids=revealed_host_ids,
+        discovered_ioc_keys=discovered_ioc_keys,
+        penalties=penalties,
+    )
+    new_clock = attacker_clock_seconds(interim)
+    advanced_world = _advance_stages(run.compiled, interim.world, old_clock, new_clock)
+    final_run = replace(interim, world=advanced_world)
+    final_run = replace(
+        final_run,
+        action_log=final_run.action_log + (_log_entry(
+            len(final_run.action_log), verb, target, final_run.elapsed_seconds, cost,
+        ),),
+    )
+
+    return VerbResult(run=final_run, delta=delta)
