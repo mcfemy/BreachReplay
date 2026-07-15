@@ -3,6 +3,7 @@ Tests for backend/app/services/verb_engine.py (Phase 2, Item 1 — verb
 application layer). Pure, synchronous tests — apply_verb does no I/O.
 """
 import json
+import re
 
 from app.services import action_engine, verb_engine
 
@@ -182,6 +183,30 @@ def test_block_ip_correct_isolates_the_bound_host():
     assert result.delta["correct"] is True
     assert result.delta["host_id"] == ip_ioc.host_id
     assert result.run.world.get_host(ip_ioc.host_id).isolated is True
+
+
+def test_block_ip_answer_is_discoverable_through_legitimate_play():
+    """Closes the loop end to end: the address block_ip expects must be
+    reachable by actually playing (query_logs -> read the revealed raw_log
+    -> extract the IP -> block_ip), not just known server-side via
+    IOCPlacement.matches_on, which no real player can ever see. A prior
+    version of _rewrite_raw_log_for_host replaced the IP token in raw_log
+    with the bound host's hostname, which erased the answer from every
+    surface a player can observe — this test is the regression guard for
+    that bug."""
+    compiled = _compiled()
+    ip_placement = next(p for p in compiled.ioc_placements if p.matches_on.get("ip"))
+    run = verb_engine.new_run(compiled)
+
+    reveal = verb_engine.apply_verb(run, "query_logs", ip_placement.host_id)
+    revealed = next(ioc for ioc in reveal.delta["revealed_iocs"] if ioc["rule_id"] == ip_placement.rule_id)
+
+    match = re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", revealed["raw_log"])
+    assert match is not None, "the IP must be discoverable in the revealed raw_log text"
+    extracted_ip = match.group(0)
+
+    result = verb_engine.apply_verb(reveal.run, "block_ip", extracted_ip)
+    assert result.delta == {"correct": True, "host_id": ip_placement.host_id}
 
 
 def test_block_ip_wrong_address_records_a_penalty_and_isolates_nothing():

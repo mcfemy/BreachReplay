@@ -282,20 +282,28 @@ def _build_stages(
 
 def _rewrite_raw_log_for_host(raw_log: str, matches_on: dict, host: Optional[Host]) -> str:
     """A hidden_ioc's raw_log is authored against the REAL scenario's own
-    hostnames/IPs (e.g. "host=CORP-DC-01"), which don't exist in the
+    hostnames (e.g. "host=CORP-DC-01"), which don't exist in the
     synthesized world. Left as-is, revealed evidence would name a host that
     isn't on the player's network map — a direct contradiction. Rewrites
-    every literal `matches_on["hostname"]` / `matches_on["ip"]` token in
-    raw_log to the bound host's real synthesized hostname. `matches_on`
-    entries other than hostname/ip (e.g. "username", which identifies a
-    Credential, not a Host) are left untouched — there's no host/IP token
-    there to fix."""
+    every literal `matches_on["hostname"]` token in raw_log to the bound
+    host's real synthesized hostname.
+
+    `matches_on["ip"]` is deliberately LEFT UNTOUCHED. An IP in an IOC's
+    raw_log identifies external attacker/C2 infrastructure, not a host on
+    the map — there is no synthesized node for it to contradict. It's also
+    the intended discovery path for the `block ip <addr>` verb
+    (verb_engine.apply_verb), which checks a submitted address against this
+    exact field: rewriting it away would erase the IP from every surface a
+    player can ever see (raw_log is revealed; matches_on never is — see
+    IOCPlacement), making a correct `block_ip` call unreachable through
+    legitimate play. `matches_on` entries other than "hostname" (ip,
+    "username", which identifies a Credential, not a Host) are left
+    untouched here for the same "nothing on the map to contradict" reason."""
     if host is None:
         return raw_log
-    for key in ("hostname", "ip"):
-        token = matches_on.get(key)
-        if token:
-            raw_log = raw_log.replace(str(token), host.hostname)
+    token = matches_on.get("hostname")
+    if token:
+        raw_log = raw_log.replace(str(token), host.hostname)
     return raw_log
 
 
