@@ -25,7 +25,7 @@ _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _EXPECTED_COLUMNS = {
     "id", "user_id", "scenario_id", "seed", "mode", "action_log",
-    "score_breakdown", "duration_seconds", "outcome", "created_at",
+    "score_breakdown", "total_score", "duration_seconds", "outcome", "created_at",
 }
 
 
@@ -88,35 +88,54 @@ def test_upgrade_then_insert_select_round_trip(migration_engine):
         VALUES
             (:id, :user_id, :scenario_id, :seed, :mode, :action_log, :score_breakdown, :duration_seconds, :outcome, CURRENT_TIMESTAMP)
     """)
+    insert_with_score_sql = text("""
+        INSERT INTO action_runs
+            (id, user_id, scenario_id, seed, mode, action_log, score_breakdown, total_score, duration_seconds, outcome, created_at)
+        VALUES
+            (:id, :user_id, :scenario_id, :seed, :mode, :action_log, :score_breakdown, :total_score, :duration_seconds, :outcome, CURRENT_TIMESTAMP)
+    """)
     with engine.begin() as conn:
+        # No total_score given — must fall back to the column's server_default.
         conn.execute(insert_sql, {
             "id": "run-teaser-1", "user_id": None, "scenario_id": "scenario-1", "seed": 42,
             "mode": "teaser", "action_log": "[]", "score_breakdown": "{}",
             "duration_seconds": 90, "outcome": "win",
         })
-        conn.execute(insert_sql, {
+        conn.execute(insert_with_score_sql, {
             "id": "run-daily-1", "user_id": "user-1", "scenario_id": "scenario-1", "seed": 7,
             "mode": "daily", "action_log": '[{"verb":"scan_network"}]', "score_breakdown": '{"total":420}',
-            "duration_seconds": 300, "outcome": "partial",
+            "total_score": 420, "duration_seconds": 300, "outcome": "partial",
         })
 
     with engine.connect() as conn:
         teaser_row = conn.execute(
-            text("SELECT user_id, mode, outcome, duration_seconds FROM action_runs WHERE id = 'run-teaser-1'")
+            text("SELECT user_id, mode, outcome, duration_seconds, total_score FROM action_runs WHERE id = 'run-teaser-1'")
         ).fetchone()
         daily_row = conn.execute(
-            text("SELECT user_id, mode, outcome, action_log FROM action_runs WHERE id = 'run-daily-1'")
+            text("SELECT user_id, mode, outcome, action_log, total_score FROM action_runs WHERE id = 'run-daily-1'")
         ).fetchone()
 
     assert teaser_row.user_id is None  # nullable for teaser mode, per spec
     assert teaser_row.mode == "teaser"
     assert teaser_row.outcome == "win"
     assert teaser_row.duration_seconds == 90
+    assert teaser_row.total_score == 0  # server_default="0"
 
     assert daily_row.user_id == "user-1"
     assert daily_row.mode == "daily"
     assert daily_row.outcome == "partial"
     assert "scan_network" in daily_row.action_log
+    assert daily_row.total_score == 420
+
+    # The whole point of a plain integer column: ORDER BY works like any
+    # other leaderboard query, unlike sorting on a JSONB path.
+    with engine.connect() as conn:
+        ranked_ids = [
+            row[0] for row in conn.execute(
+                text("SELECT id FROM action_runs ORDER BY total_score DESC")
+            )
+        ]
+    assert ranked_ids == ["run-daily-1", "run-teaser-1"]
 
 
 def test_downgrade_drops_action_runs_cleanly(migration_engine):

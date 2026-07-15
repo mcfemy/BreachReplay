@@ -44,6 +44,12 @@ def upgrade() -> None:
         # format the existing SessionReplayScrubber will read.
         sa.Column("action_log", JSONB().with_variant(sa.JSON, "sqlite"), nullable=False, server_default="[]"),
         sa.Column("score_breakdown", JSONB().with_variant(sa.JSON, "sqlite"), nullable=False, server_default="{}"),
+        # A plain sortable column, deliberately separate from
+        # score_breakdown (JSONB): leaderboard queries (Daily Breach, Item
+        # 4) need to ORDER BY a real indexed integer column — sorting on a
+        # JSONB path is neither indexable the same way nor portable across
+        # the SQLite test dialect.
+        sa.Column("total_score", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("duration_seconds", sa.Integer(), nullable=False),
         sa.Column("outcome", action_run_outcome, nullable=False),
         # CURRENT_TIMESTAMP (not Postgres-only NOW(), the convention used by
@@ -59,9 +65,11 @@ def upgrade() -> None:
     op.create_index("ix_action_runs_scenario_id", "action_runs", ["scenario_id"])
     op.create_index("ix_action_runs_mode", "action_runs", ["mode"])
     op.create_index("ix_action_runs_created_at", "action_runs", ["created_at"])
+    op.create_index("ix_action_runs_total_score", "action_runs", ["total_score"])
 
 
 def downgrade() -> None:
+    op.drop_index("ix_action_runs_total_score", table_name="action_runs")
     op.drop_index("ix_action_runs_created_at", table_name="action_runs")
     op.drop_index("ix_action_runs_mode", table_name="action_runs")
     op.drop_index("ix_action_runs_scenario_id", table_name="action_runs")

@@ -47,6 +47,14 @@ def _compiled(seed=7):
     return action_engine.compile_scenario(_SCENARIO, seed=seed)
 
 
+def _run_clock_past(run, target_clock_seconds):
+    """Test helper: spend scan_network calls (free of side effects on any
+    specific host) until the attacker clock has passed target_clock_seconds."""
+    while verb_engine.attacker_clock_seconds(run) <= target_clock_seconds:
+        run = verb_engine.apply_verb(run, "scan_network").run
+    return run
+
+
 def test_every_verb_advances_elapsed_seconds_by_its_exact_spec_cost():
     compiled = _compiled()
     run = verb_engine.new_run(compiled)
@@ -313,3 +321,95 @@ def test_no_verb_response_ever_leaks_unrevealed_hidden_state():
     # bound to any other host was revealed across the whole sequence.
     for host_id, rule_id in run.discovered_ioc_keys:
         assert host_id in (host_a, host_b)
+
+
+# ── determine_outcome / compute_score ────────────────────────────────────────
+
+def _final_stage(compiled):
+    return next(s for s in compiled.stages if s.is_final)
+
+
+def test_outcome_is_win_before_the_final_stage_has_fired():
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+    assert verb_engine.determine_outcome(run) == "win"
+
+
+def test_outcome_is_win_when_final_stage_target_is_isolated_before_it_fires():
+    compiled = _compiled()
+    final = _final_stage(compiled)
+    run = verb_engine.new_run(compiled)
+    for host_id in final.compromises_host_ids:
+        run = verb_engine.apply_verb(run, "isolate", host_id).run
+    run = _run_clock_past(run, final.trigger_seconds)
+    assert verb_engine.determine_outcome(run) == "win"
+
+
+def test_outcome_is_loss_when_final_stage_fires_completely_uncontained():
+    compiled = _compiled()
+    final = _final_stage(compiled)
+    run = verb_engine.new_run(compiled)
+    run = _run_clock_past(run, final.trigger_seconds)
+    assert verb_engine.determine_outcome(run) == "loss"
+
+
+def test_outcome_is_partial_when_final_fires_but_most_of_the_rest_is_contained():
+    compiled = _compiled()
+    final = _final_stage(compiled)
+    other_target_ids = sorted({
+        hid for s in compiled.stages if not s.is_final for hid in s.compromises_host_ids
+    })
+    assert other_target_ids, "test scenario must have non-final stages with real targets"
+
+    run = verb_engine.new_run(compiled)
+    for host_id in other_target_ids:
+        run = verb_engine.apply_verb(run, "isolate", host_id).run
+    # Deliberately do NOT isolate the final stage's own target(s).
+    run = _run_clock_past(run, final.trigger_seconds)
+    assert verb_engine.determine_outcome(run) == "partial"
+
+
+def test_compute_score_perfect_run_hits_100_score_pct():
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+    for placement in compiled.ioc_placements:
+        run = verb_engine.apply_verb(run, "query_logs", placement.host_id).run
+    breakdown = verb_engine.compute_score(run, "win", cap_seconds=480)
+    assert breakdown["score_pct"] == 100.0
+    assert breakdown["penalty_total"] == 0
+    assert breakdown["evidence_found"] == breakdown["evidence_total"]
+    assert breakdown["total_score"] > 0
+
+
+def test_compute_score_penalty_lowers_score_pct_and_total_score():
+    """Holds evidence-found constant between the two runs so the penalty's
+    effect is isolated and visible — with zero evidence discovered in
+    either run, score_pct floors at 0.0 for both regardless of penalties,
+    which would make this comparison vacuous."""
+    compiled = _compiled()
+    off_path_host = next(h for h in compiled.world.hosts if h.id not in verb_engine._attack_path_host_ids(compiled))
+    some_ioc_host_id = compiled.ioc_placements[0].host_id
+
+    clean_run = verb_engine.apply_verb(verb_engine.new_run(compiled), "query_logs", some_ioc_host_id).run
+
+    penalized_run = verb_engine.apply_verb(verb_engine.new_run(compiled), "query_logs", some_ioc_host_id).run
+    penalized_run = verb_engine.apply_verb(penalized_run, "isolate", off_path_host.id).run  # wrong_isolation penalty
+
+    clean_breakdown = verb_engine.compute_score(clean_run, "win", cap_seconds=480)
+    penalized_breakdown = verb_engine.compute_score(penalized_run, "win", cap_seconds=480)
+
+    assert clean_breakdown["evidence_found"] == penalized_breakdown["evidence_found"]
+    assert penalized_breakdown["penalty_total"] == verb_engine.PRECISION_PENALTY
+    assert penalized_breakdown["score_pct"] < clean_breakdown["score_pct"]
+    assert penalized_breakdown["total_score"] < clean_breakdown["total_score"]
+
+
+def test_compute_score_loss_awards_no_speed_bonus():
+    compiled = _compiled()
+    final = _final_stage(compiled)
+    run = verb_engine.new_run(compiled)
+    run = _run_clock_past(run, final.trigger_seconds)
+    assert verb_engine.determine_outcome(run) == "loss"
+    breakdown = verb_engine.compute_score(run, "loss", cap_seconds=480)
+    assert breakdown["speed_bonus"] == 0
+    assert breakdown["outcome_base"] == 0

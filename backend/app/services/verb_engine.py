@@ -323,3 +323,98 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
     )
 
     return VerbResult(run=final_run, delta=delta)
+
+
+# ── Outcome + scoring (Phase 2, Item 3) ──────────────────────────────────────
+#
+# Pure functions over a finished/finishing RunState — no I/O, no persistence.
+# The stateful layer that calls these and writes an ActionRun row is
+# app.services.action_run_store.
+
+_PARTIAL_CONTAINMENT_THRESHOLD = 0.5
+
+# Provisional, like ESCALATE_PENALTY/PRECISION_PENALTY above — a real
+# balancing pass is a later item, not this one.
+SCORE_OUTCOME_BASE = {"win": 1000, "partial": 400, "loss": 0}
+EVIDENCE_POINTS_PER_IOC = 100
+SPEED_BONUS_PER_SECOND_SAVED = 2
+
+
+def determine_outcome(run: RunState) -> str:
+    """"win" | "partial" | "loss", per spec section 4: "contain the attack
+    path before the final-stage event (exfil/encryption) fires. Partial
+    containment scores partially."
+
+    WIN: the final (is_final) stage either hasn't fired yet on the
+    attacker clock, or every host it would have compromised is isolated
+    (contained before/at the moment it mattered).
+    LOSS/PARTIAL: the final stage fired and compromised at least one
+    un-isolated host — PARTIAL if at least half of every OTHER stage's
+    target hosts were isolated (meaningful containment elsewhere), else
+    LOSS. A scenario with no final stage at all (malformed/empty content)
+    has nothing to lose — treated as a WIN."""
+    compiled = run.compiled
+    final_stage = next((s for s in compiled.stages if s.is_final), None)
+    if final_stage is None:
+        return "win"
+
+    clock = attacker_clock_seconds(run)
+    final_fired = clock >= final_stage.trigger_seconds
+    final_contained = all(
+        (host := run.world.get_host(hid)) is not None and host.isolated
+        for hid in final_stage.compromises_host_ids
+    ) if final_stage.compromises_host_ids else True
+
+    if not final_fired or final_contained:
+        return "win"
+
+    other_target_ids = {
+        hid for s in compiled.stages if not s.is_final for hid in s.compromises_host_ids
+    }
+    if not other_target_ids:
+        return "loss"
+    contained_count = sum(
+        1 for hid in other_target_ids
+        if (host := run.world.get_host(hid)) is not None and host.isolated
+    )
+    containment_ratio = contained_count / len(other_target_ids)
+    return "partial" if containment_ratio >= _PARTIAL_CONTAINMENT_THRESHOLD else "loss"
+
+
+def compute_score(run: RunState, outcome: str, cap_seconds: Optional[int]) -> dict:
+    """A score_breakdown dict (JSONB-storable as-is) containing both the
+    leaderboard-sortable `total_score` integer and a `score_pct` (0-100)
+    used to drive xp_service.check_scenario_achievements's perfect_analyst
+    check (score_pct >= 100 — only reachable on a WIN with every
+    discoverable IOC found and zero penalties: a genuinely flawless run)."""
+    evidence_found = len(run.discovered_ioc_keys)
+    evidence_total = len(run.compiled.ioc_placements)
+    evidence_points = evidence_found * EVIDENCE_POINTS_PER_IOC
+    penalty_total = sum(p["amount"] for p in run.penalties)
+
+    speed_bonus = 0
+    if outcome == "win" and cap_seconds:
+        speed_bonus = max(0, cap_seconds - run.elapsed_seconds) * SPEED_BONUS_PER_SECOND_SAVED
+
+    outcome_base = SCORE_OUTCOME_BASE.get(outcome, 0)
+    total_score = max(0, outcome_base + evidence_points + speed_bonus - penalty_total)
+
+    evidence_ratio = (evidence_found / evidence_total) if evidence_total else 1.0
+    if outcome == "win" and not run.penalties and evidence_ratio >= 1.0:
+        score_pct = 100.0
+    else:
+        ceiling = 100.0 if outcome == "win" else 50.0 if outcome == "partial" else 0.0
+        score_pct = max(0.0, min(100.0, round(evidence_ratio * ceiling - len(run.penalties) * 10, 2)))
+
+    return {
+        "outcome": outcome,
+        "outcome_base": outcome_base,
+        "evidence_points": evidence_points,
+        "evidence_found": evidence_found,
+        "evidence_total": evidence_total,
+        "speed_bonus": speed_bonus,
+        "penalty_total": penalty_total,
+        "penalties": list(run.penalties),
+        "total_score": total_score,
+        "score_pct": score_pct,
+    }

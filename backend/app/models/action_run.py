@@ -36,6 +36,10 @@ class ActionRun(Base):
     )
     action_log: Mapped[list] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=False, default=list, server_default="[]")
     score_breakdown: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=False, default=dict, server_default="{}")
+    # Plain sortable column, deliberately separate from score_breakdown
+    # (JSONB) — leaderboard queries (Daily Breach) need ORDER BY a real
+    # indexed integer, not a JSONB path.
+    total_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0", index=True)
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     outcome: Mapped[str] = mapped_column(
         SAEnum("win", "loss", "partial", name="action_run_outcome"),
