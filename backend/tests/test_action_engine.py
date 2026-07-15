@@ -131,6 +131,50 @@ def test_industry_vertical_selects_the_matching_archetype():
     assert 8 <= len(healthcare_run.world.hosts) <= 10
 
 
+def test_final_stage_is_chosen_by_max_trigger_seconds_not_array_position():
+    """QA fix: gates authored out of chronological order must still resolve
+    is_final to the gate with the LATEST trigger_seconds, not whichever
+    gate happens to be last in the array."""
+    out_of_order = dict(_SCENARIO, decision_tree=[
+        # +49m gate listed FIRST, +4m gate listed LAST — the opposite of
+        # chronological (and opposite of array-position) order.
+        {"id": "gate-012", "trigger_timestamp": "+49m", "mitre_technique": "T1565.001",
+         "context_summary": "SCADA HMI going dark.", "options": [], "correct_index": 2,
+         "consequence_if_wrong": "Detonation.", "rationale": "Segment shutdown.", "nist_control_ref": "RS.MI-1"},
+        {"id": "gate-002", "trigger_timestamp": "+8m", "mitre_technique": "T1003",
+         "context_summary": "Credential dump detected.", "options": [], "correct_index": 1,
+         "consequence_if_wrong": "Missed.", "rationale": "Preserve evidence.", "nist_control_ref": "RS.AN-3"},
+        {"id": "gate-001", "trigger_timestamp": "+4m", "mitre_technique": "T1078",
+         "context_summary": "Suspicious VPN activity.", "options": [], "correct_index": 0,
+         "consequence_if_wrong": "Missed.", "rationale": "Correlate anomalies.", "nist_control_ref": "DE.AE-2"},
+    ])
+    compiled = action_engine.compile_scenario(out_of_order, seed=1)
+
+    final_stages = [s for s in compiled.stages if s.is_final]
+    assert len(final_stages) == 1
+    assert final_stages[0].source_id == "gate-012"
+    assert final_stages[0].trigger_seconds == 49 * 60
+    # The stage timeline itself is still sorted by trigger_seconds regardless
+    # of authored array order.
+    trigger_times = [s.trigger_seconds for s in compiled.stages]
+    assert trigger_times == sorted(trigger_times)
+
+
+def test_ioc_raw_log_is_rewritten_to_match_the_bound_synthesized_host():
+    """QA fix: revealed evidence text must never reference a real-world
+    hostname/IP absent from the synthesized network map."""
+    compiled = action_engine.compile_scenario(_SCENARIO, seed=42)
+
+    hostname_ioc = _SCENARIO["hidden_iocs"][1]  # matches_on: {"hostname": "CORP-DC-01"}
+    assert "hostname" in hostname_ioc["matches_on"]
+    placement = compiled.ioc_placements[1]
+    bound_host = compiled.world.get_host(placement.host_id)
+
+    assert bound_host is not None
+    assert bound_host.hostname in placement.raw_log
+    assert hostname_ioc["matches_on"]["hostname"] not in placement.raw_log
+
+
 def test_compile_scenario_accepts_a_missing_or_empty_content_gracefully():
     """A scenario with no decision_tree/pressure_injections/hidden_iocs/
     alert_sequence at all must not raise — mirrors org_simulation.py's

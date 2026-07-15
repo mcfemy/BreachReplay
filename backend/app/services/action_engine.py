@@ -225,10 +225,17 @@ def _build_stages(
     path" built via a seeded RNG, since the scenario's own free-text
     hostnames (e.g. "CORP-DC-01") don't correspond to synthesized host ids
     and have no reliable mapping to them. Pressure stages carry no host
-    compromise; they're timeline beats only. The LAST authored decision_tree
-    gate (by array order — seed.py's gates are already chronological) is
-    the terminal, `is_final` stage."""
+    compromise; they're timeline beats only. The `is_final` (terminal,
+    exfil/encryption/detonation) stage is whichever decision_tree gate has
+    the MAXIMUM trigger_seconds — never assumed from array position, since
+    authored content is not guaranteed to be listed in chronological order
+    (ties broken by earliest array occurrence, so exactly one stage is ever
+    final)."""
     gates = [g for g in (decision_tree or []) if isinstance(g, dict)]
+    gate_trigger_seconds = [_parse_trigger_seconds(g.get("trigger_timestamp", "+0m")) for g in gates]
+    final_gate_index: Optional[int] = None
+    if gate_trigger_seconds:
+        final_gate_index = gate_trigger_seconds.index(max(gate_trigger_seconds))
 
     path: list[str] = list(host_ids)
     if path:
@@ -239,12 +246,12 @@ def _build_stages(
         target_host_ids: tuple[str, ...] = (path[i % len(path)],) if path else ()
         stages.append(Stage(
             id=f"stage-{gate.get('id', i + 1)}",
-            trigger_seconds=_parse_trigger_seconds(gate.get("trigger_timestamp", "+0m")),
+            trigger_seconds=gate_trigger_seconds[i],
             kind="decision_gate",
             source_id=str(gate.get("id", i)),
             mitre_technique=gate.get("mitre_technique"),
             compromises_host_ids=target_host_ids,
-            is_final=(i == len(gates) - 1),
+            is_final=(i == final_gate_index),
         ))
 
     for p in (pressure_injections or []):
@@ -264,9 +271,31 @@ def _build_stages(
     return tuple(stages)
 
 
-def _place_iocs(hidden_iocs: list[dict], host_ids: list[str], seed: int) -> tuple[IOCPlacement, ...]:
+def _rewrite_raw_log_for_host(raw_log: str, matches_on: dict, host: Optional[Host]) -> str:
+    """A hidden_ioc's raw_log is authored against the REAL scenario's own
+    hostnames/IPs (e.g. "host=CORP-DC-01"), which don't exist in the
+    synthesized world. Left as-is, revealed evidence would name a host that
+    isn't on the player's network map — a direct contradiction. Rewrites
+    every literal `matches_on["hostname"]` / `matches_on["ip"]` token in
+    raw_log to the bound host's real synthesized hostname. `matches_on`
+    entries other than hostname/ip (e.g. "username", which identifies a
+    Credential, not a Host) are left untouched — there's no host/IP token
+    there to fix."""
+    if host is None:
+        return raw_log
+    for key in ("hostname", "ip"):
+        token = matches_on.get(key)
+        if token:
+            raw_log = raw_log.replace(str(token), host.hostname)
+    return raw_log
+
+
+def _place_iocs(hidden_iocs: list[dict], world: OrgState, seed: int) -> tuple[IOCPlacement, ...]:
     """Deterministically assigns each hidden_ioc to a synthesized host, via
-    a seeded RNG independent of _build_stages's attack-path draw."""
+    a seeded RNG independent of _build_stages's attack-path draw, and
+    rewrites its raw_log so the revealed evidence never contradicts the
+    network map (see _rewrite_raw_log_for_host)."""
+    host_ids = [h.id for h in world.hosts]
     if not host_ids:
         return ()
     rng = _derive_rng(seed, "ioc-placement")
@@ -274,13 +303,16 @@ def _place_iocs(hidden_iocs: list[dict], host_ids: list[str], seed: int) -> tupl
     for ioc in (hidden_iocs or []):
         if not isinstance(ioc, dict):
             continue
+        host_id = rng.choice(host_ids)
+        host = world.get_host(host_id)
+        matches_on = ioc.get("matches_on") or {}
         placements.append(IOCPlacement(
-            host_id=rng.choice(host_ids),
+            host_id=host_id,
             description=ioc.get("description", ""),
             severity=ioc.get("severity", "medium"),
             source_system=ioc.get("source_system", ""),
             rule_id=ioc.get("rule_id", ""),
-            raw_log=ioc.get("raw_log", ""),
+            raw_log=_rewrite_raw_log_for_host(ioc.get("raw_log", ""), matches_on, host),
         ))
     return tuple(placements)
 
@@ -305,7 +337,7 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
     alert_sequence = _field(scenario, "alert_sequence") or []
 
     stages = _build_stages(decision_tree, pressure_injections, host_ids, seed)
-    ioc_placements = _place_iocs(hidden_iocs, host_ids, seed)
+    ioc_placements = _place_iocs(hidden_iocs, world, seed)
 
     alert_lines = tuple(
         {**a, "trigger_seconds": _parse_trigger_seconds(a.get("timestamp", "+0m"))}
