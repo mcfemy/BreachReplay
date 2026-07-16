@@ -107,3 +107,44 @@ cd backend && pytest -q
 A PR whose description claims a green suite but which the reviewer cannot
 independently reproduce as green is `CHANGES REQUESTED`, not `APPROVED`
 pending clarification.
+
+**(j) Distinguish "reviewer said no" from "reviewer never finished."** A
+real `VERDICT: CHANGES REQUESTED` and a review run that crashed, hit its
+turn/time cap, or otherwise died without posting any verdict are NOT the
+same signal, and a loop that conflates them is not trustworthy — a human
+(or the next automated step) reading a red check must be able to tell
+"the reviewer looked at this and said no" from "the reviewer never
+actually looked." This came out of PR #5's review run failing outright
+(no verdict posted, ~5 minutes, red) with nothing distinguishing it from a
+real CHANGES REQUESTED in the check history. `claude-review.yml`'s "Gate
+the check on the posted verdict" step enforces this structurally: it fails
+the check either way (so branch protection blocks the merge in both
+cases), but only posts a visible `REVIEW ERRORED — no verdict, see run
+logs` marker when the review step itself failed or produced no verdict
+line — never when a real verdict (either one) was posted. Any future
+review automation must preserve this distinction, not just "make the
+check red on any problem."
+
+**(k) Auto-fix trigger convention.** When a review posts `VERDICT: CHANGES
+REQUESTED`, the SAME top-level comment must end with the literal line
+`@claude address the numbered items above in this PR's branch` — this is
+what actually starts the next fix round, since `claude.yml` only reacts to
+an explicit `@claude` mention in a PR comment. Do not include this line on
+`APPROVED`.
+
+Know WHICH identity is posting before assuming a token fix is needed. A
+comment posted via a workflow job's own default `GITHUB_TOKEN` does NOT
+trigger other workflows — GitHub deliberately suppresses that to prevent
+workflow-recursion loops — but `claude-code-action@v1` does NOT use the
+default `GITHUB_TOKEN` unless a `github_token` input explicitly overrides
+it: by default it authenticates as the Claude GitHub App's own
+installation token, which posts as `claude[bot]`, a real actor already
+exempt from the suppression. Confirmed directly against PR #4's review
+comment (`author: "claude"`), not assumed. `claude-review.yml` briefly
+carried a `github_token: secrets.CLAUDE_BOT_PAT` override built on the
+wrong assumption that this step used the default token — that override
+didn't just fail to help, it silently broke posting entirely (the review
+ran its full turn budget and posted nothing, no error). Before adding any
+token override to fix a "mention didn't fire" problem, check the actual
+comment author on a run that DID post successfully — don't assume which
+token was in play.
