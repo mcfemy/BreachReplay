@@ -215,16 +215,25 @@ jobs:
             exit 1
           fi
 
-          verdict_comment=$(gh pr view "$PR" --json comments \
-            --jq '[.comments[].body] | map(select(test("VERDICT: (APPROVED|CHANGES REQUESTED)"))) | last // empty')
+          # Anchored to a genuine standalone line (^...$), not a bare
+          # substring search — Step 0's own escalation-check text writes
+          # out the literal phrase "VERDICT: CHANGES REQUESTED" as prose
+          # (quoting what it searched PR history for), which a substring
+          # grep matches even on a comment whose REAL final verdict is
+          # APPROVED. Joins every comment's body in order and takes the
+          # LAST matching standalone line across the whole thread, so a
+          # genuine re-review's newer verdict always wins over an older
+          # quoted mention or a prior review cycle's verdict.
+          verdict_line=$(gh pr view "$PR" --json comments \
+            --jq '[.comments[].body] | join("\n") | split("\n") | map(select(test("^VERDICT: (APPROVED|CHANGES REQUESTED)\\s*$"))) | last // empty')
 
-          if [ -z "$verdict_comment" ]; then
+          if [ -z "$verdict_line" ]; then
             echo "Review step reported success but posted no verdict line — treating as a dead review."
             gh pr comment "$PR" --body "REVIEW ERRORED — no verdict, see run logs"
             exit 1
           fi
 
-          if echo "$verdict_comment" | grep -q "VERDICT: CHANGES REQUESTED"; then
+          if [ "$verdict_line" = "VERDICT: CHANGES REQUESTED" ]; then
             echo "Verdict: CHANGES REQUESTED — failing this check so branch protection blocks the merge."
             exit 1
           fi
