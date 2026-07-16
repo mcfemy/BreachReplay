@@ -6,9 +6,12 @@ Rather than replaying the entire migration history (0001..0028 — heavy on
 Postgres-native JSONB/ARRAY/ENUM DDL) against SQLite, this builds the
 schema as of 0028 directly from the current ORM models (Base.metadata,
 already proven SQLite-safe by every other test in this suite) and stamps
-Alembic to "0028_teaser_events" without running anything. `alembic upgrade
-head` then executes ONLY 0029's `upgrade()` in isolation, which is what
-this test actually needs to verify — not the rest of the history.
+Alembic to "0028_teaser_events" without running anything. Upgrading to the
+explicit revision "0029_action_runs" (not "head") then executes ONLY
+0029's `upgrade()` in isolation, which is what this test actually needs to
+verify — not the rest of the history, and not whatever migrations get
+stacked on top of it later (see test_action_runs_daily_challenge_migration.py
+for 0030, the next one).
 """
 import os
 
@@ -69,7 +72,7 @@ def migration_engine(tmp_path):
 
 def test_upgrade_creates_action_runs_with_the_spec_columns(migration_engine):
     engine, cfg = migration_engine
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0029_action_runs")
 
     with engine.connect() as conn:
         columns = {row[1] for row in conn.execute(text("PRAGMA table_info(action_runs)"))}
@@ -78,7 +81,7 @@ def test_upgrade_creates_action_runs_with_the_spec_columns(migration_engine):
 
 def test_upgrade_then_insert_select_round_trip(migration_engine):
     engine, cfg = migration_engine
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0029_action_runs")
 
     # Bound parameters throughout — a literal '{"total":420}' inlined into
     # text() would otherwise get misparsed as a `:420` bind placeholder.
@@ -140,7 +143,7 @@ def test_upgrade_then_insert_select_round_trip(migration_engine):
 
 def test_downgrade_drops_action_runs_cleanly(migration_engine):
     engine, cfg = migration_engine
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0029_action_runs")
     with engine.connect() as conn:
         tables_after_upgrade = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
     assert "action_runs" in tables_after_upgrade
@@ -152,7 +155,7 @@ def test_downgrade_drops_action_runs_cleanly(migration_engine):
 
     # Re-upgrading after a downgrade must work too (proves downgrade left no
     # partial state behind, e.g. a stray enum type it failed to drop).
-    command.upgrade(cfg, "head")
+    command.upgrade(cfg, "0029_action_runs")
     with engine.connect() as conn:
         tables_after_reupgrade = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
     assert "action_runs" in tables_after_reupgrade
