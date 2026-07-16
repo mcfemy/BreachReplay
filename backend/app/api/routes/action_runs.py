@@ -9,9 +9,11 @@ a run_id is minted here, the scenario is compiled and registered live in
 `/ws/run/{run_id}` to actually play it.
 
 Mode is hardcoded to "scenario" here. Daily Breach's shared-seed creation
-path (same scenario + same seed for every player that day) is a later item
-(Item 4), built on the same `action_run_store.start_run()` call with a
-fixed seed instead of a random one — nothing here needs to change for that.
+path (same scenario + same seed for every player that day) is
+`POST /daily/action-run` (Item 4, backend/app/api/routes/daily.py) — it
+calls the same `action_run_store.start_run()` with a deterministic seed
+and a `daily_challenge_id` instead of a random one; nothing here needed
+to change for that.
 """
 import secrets
 import uuid

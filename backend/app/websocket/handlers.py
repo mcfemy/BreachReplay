@@ -37,6 +37,7 @@ from app.services.org_simulation import (
 from app.services import arena_rating_service
 from app.services import verb_engine
 from app.services.action_run_store import action_run_store
+from app.api.routes.daily import record_daily_action_run_result
 
 logger = logging.getLogger(__name__)
 
@@ -1616,6 +1617,18 @@ async def action_run_ws_handler(websocket: WebSocket, run_id: str, user_id: str)
             if is_over:
                 async with AsyncSessionLocal() as db:
                     summary = await action_run_store.finalize(db, run_id)
+                    # Daily Breach carry-over — streak/rank/leaderboard
+                    # aggregate updates, only for mode="daily" runs. `live`
+                    # was popped from the store by finalize() above but the
+                    # object itself is still this local reference, so its
+                    # attributes (mode, daily_challenge_id, user_id) are
+                    # still readable.
+                    if summary is not None and live.mode == "daily" and live.daily_challenge_id and live.user_id:
+                        daily_summary = await record_daily_action_run_result(
+                            db, live.daily_challenge_id, live.user_id,
+                            summary["score_breakdown"]["total_score"],
+                        )
+                        summary = {**summary, **daily_summary}
                 if summary is not None:
                     await manager.send_personal(websocket, build_run_end_event(summary))
                 break

@@ -77,6 +77,9 @@ class LiveRun:
     scenario_id: str
     mode: str
     run_state: verb_engine.RunState
+    # Set only for mode="daily" runs — carried through to the persisted
+    # ActionRun row in finalize() (migration 0030's daily_challenge_id).
+    daily_challenge_id: Optional[str] = None
     real_started_at: datetime = field(default_factory=datetime.utcnow)
     last_activity_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -99,6 +102,7 @@ class ActionRunStore:
 
     async def start_run(
         self, run_id: str, user_id: Optional[str], scenario_id: str, mode: str, compiled: CompiledRun,
+        daily_challenge_id: Optional[str] = None,
     ) -> LiveRun:
         live = LiveRun(
             run_id=run_id,
@@ -106,6 +110,7 @@ class ActionRunStore:
             scenario_id=scenario_id,
             mode=mode,
             run_state=verb_engine.new_run(compiled),
+            daily_challenge_id=daily_challenge_id,
         )
         async with self._lock:
             self._runs[run_id] = live
@@ -159,6 +164,7 @@ class ActionRunStore:
         action_run = ActionRun(
             user_id=live.user_id,
             scenario_id=live.scenario_id,
+            daily_challenge_id=live.daily_challenge_id,
             seed=run_state.compiled.seed,
             mode=live.mode,
             action_log=list(run_state.action_log),
