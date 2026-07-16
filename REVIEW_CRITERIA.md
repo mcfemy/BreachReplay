@@ -130,11 +130,21 @@ REQUESTED`, the SAME top-level comment must end with the literal line
 `@claude address the numbered items above in this PR's branch` — this is
 what actually starts the next fix round, since `claude.yml` only reacts to
 an explicit `@claude` mention in a PR comment. Do not include this line on
-`APPROVED`. Note the mechanism this depends on: a comment posted via a
-workflow job's own default `GITHUB_TOKEN` does NOT trigger other
-workflows — GitHub deliberately suppresses that to prevent
-workflow-recursion loops — so the review step that posts this comment
-must authenticate as a real, non-default actor (a scoped PAT/bot token,
-e.g. `claude-review.yml`'s `CLAUDE_BOT_PAT` secret) or the mention will
-silently never fire. Any new automated commenter that needs to trigger a
-downstream `@claude`-triggered workflow must use the same pattern.
+`APPROVED`.
+
+Know WHICH identity is posting before assuming a token fix is needed. A
+comment posted via a workflow job's own default `GITHUB_TOKEN` does NOT
+trigger other workflows — GitHub deliberately suppresses that to prevent
+workflow-recursion loops — but `claude-code-action@v1` does NOT use the
+default `GITHUB_TOKEN` unless a `github_token` input explicitly overrides
+it: by default it authenticates as the Claude GitHub App's own
+installation token, which posts as `claude[bot]`, a real actor already
+exempt from the suppression. Confirmed directly against PR #4's review
+comment (`author: "claude"`), not assumed. `claude-review.yml` briefly
+carried a `github_token: secrets.CLAUDE_BOT_PAT` override built on the
+wrong assumption that this step used the default token — that override
+didn't just fail to help, it silently broke posting entirely (the review
+ran its full turn budget and posted nothing, no error). Before adding any
+token override to fix a "mention didn't fire" problem, check the actual
+comment author on a run that DID post successfully — don't assume which
+token was in play.
