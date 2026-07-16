@@ -1,12 +1,22 @@
 # Phase 2 State — Action Console Core Loop
 
 Source of truth: `docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md` section 4 and
-`docs/PHASE2_KICKOFF.md`. **Update this file in every item PR** — the
-automated review workflow (`.github/workflows/claude-review.yml`) reads it
-on `VERDICT: APPROVED` to post the next item's instructions.
+`docs/PHASE2_KICKOFF.md`. **Update this file in every item PR** — on a
+merge into `phase-2-action-console` (or `main`),
+`.github/workflows/claude-dispatch.yml` reads this file to pick up the
+next item.
 
 Branch: `phase-2-action-console`, off `main` (Phase 1 merged at `ee4a57b`).
 Every item lands on its own branch, PR'd into `phase-2-action-console`.
+**Item PRs branch from `phase-2-action-console`, not `main`** — the
+runner/action's base branch must be set accordingly
+(`.github/workflows/claude.yml`'s `base_branch` input, or the equivalent
+for whatever triggers the work). `main` does not have Items 0–3 yet and
+won't until Phase 2 fully merges — a run cut from `main` has none of the
+foundation Item 4+ builds on and cannot produce a PR that merges cleanly
+into `phase-2-action-console`. (Found the hard way in issue #3: a cold
+cloud-runner run correctly refused to reimplement Items 0–3 from scratch
+rather than open a divergent PR, and flagged the base branch as the fix.)
 
 ## Status: Items 0–3 complete and QA-approved. Item 4 next.
 

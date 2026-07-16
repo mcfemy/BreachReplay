@@ -1,9 +1,17 @@
 name: Claude Code
 
-# Standard @claude mention responder. This is the workflow that picks up
-# claude-review.yml's follow-up "@claude, next item is..." comment on an
-# APPROVED PR (and any other @claude mention/assignment) and actually does
-# the work — full write access, unlike the review-only workflow.
+# Standard @claude mention responder — issue comments, PR review comments,
+# PR reviews, and freshly-opened/assigned issues containing "@claude". Full
+# write access, unlike the review-only claude-review.yml.
+#
+# base_branch defaults new work to phase-2-action-console, not main: an
+# issue-triggered run has no existing PR/branch context to inherit, and
+# Items 0-3 (everything Item 4+ builds on) live on phase-2-action-console —
+# main won't get them until Phase 2 fully merges. A run cut from main
+# found this out the hard way (issue #3): it correctly refused to
+# reimplement the Item 0-3 foundation from scratch rather than open a
+# divergent, non-merging PR, and flagged the base branch as the fix. See
+# PHASE2_STATE.md's branching note.
 
 on:
   issue_comment:
@@ -33,10 +41,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Run Claude Code
         id: claude
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          base_branch: phase-2-action-console
