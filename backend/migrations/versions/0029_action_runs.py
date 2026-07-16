@@ -19,13 +19,21 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     bind = op.get_bind()
 
+    # create_type=False: the explicit .create() calls below are the ONLY
+    # place these types get created. Without it, op.create_table's own
+    # automatic DDL for an ENUM-typed column ALSO tries to create the type
+    # (create_type defaults to True), colliding with the explicit create
+    # here and raising DuplicateObject on a genuinely fresh database —
+    # mirrors the working pattern already established in
+    # 0013_teams.py/0022_arena_mode.py/0023_arena_difficulty.py/
+    # 0027_arena_events.py.
     action_run_mode = postgresql.ENUM(
-        "daily", "scenario", "teaser", name="action_run_mode",
+        "daily", "scenario", "teaser", name="action_run_mode", create_type=False,
     )
     action_run_mode.create(bind, checkfirst=True)
 
     action_run_outcome = postgresql.ENUM(
-        "win", "loss", "partial", name="action_run_outcome",
+        "win", "loss", "partial", name="action_run_outcome", create_type=False,
     )
     action_run_outcome.create(bind, checkfirst=True)
 

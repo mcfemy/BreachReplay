@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import String, Integer, DateTime, ForeignKey, JSON, Enum as SAEnum
+from sqlalchemy import String, Integer, DateTime, ForeignKey, JSON, Enum as SAEnum, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.session import Base
@@ -21,13 +21,24 @@ class ActionRun(Base):
     `SessionReplayScrubber` reads.
 
     `user_id` is nullable — a teaser-mode run has no authenticated user yet
-    (same pattern as TeaserEvent.user_id, migration 0028)."""
+    (same pattern as TeaserEvent.user_id, migration 0028).
+
+    `daily_challenge_id` (migration 0030) is set only for mode="daily" runs
+    — one per (daily_challenge, user), enforced by
+    uq_action_run_daily_challenge_user, mirroring DailyAttempt's existing
+    uq_daily_attempt_user constraint on the decision-gate path exactly."""
 
     __tablename__ = "action_runs"
+    __table_args__ = (
+        UniqueConstraint("daily_challenge_id", "user_id", name="uq_action_run_daily_challenge_user"),
+    )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     user_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("users.id"), nullable=True, index=True)
     scenario_id: Mapped[str] = mapped_column(String, ForeignKey("scenarios.id"), nullable=False, index=True)
+    daily_challenge_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("daily_challenges.id"), nullable=True, index=True,
+    )
     seed: Mapped[int] = mapped_column(Integer, nullable=False)
     mode: Mapped[str] = mapped_column(
         SAEnum("daily", "scenario", "teaser", name="action_run_mode"),

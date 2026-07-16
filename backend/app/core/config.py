@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -22,6 +23,20 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: Optional[str] = None
     AWS_REGION: str = "us-east-1"
     S3_BUCKET: str = "breachreplay-documents"
+
+    @field_validator("AWS_REGION", mode="before")
+    @classmethod
+    def _blank_aws_region_falls_back_to_default(cls, v):
+        """An AWS_REGION env var that's PRESENT but blank (e.g. a CI
+        workflow declaring `AWS_REGION:` with no value, or an empty line in
+        .env) still overrides this field's Python default with "" — pydantic
+        only applies a field default when the env var is absent, not when
+        it's empty. An empty region string then poisons every boto3 call
+        that relies on it (S3, Bedrock, ...), so treat blank the same as
+        unset."""
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            return "us-east-1"
+        return v
 
     SENDGRID_API_KEY: Optional[str] = None
     FROM_EMAIL: str = "noreply@breachreplay.com"

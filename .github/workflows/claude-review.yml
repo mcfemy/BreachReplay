@@ -1,0 +1,232 @@
+name: Claude PR Review
+
+# Automated QA reviewer for Phase 2+ work. Applies REVIEW_CRITERIA.md
+# against PHASE2_STATE.md and docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md, runs
+# the real backend test suite itself, and posts a verdict, then gates this
+# job's own pass/fail on that verdict so branch protection actually blocks
+# a merge on CHANGES REQUESTED (see the "Gate the check on the posted
+# verdict" step below).
+#
+# A PR comment posted via a workflow job's DEFAULT GITHUB_TOKEN does not
+# trigger other workflows — GitHub deliberately suppresses that to prevent
+# workflow-recursion loops. That's why the "Gate" step below (which only
+# needs to read comments and, on a dead review, post a non-triggering
+# failure notice) deliberately uses the default token: nothing it posts
+# needs to trigger anything downstream.
+#
+# The "Claude PR Review" step is a DIFFERENT case: `claude-code-action@v1`
+# authenticates via the Claude GitHub App's own installation token by
+# default — NOT the job's GITHUB_TOKEN — so its comments are already
+# authored by a real actor (`claude[bot]`), confirmed directly against
+# PR #4's own review comment (`author: "claude"`). GitHub's
+# recursion-suppression only applies to the default GITHUB_TOKEN, so this
+# step's "@claude address the numbered items..." line already triggers
+# claude.yml's issue_comment listener with NO extra token needed. (An
+# earlier version of this file passed a `github_token` PAT override here,
+# on the mistaken assumption this step also used the default token — that
+# override actually broke it: the review ran 26 turns and posted nothing
+# at all, silently. Do not reintroduce it without first confirming which
+# identity actually posts the comment.) See
+# .github/workflows/claude-dispatch.yml for the OTHER half of this loop —
+# what actually kicks off the next NEW item, on PR *merge*, independent of
+# this file.
+#
+# Review-only by design: `permissions.contents: read` means the job's own
+# default token cannot push to the repo, and Edit/Write/NotebookEdit are
+# deliberately left out of --allowedTools below — the App token only ever
+# reaches GitHub's PR/issue API surface via `gh`/the inline-comment MCP
+# tool, never local file writes.
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    env:
+      # Belt-and-suspenders alongside backend/app/core/config.py's
+      # AWS_REGION field validator: a boto3 call made during this job's
+      # test run (`cd backend && pytest -q`) must never see AWS_REGION
+      # resolve to an empty string. Pinning it here means this job's own
+      # environment is never the source of a blank value in the first
+      # place, independent of whatever the config-layer fix does.
+      AWS_REGION: us-east-1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+        working-directory: backend
+
+      - name: Claude PR Review
+        id: claude_review
+        # Let a hard failure of this step (auth error, crash, the
+        # max-turns cap being hit) fall through to the gate step below
+        # instead of failing the job here directly — that step needs to
+        # run regardless, specifically to distinguish "the review step
+        # itself never finished" from "it finished and said no", and to
+        # post a visible marker for the former so a dead review is never
+        # silently indistinguishable from a real CHANGES REQUESTED verdict.
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Deliberately no github_token override — see this file's header
+          # comment. The action's default (Claude GitHub App installation
+          # token) already posts as a real actor and already triggers
+          # claude.yml's @claude listener; overriding it broke posting
+          # entirely.
+          claude_args: |
+            --max-turns 50
+            --allowedTools "Read,Grep,Glob,Bash,mcp__github_inline_comment__create_inline_comment"
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            You are the automated QA reviewer for this PR. Follow this
+            procedure exactly, in order.
+
+            ## Step 0 — escalation check (do this FIRST)
+
+            Check this PR's existing review/comment history for how many
+            times a previous automated review has posted the exact line
+            "VERDICT: CHANGES REQUESTED" on this PR, e.g.:
+
+              gh pr view ${{ github.event.pull_request.number }} --json comments,reviews
+
+            If that count is already 3 or more, do NOT perform a new
+            review. Instead post exactly one PR comment whose first line is:
+
+            ESCALATE TO HUMAN
+
+            followed by a short paragraph summarizing why this PR has
+            stalled across three review cycles. Then stop completely — do
+            not run tests, do not review the diff, do not post anything
+            else.
+
+            Otherwise, continue to Step 1.
+
+            ## Step 1 — review
+
+            Read REVIEW_CRITERIA.md at the repo root and apply it in full.
+            Also read docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md and
+            PHASE2_STATE.md — every finding must be checked against whether
+            this diff conforms to the spec's Phase 2 section (section 4)
+            and to what PHASE2_STATE.md says the current item actually is,
+            not just general code quality.
+
+            This review is READ-ONLY. You have no write access to repo
+            contents in this job (contents: read) and no Edit/Write tools
+            available. Do not attempt to edit files, commit, or push —
+            investigate with Read/Grep/Glob/Bash only.
+
+            Run the full backend test suite yourself — dependencies are
+            already installed by this workflow's earlier steps:
+
+              cd backend && pytest -q
+
+            Treat any test failure as blocking, no matter what the PR
+            description or commit messages claim. Never accept a claim of
+            "tests pass" as evidence without reproducing it yourself in
+            this job.
+
+            Check every BLOCKING criterion in REVIEW_CRITERIA.md
+            explicitly and state a pass/fail for each one, not just a
+            prose summary. Post inline comments
+            (mcp__github_inline_comment__create_inline_comment) for
+            findings tied to a specific line or file, and a single
+            top-level PR comment (`gh pr comment ${{ github.event.pull_request.number }} --body "..."`)
+            with your overall assessment.
+
+            ## Step 2 — verdict
+
+            End your top-level comment with EXACTLY one of these two lines
+            verbatim, with nothing else on that line:
+
+            VERDICT: APPROVED
+
+            or
+
+            VERDICT: CHANGES REQUESTED
+
+            If CHANGES REQUESTED, immediately follow that line with a
+            numbered list of the specific, concrete fixes required — one
+            item per number, each naming the exact file and criterion
+            (from REVIEW_CRITERIA.md) it addresses. Then end the SAME
+            comment with this exact literal line, verbatim, as its own
+            final line:
+
+            @claude address the numbered items above in this PR's branch
+
+            This is the mechanism that triggers the auto-fix round —
+            claude.yml listens for an explicit @claude mention in a PR
+            comment. Do not include this line at all when the verdict is
+            APPROVED.
+
+            Take no further action after posting the verdict — do not loop
+            back and re-review, do not post additional commentary, and do
+            not attempt to notify or dispatch anything else. A human
+            merges this PR after seeing VERDICT: APPROVED; what happens
+            next is handled by a separate workflow triggered on that
+            merge, not by anything in this job.
+
+      - name: Gate the check on the posted verdict
+        # Runs regardless of whether the review step above succeeded,
+        # failed, or hit its max-turns cap (continue-on-error above lets
+        # the job reach this step either way) — this is what actually
+        # distinguishes "the reviewer said no" (a real CHANGES REQUESTED
+        # verdict — fail the check, no alarm) from "the reviewer never
+        # finished" (no verdict at all — fail the check AND post a visible
+        # marker, so a dead review is never silently indistinguishable
+        # from either a real verdict or a passing check). Deliberately
+        # uses the default token, not CLAUDE_BOT_PAT — nothing this step
+        # posts needs to trigger another workflow.
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          PR=${{ github.event.pull_request.number }}
+
+          if [ "${{ steps.claude_review.outcome }}" != "success" ]; then
+            echo "Review step outcome: ${{ steps.claude_review.outcome }} — no verdict can be trusted."
+            gh pr comment "$PR" --body "REVIEW ERRORED — no verdict, see run logs"
+            exit 1
+          fi
+
+          verdict_comment=$(gh pr view "$PR" --json comments \
+            --jq '[.comments[].body] | map(select(test("VERDICT: (APPROVED|CHANGES REQUESTED)"))) | last // empty')
+
+          if [ -z "$verdict_comment" ]; then
+            echo "Review step reported success but posted no verdict line — treating as a dead review."
+            gh pr comment "$PR" --body "REVIEW ERRORED — no verdict, see run logs"
+            exit 1
+          fi
+
+          if echo "$verdict_comment" | grep -q "VERDICT: CHANGES REQUESTED"; then
+            echo "Verdict: CHANGES REQUESTED — failing this check so branch protection blocks the merge."
+            exit 1
+          fi
+
+          echo "Verdict: APPROVED."

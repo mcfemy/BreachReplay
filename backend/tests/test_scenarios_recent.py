@@ -64,7 +64,20 @@ async def test_recent_scenarios_ordered_newest_first(client, db, test_user):
     await db.flush()
     await db.commit()
 
-    response = await client.get("/api/v1/scenarios/recent", headers=auth_headers(test_user["token"]))
+    # limit=25 (the endpoint's max, Query(10, ge=1, le=25)): several other
+    # test files create real, non-rolled-back "approved" scenarios via
+    # app.db.session.AsyncSessionLocal directly (see
+    # test_action_run_ws_handler.py's module docstring for why), which
+    # persist for the rest of the pytest session — a pre-existing
+    # test-infra property, not something this test controls. At the
+    # default limit=10, enough of those can push `older` (2 days old) out
+    # of the window and this test flakes with a bare StopIteration
+    # depending on what ran earlier in the session. Asking for the max
+    # window sidesteps it without pretending this suite has real
+    # per-test DB isolation for that class of test.
+    response = await client.get(
+        "/api/v1/scenarios/recent?limit=25", headers=auth_headers(test_user["token"]),
+    )
     assert response.status_code == 200
     data = response.json()
     older_idx = next(i for i, s in enumerate(data) if s["id"] == older.id)

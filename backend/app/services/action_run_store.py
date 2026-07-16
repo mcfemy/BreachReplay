@@ -77,6 +77,9 @@ class LiveRun:
     scenario_id: str
     mode: str
     run_state: verb_engine.RunState
+    # Set only for mode="daily" runs — carried through to the persisted
+    # ActionRun row in finalize() (migration 0030's daily_challenge_id).
+    daily_challenge_id: Optional[str] = None
     real_started_at: datetime = field(default_factory=datetime.utcnow)
     last_activity_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -99,6 +102,7 @@ class ActionRunStore:
 
     async def start_run(
         self, run_id: str, user_id: Optional[str], scenario_id: str, mode: str, compiled: CompiledRun,
+        daily_challenge_id: Optional[str] = None,
     ) -> LiveRun:
         live = LiveRun(
             run_id=run_id,
@@ -106,6 +110,7 @@ class ActionRunStore:
             scenario_id=scenario_id,
             mode=mode,
             run_state=verb_engine.new_run(compiled),
+            daily_challenge_id=daily_challenge_id,
         )
         async with self._lock:
             self._runs[run_id] = live
@@ -117,6 +122,23 @@ class ActionRunStore:
         resume the stored RunState, never error, per the Item 3 spec."""
         async with self._lock:
             return self._runs.get(run_id)
+
+    async def find_live_daily_run(self, user_id: str, daily_challenge_id: str) -> Optional[LiveRun]:
+        """Look up an IN-PROGRESS daily run for (user_id, daily_challenge_id).
+
+        A row in `action_runs` exists only once `finalize()` commits it
+        (per `ActionRun`'s docstring — written exactly once, at run.end); a
+        run that's still being played lives solely here. `POST
+        /daily/action-run`'s persisted-row pre-check is therefore blind to
+        a run already in progress — this is what lets it detect one, so a
+        double-tap/refresh resumes the existing run_id instead of starting
+        a second live run for the same (user, challenge) that would later
+        crash its own finalize() on `uq_action_run_daily_challenge_user`."""
+        async with self._lock:
+            for live in self._runs.values():
+                if live.user_id == user_id and live.daily_challenge_id == daily_challenge_id:
+                    return live
+        return None
 
     async def apply_verb(self, run_id: str, verb: str, target: Optional[str]) -> tuple[verb_engine.VerbResult, bool]:
         """Applies one verb to the live run and returns (result, is_over).
@@ -159,6 +181,7 @@ class ActionRunStore:
         action_run = ActionRun(
             user_id=live.user_id,
             scenario_id=live.scenario_id,
+            daily_challenge_id=live.daily_challenge_id,
             seed=run_state.compiled.seed,
             mode=live.mode,
             action_log=list(run_state.action_log),
@@ -205,26 +228,50 @@ class ActionRunStore:
             "new_achievements": new_achievements,
         }
 
-    async def sweep_expired(self, db: AsyncSession) -> list[str]:
+    async def sweep_expired(self, db: AsyncSession) -> list[tuple[str, dict]]:
         """Force-finalizes every run whose REAL elapsed time has passed its
         mode's cap plus SWEEP_GRACE_SECONDS, as outcome="loss" — abandoned
         runs (the player closed the tab and never sent another
         action.submit) must still produce an ActionRun row, both for
-        funnel data and so a ghost exists for Phase 4. Returns the run_ids
-        finalized this sweep."""
+        funnel data and so a ghost exists for Phase 4.
+
+        For mode="daily" runs, also routes the finalized result through
+        `record_daily_action_run_result` exactly like
+        `action_run_ws_handler`'s own is_over branch does (merged into the
+        returned summary) — a player swept for abandonment still gets
+        streak/rank credit instead of silently losing it. Imported lazily
+        to avoid a circular import: app.api.routes.daily imports
+        action_run_store at module level.
+
+        Returns (run_id, summary) pairs for every run actually finalized
+        this sweep — `summary` is finalize()'s dict (plus the daily
+        carry-over fields when applicable), the same shape
+        `build_run_end_event` expects. The caller (main.py's sweep loop)
+        uses this to broadcast run.end to whichever socket, if any, is
+        still connected — a connected-but-slow player whose run gets swept
+        must still receive their debrief instead of a dead socket."""
+        from app.api.routes.daily import record_daily_action_run_result
+
         now = datetime.utcnow()
         async with self._lock:
-            expired_ids = [
-                run_id for run_id, live in self._runs.items()
+            expired = [
+                (run_id, live) for run_id, live in self._runs.items()
                 if (now - live.real_started_at).total_seconds() > live.cap_seconds + SWEEP_GRACE_SECONDS
             ]
 
-        finalized: list[str] = []
-        for run_id in expired_ids:
+        finalized: list[tuple[str, dict]] = []
+        for run_id, live in expired:
             try:
-                result = await self.finalize(db, run_id, forced_outcome="loss")
-                if result is not None:
-                    finalized.append(run_id)
+                summary = await self.finalize(db, run_id, forced_outcome="loss")
+                if summary is None:
+                    continue
+                if live.mode == "daily" and live.daily_challenge_id and live.user_id:
+                    daily_summary = await record_daily_action_run_result(
+                        db, live.daily_challenge_id, live.user_id,
+                        summary["score_breakdown"]["total_score"],
+                    )
+                    summary = {**summary, **daily_summary}
+                finalized.append((run_id, summary))
             except Exception:
                 # One bad run must never kill the sweep for the rest —
                 # mirrors main.py's _arena_event_queue_sweep_loop precedent.
