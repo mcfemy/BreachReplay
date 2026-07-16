@@ -188,7 +188,15 @@ async def test_create_daily_action_run_conflicts_for_a_second_attempt_the_same_d
     # Simulate that run having already completed — finalize() would
     # normally be the one writing this row (see the WS-handler-level
     # tests below); this is a REST-layer test using the isolated
-    # `db`/`client` fixture session, so write it directly instead.
+    # `db`/`client` fixture session, so write it directly instead. Must
+    # also evict the live run from the store the same way finalize()
+    # itself does (pop-then-persist) — otherwise the live-run lookup
+    # (added for the double-POST fix below) would see this run_id as
+    # still in progress and resume it instead of hitting this test's
+    # persisted-row 409 path.
+    async with action_run_store._lock:
+        action_run_store._runs.pop(body["run_id"], None)
+
     db.add(ActionRun(
         user_id=test_user["user"].id,
         scenario_id=body["scenario_id"],
@@ -206,8 +214,59 @@ async def test_create_daily_action_run_conflicts_for_a_second_attempt_the_same_d
     second = await client.post("/api/v1/daily/action-run", headers=_auth_headers(test_user["token"]))
     assert second.status_code == 409
 
-    async with action_run_store._lock:
-        action_run_store._runs.pop(body["run_id"], None)
+
+async def test_daily_action_run_double_post_resumes_the_live_run_instead_of_conflicting(client, db, test_user, approved_scenario):
+    """QA fix: the 409 pre-check above only queries persisted `ActionRun`
+    rows, but a row exists only once `finalize()` commits it — a run still
+    in progress lives solely in `action_run_store`. Before this fix, a
+    double-tap/refresh sailed past that pre-check and started a SECOND
+    live run for the same (user, challenge); that second run's own
+    finalize() would then crash on `uq_action_run_daily_challenge_user`,
+    losing the player's run.end. Confirms end-to-end: the second POST
+    resumes the SAME run_id with 200 + resumed=True (never a second 201,
+    never a 409), exactly one live run exists in the store the whole time,
+    and finalizing it once succeeds cleanly — there is no second live run
+    left over to attempt a colliding finalize against."""
+    from sqlalchemy import select
+    from app.models.action_run import ActionRun
+
+    first = await client.post("/api/v1/daily/action-run", headers=_auth_headers(test_user["token"]))
+    assert first.status_code == 201
+    first_body = first.json()
+    assert first_body["resumed"] is False
+
+    second = await client.post("/api/v1/daily/action-run", headers=_auth_headers(test_user["token"]))
+    assert second.status_code == 200
+    second_body = second.json()
+    assert second_body["resumed"] is True
+    assert second_body["run_id"] == first_body["run_id"]
+    assert second_body["daily_challenge_id"] == first_body["daily_challenge_id"]
+    assert second_body["scenario_id"] == first_body["scenario_id"]
+    assert second_body["seed"] == first_body["seed"]
+
+    live_runs_for_challenge = [
+        live for live in action_run_store._runs.values()
+        if live.user_id == test_user["user"].id
+        and live.daily_challenge_id == first_body["daily_challenge_id"]
+    ]
+    assert len(live_runs_for_challenge) == 1  # the double-POST did not spawn a sibling live run
+
+    # Finalizing the one live run succeeds cleanly — there was never a
+    # second live run to attempt a colliding finalize with (the second
+    # finalize this bug used to cause never happens).
+    summary = await action_run_store.finalize(db, first_body["run_id"])
+    assert summary is not None
+    assert await action_run_store.get(first_body["run_id"]) is None
+
+    result = await db.execute(
+        select(ActionRun).where(ActionRun.daily_challenge_id == first_body["daily_challenge_id"])
+    )
+    assert len(result.scalars().all()) == 1  # exactly one ActionRun row — no constraint collision
+
+    # A genuinely-finished run now correctly 409s on a further attempt,
+    # via the persisted-row pre-check — unaffected by this fix.
+    third = await client.post("/api/v1/daily/action-run", headers=_auth_headers(test_user["token"]))
+    assert third.status_code == 409
 
 
 # ── Mid-loop 8-minute cap enforcement (WS handler layer) ────────────────────────
@@ -301,6 +360,121 @@ async def test_daily_run_end_carries_over_streak_and_rank_fields():
     assert streak.current_streak == 1
 
     assert await action_run_store.get(run_id) is None
+
+
+# ── Sweep abandonment carry-over (main.py's _run_action_run_sweep_iteration) ────
+#
+# QA fix: action_run_store.sweep_expired() used to force-finalize an
+# abandoned run and then discard finalize()'s summary entirely — a
+# connected-but-slow player whose run the sweep force-finalized was left
+# with a dead socket instead of their debrief, and (for mode="daily") lost
+# streak/rank credit outright since record_daily_action_run_result was
+# never reached on this path. These exercise the REAL production wiring
+# (main._run_action_run_sweep_iteration -> action_run_store.sweep_expired
+# -> manager.broadcast), not a reimplementation of it.
+
+async def test_swept_daily_run_broadcasts_run_end_and_carries_over_streak():
+    from datetime import datetime, timedelta
+
+    from app.main import _run_action_run_sweep_iteration
+    from app.services.action_run_store import CAP_SECONDS_BY_MODE, SWEEP_GRACE_SECONDS
+    from app.websocket.manager import manager
+    from tests.conftest import ensure_test_user_row
+
+    await ensure_test_user_row("daily-sweep-owner-1")
+    scenario = await _make_scenario()
+    challenge = await _make_daily_challenge(scenario.id, date(2030, 2, 5))
+
+    compiled = action_engine.compile_scenario(scenario, seed=1)
+    run_id = str(uuid.uuid4())
+    live = await action_run_store.start_run(
+        run_id, "daily-sweep-owner-1", scenario.id, "daily", compiled,
+        daily_challenge_id=challenge.id,
+    )
+    # Backdate real_started_at past cap+grace — simulating an abandoned tab
+    # whose socket, per this test, is STILL connected (a slow/backgrounded
+    # client, not a closed one) — exercises the sweep's own time math
+    # directly, same convention as test_action_run_store.py's sweep tests.
+    overdue = CAP_SECONDS_BY_MODE["daily"] + SWEEP_GRACE_SECONDS + 5
+    live.real_started_at = datetime.utcnow() - timedelta(seconds=overdue)
+
+    ws = FakeWebSocket()
+    await manager.connect(run_id, ws)
+    try:
+        await _run_action_run_sweep_iteration()
+
+        run_end_events = [m for m in ws.sent if m["type"] == "run.end"]
+        assert len(run_end_events) == 1
+        summary = run_end_events[0]
+        assert summary["outcome"] == "loss"  # forced, not the natural determine_outcome
+        assert summary["daily_challenge_id"] == challenge.id
+        assert summary["challenge_number"] == challenge.challenge_number
+        assert summary["rank"] == 1  # only run on this challenge
+        assert summary["current_streak"] == 1
+        assert summary["longest_streak"] == 1
+        assert summary["total_dailies_played"] == 1
+
+        assert await action_run_store.get(run_id) is None
+
+        from app.db.session import AsyncSessionLocal
+        from sqlalchemy import select
+        from app.models.action_run import ActionRun
+        from app.models.daily_challenge import DailyChallenge, UserStreak
+
+        async with AsyncSessionLocal() as db:
+            refreshed_challenge = (await db.execute(
+                select(DailyChallenge).where(DailyChallenge.id == challenge.id)
+            )).scalar_one()
+            streak = (await db.execute(
+                select(UserStreak).where(UserStreak.user_id == "daily-sweep-owner-1")
+            )).scalar_one()
+            action_run = (await db.execute(
+                select(ActionRun).where(ActionRun.daily_challenge_id == challenge.id)
+            )).scalar_one()
+
+        assert refreshed_challenge.total_attempts == 1
+        assert streak.current_streak == 1
+        assert action_run.outcome == "loss"
+    finally:
+        manager.disconnect(run_id, ws)
+
+
+async def test_swept_non_daily_run_also_broadcasts_run_end_to_a_live_socket():
+    """Same fix, non-daily mode: the broadcast itself must not depend on
+    sweep_expired's daily-routing branch — a scenario-mode run's swept
+    debrief must reach a connected socket too, with no daily fields
+    leaking in when there's no daily_challenge_id to carry over."""
+    from datetime import datetime, timedelta
+
+    from app.main import _run_action_run_sweep_iteration
+    from app.services.action_run_store import CAP_SECONDS_BY_MODE, SWEEP_GRACE_SECONDS
+    from app.websocket.manager import manager
+    from tests.conftest import ensure_test_user_row
+
+    await ensure_test_user_row("scenario-sweep-owner-1")
+    scenario = await _make_scenario()
+
+    compiled = action_engine.compile_scenario(scenario, seed=1)
+    run_id = str(uuid.uuid4())
+    live = await action_run_store.start_run(
+        run_id, "scenario-sweep-owner-1", scenario.id, "scenario", compiled,
+    )
+    overdue = CAP_SECONDS_BY_MODE["scenario"] + SWEEP_GRACE_SECONDS + 5
+    live.real_started_at = datetime.utcnow() - timedelta(seconds=overdue)
+
+    ws = FakeWebSocket()
+    await manager.connect(run_id, ws)
+    try:
+        await _run_action_run_sweep_iteration()
+
+        run_end_events = [m for m in ws.sent if m["type"] == "run.end"]
+        assert len(run_end_events) == 1
+        assert run_end_events[0]["outcome"] == "loss"
+        assert "daily_challenge_id" not in run_end_events[0]
+
+        assert await action_run_store.get(run_id) is None
+    finally:
+        manager.disconnect(run_id, ws)
 
 
 # ── Rank ordering (focused unit test on record_daily_action_run_result) ─────────

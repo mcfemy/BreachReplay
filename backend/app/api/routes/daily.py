@@ -16,7 +16,7 @@ import hashlib
 import uuid
 from datetime import datetime, date, timedelta
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update, desc
 from pydantic import BaseModel
@@ -95,6 +95,7 @@ class DailyActionRunOut(BaseModel):
     seed: int
     mode: str
     cap_seconds: int
+    resumed: bool = False
 
 
 class ActionLeaderboardEntry(BaseModel):
@@ -630,16 +631,44 @@ async def get_challenge_history(
 
 @router.post("/action-run", response_model=DailyActionRunOut, status_code=status.HTTP_201_CREATED)
 async def create_daily_action_run(
+    response: Response,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Start today's Daily Breach in action-console mode. One run per user
-    per daily challenge — checked here (fast 409 on a repeat request) and
-    enforced again at the DB level by uq_action_run_daily_challenge_user
-    (migration 0030), the same belt-and-suspenders pattern `/attempt`'s
-    pre-check + uq_daily_attempt_user already uses on the decision-gate
-    path."""
+    per daily challenge, enforced at three layers: a live-run lookup below
+    (for a run still in progress), a persisted-row pre-check (fast 409 for
+    a request after that run has already ended), and the DB-level
+    uq_action_run_daily_challenge_user (migration 0030) as the final
+    backstop — the same belt-and-suspenders pattern `/attempt`'s pre-check
+    + uq_daily_attempt_user already uses on the decision-gate path.
+
+    The persisted-row pre-check alone is blind to a run still in progress:
+    `ActionRun` is written exactly once, at run.end, so an in-progress run
+    lives solely in `action_run_store` and has no row yet. Without the
+    live-run lookup, a double-tap/refresh would sail past that pre-check,
+    start a SECOND live run for the same (user, challenge), and that
+    second run's own finalize() would later crash on the DB constraint —
+    losing that player's run.end entirely. A live-run hit instead resumes
+    the existing run_id with 200 + resumed=True (not 201/409) — the
+    client's reconnect flow already resumes any live run_id transparently
+    via `/ws/run/{run_id}` (see action_run_ws_handler), so this just works.
+    """
     challenge = await _get_or_create_daily_challenge(db)
+
+    live = await action_run_store.find_live_daily_run(current_user.id, challenge.id)
+    if live is not None:
+        response.status_code = status.HTTP_200_OK
+        return DailyActionRunOut(
+            run_id=live.run_id,
+            daily_challenge_id=challenge.id,
+            challenge_number=challenge.challenge_number,
+            scenario_id=live.scenario_id,
+            seed=live.run_state.compiled.seed,
+            mode=live.mode,
+            cap_seconds=live.cap_seconds,
+            resumed=True,
+        )
 
     existing = await db.execute(
         select(ActionRun).where(
@@ -671,6 +700,7 @@ async def create_daily_action_run(
         seed=seed,
         mode=mode,
         cap_seconds=CAP_SECONDS_BY_MODE[mode],
+        resumed=False,
     )
 
 

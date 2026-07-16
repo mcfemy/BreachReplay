@@ -191,7 +191,8 @@ async def test_sweep_expired_force_finalizes_abandoned_runs_as_loss(db, store, f
     overdue = CAP_SECONDS_BY_MODE["scenario"] + SWEEP_GRACE_SECONDS + 5
     live.real_started_at = datetime.utcnow() - timedelta(seconds=overdue)
 
-    finalized_ids = await store.sweep_expired(db)
+    finalized = await store.sweep_expired(db)
+    finalized_ids = [run_id for run_id, _summary in finalized]
     assert run_id in finalized_ids
     assert await store.get(run_id) is None
 
@@ -199,12 +200,17 @@ async def test_sweep_expired_force_finalizes_abandoned_runs_as_loss(db, store, f
     row = result.scalar_one()
     assert row.outcome == "loss"  # forced, regardless of what determine_outcome would've said
 
+    summary = dict(finalized)[run_id]
+    assert summary["outcome"] == "loss"
+    assert summary["action_run_id"] == row.id
+
 
 async def test_sweep_expired_leaves_fresh_runs_alone(db, store, fast_scenario, test_user):
     compiled = action_engine.compile_scenario(fast_scenario, seed=1)
     run_id = _new_run_id()
     await store.start_run(run_id, test_user["user"].id, fast_scenario.id, "scenario", compiled)
 
-    finalized_ids = await store.sweep_expired(db)
+    finalized = await store.sweep_expired(db)
+    finalized_ids = [run_id for run_id, _summary in finalized]
     assert run_id not in finalized_ids
     assert await store.get(run_id) is not None

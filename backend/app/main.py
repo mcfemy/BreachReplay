@@ -74,15 +74,30 @@ async def _arena_event_queue_sweep_loop():
 _ACTION_RUN_SWEEP_INTERVAL_SECONDS = 30
 
 
-async def _action_run_sweep_loop():
+async def _run_action_run_sweep_iteration() -> None:
+    """One sweep pass: force-finalize expired runs, then broadcast run.end
+    to whichever socket (if any) is still connected under each swept
+    run_id — without this, a connected-but-slow player whose run the sweep
+    force-finalizes would be left with a dead socket instead of their
+    debrief. Factored out of the while-loop below so it can be exercised
+    directly in tests without dealing with asyncio.sleep/an infinite loop,
+    the same shape arena_matchmaking_service.sweep_closed_event_queues
+    already has for the Arena sweep."""
     from app.db.session import AsyncSessionLocal
     from app.services.action_run_store import action_run_store
+    from app.websocket.manager import manager, build_run_end_event
 
+    async with AsyncSessionLocal() as db:
+        finalized = await action_run_store.sweep_expired(db)
+    for run_id, summary in finalized:
+        await manager.broadcast(run_id, build_run_end_event(summary))
+
+
+async def _action_run_sweep_loop():
     while True:
         await asyncio.sleep(_ACTION_RUN_SWEEP_INTERVAL_SECONDS)
         try:
-            async with AsyncSessionLocal() as db:
-                await action_run_store.sweep_expired(db)
+            await _run_action_run_sweep_iteration()
         except asyncio.CancelledError:
             raise
         except Exception:
