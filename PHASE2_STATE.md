@@ -11,14 +11,14 @@ Every item lands on its own branch, PR'd into `phase-2-action-console`.
 **Item PRs branch from `phase-2-action-console`, not `main`** — the
 runner/action's base branch must be set accordingly
 (`.github/workflows/claude.yml`'s `base_branch` input, or the equivalent
-for whatever triggers the work). `main` does not have Items 0–3 yet and
+for whatever triggers the work). `main` does not have Items 0–4 yet and
 won't until Phase 2 fully merges — a run cut from `main` has none of the
-foundation Item 4+ builds on and cannot produce a PR that merges cleanly
+foundation Item 5+ builds on and cannot produce a PR that merges cleanly
 into `phase-2-action-console`. (Found the hard way in issue #3: a cold
 cloud-runner run correctly refused to reimplement Items 0–3 from scratch
 rather than open a divergent PR, and flagged the base branch as the fix.)
 
-## Status: Items 0–3 complete and QA-approved. Item 4 next.
+## Status: Items 0–4 complete. Item 5 next.
 
 ### Completed
 
@@ -54,42 +54,39 @@ rather than open a divergent PR, and flagged the base branch as the fix.)
 
 Full backend suite: 422 passed, zero regressions, as of `b9d1f72`.
 
-## Item 4 — Daily Breach action mode (next)
+- **Item 4 — Daily Breach action mode** (`d942266`, migration 0030 in
+  `ca4191a`) — `backend/app/api/routes/daily.py`: `_deterministic_daily_seed`
+  (SHA-256 of challenge_date+scenario_id, mirroring
+  `action_engine._derive_rng`'s style — same scenario+seed for every
+  player on a given calendar day, not `secrets.randbelow`), `POST
+  /daily/action-run` (409s on a repeat attempt the same day, enforced by
+  both a pre-check and migration 0030's DB-level
+  `uq_action_run_daily_challenge_user`, mirroring `/attempt`'s existing
+  `uq_daily_attempt_user` pattern), `GET
+  /daily/action-leaderboard/{id}` (ranked by `action_runs.total_score`,
+  a real indexed integer, never `score_breakdown`). `action_run_store`'s
+  `LiveRun`/`start_run`/`finalize` now carry an optional
+  `daily_challenge_id` through to the persisted `ActionRun` row. The
+  8-minute cap fires mid-loop inside a single WS session (verified by
+  `test_daily_mode_cap_force_ends_the_run_mid_loop_not_via_final_stage`,
+  not just via the separate abandonment sweep). `run.end` carry-over
+  (`record_daily_action_run_result`, called from `action_run_ws_handler`
+  for mode="daily" runs) updates `DailyChallenge.total_attempts`/
+  `avg_score` and `UserStreak` via the existing idempotent-per-day
+  `_get_or_create_streak`/`_update_streak`, using the same
+  rank/current_streak/longest_streak/total_dailies_played field names
+  the decision-gate path's response already uses. The old decision-gate
+  quiz path (`/today`, `/scenario/{id}`, `/attempt`, `/leaderboard/{id}`,
+  `/streak`, `/history`) is untouched — new challenge generation just no
+  longer funnels through it, per REVIEW_CRITERIA.md's org-tabletop
+  isolation rule (d).
 
-Switch daily challenge generation to action mode:
+Full backend suite: 439 passed, zero regressions, as of `d942266`
+(also fixed a pre-existing flaky test in `test_scenarios_recent.py`
+exposed by this item's new AsyncSessionLocal-based tests — see that
+commit).
 
-- **Deterministic daily seed** — same scenario + the same seed for every
-  player on a given calendar day, not `secrets.randbelow` (that's for
-  `POST /action-runs`' individual-scenario path only). Derive the seed
-  reproducibly from the date + scenario id so replaying "today's seed"
-  always gives the same `CompiledRun` — this is load-bearing for
-  same-day-leaderboard comparability and for Phase 4 ghosts.
-- **One run per user per day**, enforced server-side — a second creation
-  attempt for a day already played must not silently create a second
-  `ActionRun`; check the existing `daily_challenge`/`DailyAttempt` models
-  for how this is already enforced on the decision-gate path and mirror
-  that constraint for action-mode runs.
-- **8-minute cap enforced server-side, mid-loop** — not only via
-  `action_run_store`'s abandonment sweep. Needs a test that actually plays
-  a run past the cap inside a single WS session (via repeated
-  `action.submit` calls, like `test_run_over_triggers_finalize_and_a_run_end_event`)
-  and confirms the server force-ends it — the sweep-based abandonment test
-  alone does not cover this.
-- **`run.end` broadcast carry-over** — check the current `daily_challenge`
-  model / `backend/app/api/routes/daily.py` / `DailyBreachPage.tsx` for
-  whatever fields the existing streak/leaderboard chrome expects before
-  inventing new ones on the `run.end` payload.
-- **Streaks and leaderboard read from `action_runs.total_score`** — that
-  column exists specifically so this query can `ORDER BY` a real indexed
-  integer instead of a JSONB path; don't reach into `score_breakdown` for
-  ranking.
-- **The old decision-gate daily quiz path stays intact but unreferenced.**
-  Do not delete it, do not modify it — stop wiring *new* daily challenge
-  generation through it. Mirrors REVIEW_CRITERIA.md's org-tabletop
-  isolation rule (d): the two paths coexist, they don't share mutated
-  state.
-
-## Item 5 — Frontend (after Item 4)
+## Item 5 — Frontend (next)
 
 - `ActionConsole.tsx` — 8 verb chips + cost labels, targets picked by
   tapping the network map (Phase 1's `NetworkMap.tsx`, reused), mobile-first
