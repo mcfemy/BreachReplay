@@ -107,3 +107,34 @@ cd backend && pytest -q
 A PR whose description claims a green suite but which the reviewer cannot
 independently reproduce as green is `CHANGES REQUESTED`, not `APPROVED`
 pending clarification.
+
+**(j) Distinguish "reviewer said no" from "reviewer never finished."** A
+real `VERDICT: CHANGES REQUESTED` and a review run that crashed, hit its
+turn/time cap, or otherwise died without posting any verdict are NOT the
+same signal, and a loop that conflates them is not trustworthy — a human
+(or the next automated step) reading a red check must be able to tell
+"the reviewer looked at this and said no" from "the reviewer never
+actually looked." This came out of PR #5's review run failing outright
+(no verdict posted, ~5 minutes, red) with nothing distinguishing it from a
+real CHANGES REQUESTED in the check history. `claude-review.yml`'s "Gate
+the check on the posted verdict" step enforces this structurally: it fails
+the check either way (so branch protection blocks the merge in both
+cases), but only posts a visible `REVIEW ERRORED — no verdict, see run
+logs` marker when the review step itself failed or produced no verdict
+line — never when a real verdict (either one) was posted. Any future
+review automation must preserve this distinction, not just "make the
+check red on any problem."
+
+**(k) Auto-fix trigger convention.** When a review posts `VERDICT: CHANGES
+REQUESTED`, the SAME top-level comment must end with the literal line
+`@claude address the numbered items above in this PR's branch` — this is
+what actually starts the next fix round, since `claude.yml` only reacts to
+an explicit `@claude` mention in a PR comment. Do not include this line on
+`APPROVED`. Note the mechanism this depends on: a comment posted via a
+workflow job's own default `GITHUB_TOKEN` does NOT trigger other
+workflows — GitHub deliberately suppresses that to prevent
+workflow-recursion loops — so the review step that posts this comment
+must authenticate as a real, non-default actor (a scoped PAT/bot token,
+e.g. `claude-review.yml`'s `CLAUDE_BOT_PAT` secret) or the mention will
+silently never fire. Any new automated commenter that needs to trigger a
+downstream `@claude`-triggered workflow must use the same pattern.
