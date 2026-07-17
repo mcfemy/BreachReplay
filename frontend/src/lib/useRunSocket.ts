@@ -213,6 +213,26 @@ export function useRunSocket(runId: string) {
                 edges: (delta.edges as RunEdge[]) ?? s.edges,
               };
             }
+            // Checked BEFORE the generic revealed_iocs branch below:
+            // block_ip's correct-guess delta carries `correct`/`host_id`
+            // AND (as of the resync-parity fix) its own `revealed_iocs`
+            // entry in the SAME delta — a superset of the query_logs/
+            // image_disk shape. Handling it here, not falling into that
+            // branch, is what keeps the isolation update from being
+            // silently dropped (the generic branch below never isolates).
+            if (typeof delta.correct === "boolean") {
+              // block_ip / reset_creds — only block_ip's correct guess
+              // isolates a host; reset_creds's target is a credential, not
+              // a host on the map.
+              if (delta.correct && delta.host_id) {
+                const hosts = upsertHost(s.hosts, delta.host_id as string, { isolated: true });
+                const revealedIocs = Array.isArray(delta.revealed_iocs)
+                  ? mergeIocs(s.revealedIocs, delta.revealed_iocs as RevealedIoc[])
+                  : s.revealedIocs;
+                return { ...s, hosts, revealedIocs };
+              }
+              return s;
+            }
             if (Array.isArray(delta.revealed_iocs)) {
               // query_logs or image_disk
               const hostId = delta.host_id as string;
@@ -239,15 +259,6 @@ export function useRunSocket(runId: string) {
             if (typeof delta.isolated === "boolean") {
               // isolate
               return { ...s, hosts: upsertHost(s.hosts, delta.host_id as string, { isolated: true }) };
-            }
-            if (typeof delta.correct === "boolean") {
-              // block_ip / reset_creds — only block_ip's correct guess
-              // isolates a host; reset_creds's target is a credential, not
-              // a host on the map.
-              if (delta.correct && delta.host_id) {
-                return { ...s, hosts: upsertHost(s.hosts, delta.host_id as string, { isolated: true }) };
-              }
-              return s;
             }
             // escalate_used: no host/IOC/edge change, nothing to merge.
             return s;

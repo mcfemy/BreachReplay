@@ -1,10 +1,18 @@
 # Phase 2 State — Action Console Core Loop
 
 Source of truth: `docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md` section 4 and
-`docs/PHASE2_KICKOFF.md`. **Update this file in every item PR** — on a
-merge into `phase-2-action-console` (or `main`),
-`.github/workflows/claude-dispatch.yml` reads this file to pick up the
-next item.
+`docs/PHASE2_KICKOFF.md`. **Update this file in every item PR** — it's
+the record of what's done and what's next, read by hand now rather than
+by an automated dispatcher.
+
+**Item kickoff is human-initiated, not automated** — `claude-dispatch.yml`
+(which used to auto-start the next item on PR merge) has been removed.
+It went 0 for 2 (Items 4 and 5 both merged with it silently pushing
+nothing, no error), and both those items needed a real design call
+before any code — exactly what a blind dispatch agent can't safely make.
+See `REVIEW_CRITERIA.md` (l) for the full reasoning. The reviewer
+(`claude-review.yml`) and the `@claude` auto-fix mention (`claude.yml`)
+are unaffected and still run automatically on every PR/comment.
 
 Branch: `phase-2-action-console`, off `main` (Phase 1 merged at `ee4a57b`).
 Every item lands on its own branch, PR'd into `phase-2-action-console`.
@@ -174,6 +182,21 @@ Phase 3.)
   play-throughs, mobile viewport, mid-run reconnect). Logged to
   `docs/BACKLOG.md`: add a minimal vitest setup before Phase 3–5 land
   more frontend work.
+
+**Follow-up (post-merge, found by PR #8's own review, independently
+confirmed) — `block_ip`/resync asymmetry fixed.** A correct `block_ip`
+adds its matched IOC to `discovered_ioc_keys` (so any later resync's
+`earned_state_snapshot` already includes its full body), but the LIVE
+delta only ever sent `{"correct": True, "host_id": ...}` — a reconnecting
+player would see IOC content the live delta never actually showed them.
+Confirmed not a leak (the key is genuinely earned the instant the
+correct IP is blocked); fixed for parity instead of just documenting the
+gap — `block_ip`'s delta now includes the same `revealed_iocs` entry a
+resync would, and `useRunSocket.ts`'s delta merge was reordered to
+handle that combined shape (it was about to silently drop the isolation
+update by falling into the generic `revealed_iocs` branch first). New
+test asserts live and resync content are identical, not just that
+content exists somewhere.
 
 ## After Item 5
 
