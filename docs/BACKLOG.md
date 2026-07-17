@@ -99,6 +99,12 @@ verification, not after.
 
 ## GET /daily/today's already_played/my_attempt don't see ActionRun completions
 
+**RESOLVED** — `/daily/today` now also checks `ActionRun` (read-only
+reconstruction, `_reconstruct_daily_action_attempt`) via the new
+`my_action_attempt` field, separate from the legacy `my_attempt`. See the
+Item 5 follow-up PR that fixed this alongside two `ActionConsole.tsx` bugs
+found in the same play-through. Entry kept below for history.
+
 Found while reworking `DailyBreachPage.tsx` for Item 5. `GET /daily/today`
 (`backend/app/api/routes/daily.py`) derives `already_played`/`my_attempt`
 from the `DailyAttempt` table only — the old decision-gate quiz's own
@@ -111,3 +117,34 @@ live-run lookup, DB constraint) still correctly blocks/resumes a repeat
 attempt — it's purely a "lost my results view on refresh" UX gap.
 Fixing it means teaching `/daily/today` to also check `ActionRun` for
 today's challenge; deferred out of Item 5's frontend-rework scope.
+
+## Live action runs have no durability across a backend restart/crash
+
+Found while investigating a real report: a player's abandoned ~12:30 daily
+run was expected to resume (`POST /daily/action-run` returning
+`resumed=true`) but instead behaved as if it had never existed. Read
+`action_run_store.py` end to end — `ActionRunStore._runs` is a plain
+in-process Python `dict`, with no Redis/DB backing at all. A live
+(not-yet-finalized) run exists ONLY in that dict; if the backend process
+restarts for any reason — a `--reload` pickup, a deploy, a crash, or (the
+concrete case here) an explicit `docker compose restart backend` — every
+in-progress run still short of the abandonment sweep's threshold
+(`cap_seconds + SWEEP_GRACE_SECONDS`, ~9 minutes for Daily) is silently
+destroyed: no persisted `ActionRun` row, no error, no trace. Confirmed
+directly against this run: no `action_runs` row exists for the reported
+~12:30 attempt at all (only a later, unrelated completed run for the same
+user), consistent with the abandoned run still being live — never having
+reached its 9-minute sweep window — at the moment a backend restart wiped
+it. `find_live_daily_run`'s resume logic itself was read carefully and is
+correct as written; this is not an Item 4 resume-logic bug, it's a
+durability gap in the run store's own design.
+
+Low-risk in production today (restarts are rare; most abandoned runs get
+swept within ~9 minutes of being genuinely idle first). Real risk in local
+dev, where restarts are frequent, and a real (if smaller) production risk
+across any deploy/crash. A fix means persisting live `RunState` somewhere
+that survives a process restart (Redis is the natural fit — already a
+project dependency, already used elsewhere) and rehydrating
+`ActionRunStore` from it on startup — a genuine architecture addition, not
+a bug-fix-sized change. Not attempted here; revisit before Phase 3 leans on
+longer-lived runs, or sooner if this recurs in production.

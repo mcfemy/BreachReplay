@@ -547,3 +547,103 @@ async def test_action_leaderboard_orders_by_total_score(client, db, test_user, a
     assert entries[0]["rank"] == 1
     assert entries[1]["total_score"] == 300
     assert entries[1]["rank"] == 2
+
+
+# ── GET /daily/today sees action-mode completions ────────────────────────────
+#
+# Bug: already_played/my_attempt only ever queried DailyAttempt (the legacy
+# decision-gate table) — a player who completed today's challenge through
+# the action console got no DailyAttempt row, so a page reload after
+# playing showed the lobby ("RESPOND NOW") again instead of their result.
+# These exercise the REST layer end to end via the `client`/`db` fixtures
+# (an isolated, rolled-back transaction) — appropriate here, unlike the
+# WS-handler tests above, because _reconstruct_daily_action_attempt is a
+# plain read within the same request's own session, no separate
+# AsyncSessionLocal connection involved.
+
+async def test_daily_today_sees_a_completed_action_mode_run(client, db, test_user, approved_scenario):
+    from app.models.action_run import ActionRun
+
+    # Resolve/create today's real DailyChallenge the same way the running
+    # app would (GET /today itself creates it on first hit).
+    first = await client.get("/api/v1/daily/today", headers=_auth_headers(test_user["token"]))
+    assert first.status_code == 200
+    assert first.json()["already_played"] is False
+    assert first.json()["my_action_attempt"] is None
+    challenge_id = first.json()["id"]
+
+    db.add(ActionRun(
+        user_id=test_user["user"].id, scenario_id=approved_scenario.id, daily_challenge_id=challenge_id,
+        seed=1, mode="daily", action_log=[],
+        score_breakdown={"outcome": "win", "outcome_base": 500, "evidence_points": 300, "evidence_found": 3,
+                          "evidence_total": 3, "speed_bonus": 100, "penalty_total": 0, "penalties": [],
+                          "total_score": 900, "score_pct": 100.0},
+        total_score=900, duration_seconds=250, outcome="win",
+    ))
+    await db.flush()
+
+    second = await client.get("/api/v1/daily/today", headers=_auth_headers(test_user["token"]))
+    assert second.status_code == 200
+    body = second.json()
+    assert body["already_played"] is True
+    assert body["my_attempt"] is None, "action-mode completion must never populate the legacy my_attempt field"
+    assert body["my_action_attempt"] is not None
+    assert body["my_action_attempt"]["outcome"] == "win"
+    assert body["my_action_attempt"]["score_breakdown"]["total_score"] == 900
+    assert body["my_action_attempt"]["rank"] == 1
+    assert body["my_action_attempt"]["xp_awarded"] == 0, "not replaying the one-time XP celebration on a reload"
+    assert body["my_action_attempt"]["new_achievements"] == []
+
+
+async def test_daily_today_action_attempt_rank_reflects_other_players(client, db, test_user, admin_user, approved_scenario):
+    from app.models.action_run import ActionRun
+
+    first = await client.get("/api/v1/daily/today", headers=_auth_headers(test_user["token"]))
+    challenge_id = first.json()["id"]
+
+    db.add(ActionRun(
+        user_id=test_user["user"].id, scenario_id=approved_scenario.id, daily_challenge_id=challenge_id,
+        seed=1, mode="daily", action_log=[], score_breakdown={"total_score": 300}, total_score=300,
+        duration_seconds=250, outcome="win",
+    ))
+    db.add(ActionRun(
+        user_id=admin_user["user"].id, scenario_id=approved_scenario.id, daily_challenge_id=challenge_id,
+        seed=1, mode="daily", action_log=[], score_breakdown={"total_score": 700}, total_score=700,
+        duration_seconds=250, outcome="win",
+    ))
+    await db.flush()
+
+    resp = await client.get("/api/v1/daily/today", headers=_auth_headers(test_user["token"]))
+    assert resp.json()["my_action_attempt"]["rank"] == 2, "one real player scored higher — must not be hardcoded to 1"
+
+
+async def test_daily_today_does_not_double_count_on_repeated_reads(client, db, test_user, approved_scenario):
+    """The whole point of reconstructing read-only instead of reusing
+    record_daily_action_run_result: viewing the results page (or refreshing
+    it) must never mutate total_attempts or the streak. Two reads in a row
+    after the same completed run must report the exact same numbers."""
+    from sqlalchemy import select
+    from app.models.action_run import ActionRun
+    from app.models.daily_challenge import DailyChallenge
+
+    first = await client.get("/api/v1/daily/today", headers=_auth_headers(test_user["token"]))
+    challenge_id = first.json()["id"]
+
+    db.add(ActionRun(
+        user_id=test_user["user"].id, scenario_id=approved_scenario.id, daily_challenge_id=challenge_id,
+        seed=1, mode="daily", action_log=[], score_breakdown={"total_score": 400}, total_score=400,
+        duration_seconds=250, outcome="win",
+    ))
+    await db.flush()
+
+    resp_a = await client.get("/api/v1/daily/today", headers=_auth_headers(test_user["token"]))
+    resp_b = await client.get("/api/v1/daily/today", headers=_auth_headers(test_user["token"]))
+    assert resp_a.json()["total_attempts"] == resp_b.json()["total_attempts"]
+    assert resp_a.json()["my_action_attempt"]["total_dailies_played"] == resp_b.json()["my_action_attempt"]["total_dailies_played"]
+
+    challenge_result = await db.execute(select(DailyChallenge).where(DailyChallenge.id == challenge_id))
+    challenge = challenge_result.scalar_one()
+    # This ActionRun row was written directly, never through finalize()'s
+    # record_daily_action_run_result — total_attempts must still read 0,
+    # proving neither /today call incremented it.
+    assert challenge.total_attempts == 0

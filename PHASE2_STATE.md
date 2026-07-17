@@ -198,6 +198,33 @@ update by falling into the generic `revealed_iocs` branch first). New
 test asserts live and resync content are identical, not just that
 content exists somewhere.
 
+**Follow-up (found in a live play-through of Item 5) — three real bugs
+fixed.** `ActionConsole.tsx`: (1) `handleNodeClick` cleared `targetVerb`
+after a host-targeted submit but never set `selectedHostId` — the drawer
+never opened, so paying 30-90s for a verb had no visible result until the
+player happened to tap the same host again; fixed by auto-opening the
+targeted host's drawer on submit, and (for `block_ip`/`reset_creds`, which
+have no host to auto-open on a wrong guess) a new `lastVerbResult` signal
+from `useRunSocket.ts` drives a small correct/incorrect toast instead. (2)
+The clock/stage bar could scroll out of view (a `flex-1 min-h-0` was
+missing on `ActionConsolePage.tsx`'s wrapper around `ActionConsole`,
+collapsing its `h-full` to content height instead of the viewport) and
+showed time REMAINING driven by stage count, not the actual attacker
+clock — looked frozen. Fixed: `sticky top-0` on the bar, primary number is
+now time SPENT (`attacker_clock_seconds`) against the cap, bar width
+tracks the same ratio, with stage count kept as a separate smaller
+readout. Both verified with a real Playwright pass (390px), not just read
+— screenshots confirm the drawer auto-opens with real earned IOC content,
+the toast fires correct/incorrect, and the clock bar stays visible and
+advances correctly through a scan_network -> query_logs -> block_ip
+sequence. `backend/app/api/routes/daily.py`: (3) `GET /daily/today` fixed
+per the BACKLOG entry above (`my_action_attempt`), found in the same
+play-through. Also investigated (not fixed — see BACKLOG's new
+durability entry) why an abandoned ~12:30 run couldn't resume: confirmed
+`action_run_store` has no persistence, so a backend restart while a run
+is still live (short of the ~9-minute sweep threshold) destroys it
+without a trace — not a resume-logic bug.
+
 ## After Item 5
 
 Full Phase 2 acceptance-criteria verification against

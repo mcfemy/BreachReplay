@@ -69,6 +69,18 @@ export interface RunEdge {
   target: string;
 }
 
+// Surfaced for TEXT_TARGETED_VERBS (block_ip/reset_creds) only — the two
+// verbs apply_verb's delta expresses as a top-level `correct` boolean with
+// no other guaranteed content (reset_creds never gets a host_id; block_ip
+// only gets one on a correct guess). Host-targeted verbs don't need this:
+// their result IS the host's updated detail-drawer content, which the
+// caller opens directly on submit rather than waiting for a signal here.
+export interface VerbResult {
+  verb: Verb;
+  correct: boolean;
+  hostId?: string;
+}
+
 export interface ScoreBreakdown {
   outcome: string;
   outcome_base: number;
@@ -115,6 +127,7 @@ interface RunSocketState {
   isFinalReached: boolean;
   error: string | null;
   runEnd: RunEndSummary | null;
+  lastVerbResult: VerbResult | null;
 }
 
 const INITIAL_STATE: RunSocketState = {
@@ -132,6 +145,7 @@ const INITIAL_STATE: RunSocketState = {
   isFinalReached: false,
   error: null,
   runEnd: null,
+  lastVerbResult: null,
 };
 
 function mergeIocs(existing: RevealedIoc[], incoming: RevealedIoc[]): RevealedIoc[] {
@@ -164,6 +178,14 @@ function upsertHost(hosts: HostSummary[], id: string, patch: Partial<HostSummary
 export function useRunSocket(runId: string) {
   const ws = useRef<WebSocket | null>(null);
   const [state, setState] = useState<RunSocketState>(INITIAL_STATE);
+  // Which verb the client most recently submitted — apply_verb's delta
+  // shape alone doesn't say which verb produced it, so state.delta's
+  // `correct`-boolean branch pairs the incoming result with whatever was
+  // sent last. Single WS connection, in-order request/response — always
+  // correct as long as the UI doesn't submit a second verb before the
+  // first one's delta arrives, which it can't (submit closes the
+  // target-selection UI immediately).
+  const lastSubmittedVerbRef = useRef<Verb | null>(null);
 
   useEffect(() => {
     setState(INITIAL_STATE);
@@ -224,14 +246,19 @@ export function useRunSocket(runId: string) {
               // block_ip / reset_creds — only block_ip's correct guess
               // isolates a host; reset_creds's target is a credential, not
               // a host on the map.
+              const verb = lastSubmittedVerbRef.current;
+              const hostId = delta.correct && delta.host_id ? (delta.host_id as string) : undefined;
+              const lastVerbResult: VerbResult | null = verb
+                ? { verb, correct: delta.correct as boolean, hostId }
+                : s.lastVerbResult;
               if (delta.correct && delta.host_id) {
                 const hosts = upsertHost(s.hosts, delta.host_id as string, { isolated: true });
                 const revealedIocs = Array.isArray(delta.revealed_iocs)
                   ? mergeIocs(s.revealedIocs, delta.revealed_iocs as RevealedIoc[])
                   : s.revealedIocs;
-                return { ...s, hosts, revealedIocs };
+                return { ...s, hosts, revealedIocs, lastVerbResult };
               }
-              return s;
+              return { ...s, lastVerbResult };
             }
             if (Array.isArray(delta.revealed_iocs)) {
               // query_logs or image_disk
@@ -328,6 +355,7 @@ export function useRunSocket(runId: string) {
   };
 
   const submitVerb = useCallback((verb: Verb, target?: string) => {
+    lastSubmittedVerbRef.current = verb;
     send({ type: "action.submit", verb, target });
   }, []);
 
