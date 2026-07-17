@@ -136,6 +136,19 @@ def _host_summary(host: Host) -> dict:
     }
 
 
+def _revealed_edges(compiled: CompiledRun, revealed_host_ids: frozenset) -> list[dict]:
+    """`compiled.edges` (topology only — source/target host ids, computed
+    once at compile time, never scenario content) filtered to pairs where
+    BOTH endpoints are in `revealed_host_ids`. An edge touching a host the
+    player hasn't earned yet would itself leak that host's existence, so
+    this is never sent unfiltered — same fog-of-war contract every other
+    delta in this module already enforces."""
+    return [
+        e.to_dict() for e in compiled.edges
+        if e.source in revealed_host_ids and e.target in revealed_host_ids
+    ]
+
+
 def _advance_stages(compiled: CompiledRun, world: OrgState, from_clock: int, to_clock: int) -> OrgState:
     """Apply every stage whose trigger_seconds falls in (from_clock,
     to_clock] against `world`, respecting CURRENT isolation — an isolated
@@ -243,7 +256,10 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
 
     elif verb == "scan_network":
         revealed_host_ids = frozenset(h.id for h in world.hosts)
-        delta = {"nodes": [_host_summary(h) for h in world.hosts]}
+        delta = {
+            "nodes": [_host_summary(h) for h in world.hosts],
+            "edges": _revealed_edges(run.compiled, revealed_host_ids),
+        }
 
     elif verb == "isolate":
         if not host.isolated:
@@ -323,6 +339,28 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
     )
 
     return VerbResult(run=final_run, delta=delta)
+
+
+def earned_state_snapshot(run: RunState) -> dict:
+    """Everything this player has earned so far, safe to resend in FULL on
+    reconnect (`run.resync`) — a snapshot replay of the exact same
+    fog-of-war gating `apply_verb` already enforces per-delta, not a
+    relaxation of it. Without this, a reconnecting player (the whole point
+    of Item 3's resume-by-run_id support) got clocks and an empty map,
+    losing every host/IOC they'd already revealed — found while wiring up
+    Item 5's frontend, fixed here rather than left for the UI to paper
+    over. Returns `{"hosts": [...], "revealed_iocs": [...], "edges": [...]}`;
+    every list is `[]` for a fresh, untouched run."""
+    hosts = [h for h in run.world.hosts if h.id in run.revealed_host_ids]
+    revealed_iocs = [
+        p.to_dict() for p in run.compiled.ioc_placements
+        if (p.host_id, p.rule_id) in run.discovered_ioc_keys
+    ]
+    return {
+        "hosts": [_host_summary(h) for h in hosts],
+        "revealed_iocs": revealed_iocs,
+        "edges": _revealed_edges(run.compiled, run.revealed_host_ids),
+    }
 
 
 # ── Outcome + scoring (Phase 2, Item 3) ──────────────────────────────────────

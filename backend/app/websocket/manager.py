@@ -362,15 +362,24 @@ def build_investigation_result_event(field: str, value: str, matches: list) -> d
 # and app/websocket/handlers.py's action_run_ws_handler for how these are
 # assembled from a verb_engine.apply_verb() call.
 
-def build_run_resync_event(elapsed_seconds: int, attacker_clock_seconds: int, cap_seconds: int) -> dict:
+def build_run_resync_event(
+    elapsed_seconds: int, attacker_clock_seconds: int, cap_seconds: int,
+    hosts: list, revealed_iocs: list, edges: list,
+) -> dict:
     """Sent once, right after connect — covers both a fresh run's t=0 state
-    and a reconnect resuming a live run, so the client always has a known
-    clock baseline to render from instead of guessing at t=0."""
+    and a reconnect resuming a live run. `hosts`/`revealed_iocs`/`edges`
+    (from `verb_engine.earned_state_snapshot`) carry everything this
+    player has already earned, so a reconnect actually restores what they
+    were looking at instead of just a clock baseline with an empty map —
+    all three are `[]` for a fresh, untouched run."""
     return {
         "type": "run.resync",
         "elapsed_seconds": elapsed_seconds,
         "attacker_clock_seconds": attacker_clock_seconds,
         "cap_seconds": cap_seconds,
+        "hosts": hosts,
+        "revealed_iocs": revealed_iocs,
+        "edges": edges,
         "server_time": datetime.utcnow().isoformat(),
     }
 

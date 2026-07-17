@@ -1549,10 +1549,12 @@ async def action_run_ws_handler(websocket: WebSocket, run_id: str, user_id: str)
     await manager.connect(run_id, websocket)
 
     try:
+        snapshot = verb_engine.earned_state_snapshot(live.run_state)
         await manager.send_personal(websocket, build_run_resync_event(
             live.run_state.elapsed_seconds,
             verb_engine.attacker_clock_seconds(live.run_state),
             live.cap_seconds,
+            snapshot["hosts"], snapshot["revealed_iocs"], snapshot["edges"],
         ))
 
         while True:
