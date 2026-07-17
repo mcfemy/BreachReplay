@@ -199,15 +199,42 @@ still a `REVIEW ERRORED` outcome per (j) — the fix is to reconsider the
 threshold or split the PR, not to raise the ceiling back to a flat maximum
 "just in case."
 
-**(n) Docs-only PRs skip the Claude review entirely.** A PR touching only
-`.md` files (anywhere in the tree) and/or paths under `docs/` gets a
-one-line `docs-only, review skipped` comment and a passing check — no
-Claude invocation at all, computed by `claude-review.yml`'s `Compute diff
-stats` step purely from `git diff --name-only`, before anything costs
-money. PR #12 was exactly this case — a docs-only PR that cost $0.42 and
-produced no verdict (the API-unavailable failure (j) now catches
-separately) for a diff that could never have failed a single BLOCKING
-criterion in this document, since none of them apply to prose. A PR that
-mixes doc changes with any code change is NOT docs-only and gets the full
-review as normal — this only fires when every changed file is
-documentation.
+**(n) The reviewer only runs on paths where its blocking criteria can
+actually be violated.** Every blocking criterion above lives in a small,
+specific set of files: leak safety (b) and playability (e) live in the
+verb/WS layer; determinism (c) lives in `action_engine.compile_scenario`
+and what it calls; org tabletop isolation (d) lives in
+`simulation_ws_handler`/`ConnectionManager`; server authority (f) lives in
+clock/score computation; migrations (g) is self-evidently
+`backend/migrations/`. None of these can be violated by a docs change, a
+workflow-file edit, a styling tweak, or a small route fix that doesn't
+touch the paths above — CI's independently-run test suite (i) is a
+complete, sufficient check for that class of change on its own.
+
+Concretely, `claude-review.yml`'s `Compute diff stats` step skips the
+Claude review entirely — a one-line `auto-skipped — CI is the gate`
+comment and a passing check, no Claude invocation at all — unless the
+diff touches at least one of:
+
+- `backend/app/services/` (the compiler, verb engine, mastery/XP/pipeline
+  services — where determinism and most of the domain logic live)
+- `backend/app/websocket/` (leak safety, org tabletop isolation, server
+  authority all live in the WS handlers)
+- `backend/migrations/` (criterion (g) is entirely about this directory)
+- `frontend/src/lib/*Socket*` and `frontend/src/store/` (the frontend
+  halves of leak safety and server authority — a WS hook merging a
+  server delta incorrectly, or a state store trusting a client-computed
+  value, are the frontend-side ways (b)/(f) get violated)
+
+This computation happens purely from `git diff --name-only`, before
+anything costs money. It supersedes and subsumes the narrower docs-only
+skip this criterion originally described — a docs-only PR is just one
+instance of "touches none of the reviewed paths," not a special case
+needing its own rule. PR #12 (docs-only, cost $0.42, produced no verdict —
+the API-unavailable failure (j) now catches that class separately) was
+the original motivating case; the broader rule additionally covers
+config, workflow-file, styling, and small route-fix PRs that were
+previously paying for a review that could never find anything a passing
+CI run hadn't already proven. A PR that mixes any reviewed-path change
+with unrelated files still gets the full review — this only skips when
+**none** of the changed files touch a reviewed path.
