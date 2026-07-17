@@ -61,7 +61,7 @@ class FakeWebSocket:
         self.closed_code = code
 
 
-async def _make_scenario(decision_tree=None) -> "Scenario":
+async def _make_scenario(decision_tree=None, hidden_iocs=None) -> "Scenario":
     from app.db.session import AsyncSessionLocal
     from app.models.scenario import Scenario
 
@@ -76,6 +76,7 @@ async def _make_scenario(decision_tree=None) -> "Scenario":
             status="approved",
             decision_tree=decision_tree if decision_tree is not None else _FAST_DECISION_TREE,
             alert_sequence=[],
+            hidden_iocs=hidden_iocs or [],
         )
         db.add(scenario)
         await db.commit()
@@ -128,6 +129,11 @@ async def test_fresh_connect_sends_a_run_resync_event_at_zero(request):
     assert ws.sent[0]["elapsed_seconds"] == 0
     assert ws.sent[0]["attacker_clock_seconds"] == 0
     assert ws.sent[0]["cap_seconds"] == 600  # CAP_SECONDS_BY_MODE["scenario"]
+    # Leak check: a run nobody has touched yet must resync to nothing —
+    # no host, IOC, or edge exists to earn before the first verb.
+    assert ws.sent[0]["hosts"] == []
+    assert ws.sent[0]["revealed_iocs"] == []
+    assert ws.sent[0]["edges"] == []
 
 
 async def test_action_submit_returns_state_delta_and_clock_tick():
@@ -244,3 +250,60 @@ async def test_run_over_triggers_finalize_and_a_run_end_event():
     # finalize() evicts on completion — the handler must not leave a
     # stale entry behind for a run that has already ended.
     assert await action_run_store.get(run_id) is None
+
+
+# Two hidden_iocs deliberately bound to different hosts (via
+# action_engine._place_iocs's seeded RNG) — needed so
+# test_resync_after_scan_and_query_returns_exactly_the_earned_subset can
+# assert the OTHER host's IOC never leaks into a resync that only earned
+# the first one.
+_MULTI_HOST_HIDDEN_IOCS = [
+    {"matches_on": {"ip": "185.220.101.34"}, "timestamp": "+1m", "severity": "medium",
+     "source_system": "Auth", "rule_id": "AUTH-009", "description": "Same-IP login on legacy portal",
+     "raw_log": "auth=success src_ip=185.220.101.34"},
+    {"matches_on": {"hostname": "CORP-DC-01"}, "timestamp": "+7m", "severity": "medium",
+     "source_system": "EDR", "rule_id": "EDR-030", "description": "LOLBin activity before credential dump",
+     "raw_log": "proc=certutil.exe host=CORP-DC-01"},
+]
+
+
+async def test_resync_after_scan_and_query_returns_exactly_the_earned_subset():
+    """The resync gap found during Item 5 planning: build_run_resync_event
+    used to send only clocks, so a reconnecting player lost every host/IOC
+    they'd already earned. A reconnect must restore exactly that — every
+    revealed host (scan_network reveals all at once) and the full topology
+    among them, but ONLY the IOCs actually discovered (query_logs on one
+    specific host), never another host's still-undiscovered hidden_iocs."""
+    from tests.conftest import ensure_test_user_row
+    await ensure_test_user_row("action-run-owner-8")
+    scenario = await _make_scenario(hidden_iocs=_MULTI_HOST_HIDDEN_IOCS)
+    run_id, compiled = await _start_live_run(scenario, "action-run-owner-8")
+
+    queried_placement = compiled.ioc_placements[0]
+    other_placements = [p for p in compiled.ioc_placements if p.host_id != queried_placement.host_id]
+    assert other_placements, "fixture must place IOCs on more than one host for this test to mean anything"
+
+    await action_run_store.apply_verb(run_id, "scan_network", None)
+    await action_run_store.apply_verb(run_id, "query_logs", queried_placement.host_id)
+
+    # Reconnect: a wholly separate handler call, simulating a fresh WS
+    # connection resuming this run_id (same pattern as
+    # test_reconnect_resumes_the_existing_run_state_not_a_fresh_one).
+    ws = FakeWebSocket(incoming=[])
+    await action_run_ws_handler(ws, run_id, "action-run-owner-8")
+
+    resync = ws.sent[0]
+    assert resync["type"] == "run.resync"
+
+    resynced_host_ids = {h["id"] for h in resync["hosts"]}
+    assert resynced_host_ids == {h.id for h in compiled.world.hosts}  # scan_network revealed all
+
+    assert resync["edges"] == [e.to_dict() for e in compiled.edges]  # full topology once all hosts revealed
+
+    resynced_rule_ids = {ioc["rule_id"] for ioc in resync["revealed_iocs"]}
+    assert queried_placement.rule_id in resynced_rule_ids
+    for other in other_placements:
+        assert other.rule_id not in resynced_rule_ids  # never leak an undiscovered host's IOC
+
+    async with action_run_store._lock:
+        action_run_store._runs.pop(run_id, None)

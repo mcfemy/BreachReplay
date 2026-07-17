@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { axiosInstance } from "../lib/api";
 import XPToast from "../components/XPToast";
+import ActionConsole from "../components/ActionConsole";
+import type { RunEndSummary } from "../lib/useRunSocket";
 
 // ── Daily Drill (spaced repetition on weak techniques) ──────────────────────
 interface KnowledgeCheckQuestion {
@@ -145,6 +147,20 @@ interface LeaderboardEntry {
   time_taken_seconds: number | null;
 }
 
+// Action mode's own leaderboard — GET /daily/action-leaderboard/{id},
+// ranked by action_runs.total_score. A DIFFERENT scale/table from the
+// decision-gate LeaderboardEntry above (daily.py's own module docstring:
+// "score on different scales and are never ranked against each other") —
+// never mixed with it.
+interface ActionLeaderboardEntry {
+  rank: number;
+  user_id: string;
+  display_name: string;
+  total_score: number;
+  outcome: string;
+  duration_seconds: number;
+}
+
 interface StreakData {
   current_streak: number;
   longest_streak: number;
@@ -153,63 +169,13 @@ interface StreakData {
   played_today: boolean;
 }
 
-interface ScenarioContent {
-  challenge_id: string;
-  challenge_number: number;
-  scenario_id: string;
-  title: string;
-  difficulty: string;
-  time_limit_seconds: number;
-  alert_sequence: Alert[];
-  decision_tree: Gate[];
-  pressure_injections: PressureInjection[];
-}
-
-interface Alert {
-  timestamp: string;
-  severity: string;
-  source_system: string;
-  rule_id: string;
-  description: string;
-  raw_log: string;
-}
-
-interface Gate {
-  id: string;
-  trigger_timestamp: string;
-  countdown_seconds: number;
-  context_summary: string;
-  options: { text: string; consequence_if_chosen: string }[];
-  correct_index: number;
-  rationale: string;
-  nist_control_ref: string;
-  mitre_technique: string;
-}
-
-interface PressureInjection {
-  id: string;
-  trigger_timestamp: string;
-  type: string;
-  from: string;
-  subject: string;
-  body: string;
-  countdown_seconds: number;
-}
-
-type GamePhase = "lobby" | "briefing" | "playing" | "results";
+type GamePhase = "lobby" | "playing" | "results";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 const DIFF_COLOR: Record<string, string> = {
   awareness: "text-green-400 border-green-400/30 bg-green-400/10",
   practitioner: "text-yellow-400 border-yellow-400/30 bg-yellow-400/10",
   expert: "text-red-400 border-red-400/30 bg-red-400/10",
-};
-
-const SEVERITY_COLOR: Record<string, string> = {
-  critical: "border-l-red-500 bg-red-500/5",
-  high: "border-l-orange-500 bg-orange-500/5",
-  medium: "border-l-yellow-500 bg-yellow-500/5",
-  low: "border-l-blue-500 bg-blue-500/5",
 };
 
 function formatTime(seconds: number) {
@@ -365,230 +331,128 @@ function ResultsPanel({
   );
 }
 
-// ── Main Game Component ────────────────────────────────────────────────────────
+// ── Action-mode results (Phase 2 Item 5) ─────────────────────────────────────
+// Separate from ResultsPanel above (which stays untouched for the legacy
+// decision-gate DailyAttempt shape — score_breakdown/outcome don't exist on
+// that path) rather than forcing both scoring models through one component.
 
-function DailyGame({
-  content,
-  onComplete,
+function ActionResultsPanel({
+  summary,
+  challenge,
+  leaderboard,
+  onShare,
 }: {
-  content: ScenarioContent;
-  onComplete: (decisions: any[], timeTaken: number) => void;
+  summary: RunEndSummary;
+  challenge: DailyChallenge;
+  leaderboard: ActionLeaderboardEntry[];
+  onShare: () => void;
 }) {
-  const [phase, setPhase] = useState<"alerts" | "gate">("alerts");
-  const [currentAlertIndex, setCurrentAlertIndex] = useState(0);
-  const [currentGateIndex, setCurrentGateIndex] = useState(0);
-  const [countdown, setCountdown] = useState(content.decision_tree[0]?.countdown_seconds || 60);
-  const [totalTime, setTotalTime] = useState(0);
-  const [decisions, setDecisions] = useState<any[]>([]);
-  const [, setSelectedOption] = useState<number | null>(null);
-  const [showResult, setShowResult] = useState(false);
-  const [activePressure, setActivePressure] = useState<PressureInjection | null>(null);
-  const [shownPressures, setShownPressures] = useState<Set<string>>(new Set());
-  const [choiceResult, setChoiceResult] = useState<{ correct: boolean; rationale: string; consequence: string } | null>(null);
+  const outcomeColor =
+    summary.outcome === "win" ? "text-green-400" :
+    summary.outcome === "partial" ? "text-yellow-400" : "text-red-400";
 
-  const gates = content.decision_tree;
-  const alerts = content.alert_sequence;
-  const pressures = content.pressure_injections;
+  const streak: StreakData = {
+    current_streak: summary.current_streak ?? 0,
+    longest_streak: summary.longest_streak ?? 0,
+    total_dailies_played: summary.total_dailies_played ?? 0,
+    last_played_date: null,
+    played_today: true,
+  };
 
-  const currentGate = gates[currentGateIndex];
-
-  // Global time counter
-  useEffect(() => {
-    const interval = setInterval(() => setTotalTime((t) => t + 1), 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Pressure injection trigger
-  useEffect(() => {
-    if (!currentGate) return;
-    pressures.forEach((p) => {
-      if (!shownPressures.has(p.id) && p.trigger_timestamp === currentGate.trigger_timestamp) {
-        setActivePressure(p);
-        setShownPressures((s) => new Set([...s, p.id]));
-        setTimeout(() => setActivePressure(null), 8000);
-      }
-    });
-  }, [currentGateIndex, currentGate, pressures, shownPressures]);
-
-  // Gate countdown
-  useEffect(() => {
-    if (phase !== "gate" || showResult) return;
-    if (countdown <= 0) {
-      handleChoice(-1); // time expired = wrong answer
-      return;
-    }
-    const t = setTimeout(() => setCountdown((c) => c - 1), 1000);
-    return () => clearTimeout(t);
-  }, [countdown, phase, showResult]);
-
-  // Move through alerts then go to gate
-  useEffect(() => {
-    if (phase !== "alerts") return;
-    if (currentAlertIndex >= alerts.length) {
-      setPhase("gate");
-      return;
-    }
-    const delay = currentAlertIndex === 0 ? 600 : 1200;
-    const t = setTimeout(() => setCurrentAlertIndex((i) => i + 1), delay);
-    return () => clearTimeout(t);
-  }, [currentAlertIndex, alerts.length, phase]);
-
-  const handleChoice = useCallback((optionIndex: number) => {
-    if (showResult || !currentGate) return;
-    const start = currentGate.countdown_seconds - countdown;
-    const responseTime = Math.max(1, start);
-    const isCorrect = optionIndex === currentGate.correct_index;
-    const consequence =
-      optionIndex === -1
-        ? "Time expired — decision made for you by default protocol."
-        : isCorrect
-        ? currentGate.options[optionIndex]?.consequence_if_chosen || ""
-        : currentGate.options[optionIndex]?.consequence_if_chosen || "";
-
-    setSelectedOption(optionIndex);
-    setChoiceResult({ correct: isCorrect, rationale: currentGate.rationale, consequence });
-    setShowResult(true);
-
-    const newDecision = {
-      gate_id: currentGate.id,
-      chosen_index: optionIndex,
-      correct_index: currentGate.correct_index,
-      is_correct: isCorrect,
-      response_time_seconds: responseTime,
-    };
-
-    const updatedDecisions = [...decisions, newDecision];
-    setDecisions(updatedDecisions);
-
-    setTimeout(() => {
-      setShowResult(false);
-      setSelectedOption(null);
-      setChoiceResult(null);
-
-      const nextGate = currentGateIndex + 1;
-      if (nextGate >= gates.length) {
-        onComplete(updatedDecisions, totalTime);
-      } else {
-        setCurrentGateIndex(nextGate);
-        setCountdown(gates[nextGate].countdown_seconds);
-        setPhase("alerts");
-        setCurrentAlertIndex(0);
-      }
-    }, 3500);
-  }, [showResult, currentGate, countdown, decisions, currentGateIndex, gates, totalTime, onComplete]);
+  const sb = summary.score_breakdown;
 
   return (
-    <div className="max-w-2xl mx-auto space-y-4">
-      {/* Header bar */}
-      <div className="flex items-center justify-between text-xs text-gray-500">
-        <span>Gate {currentGateIndex + 1} / {gates.length}</span>
-        <span className="font-mono text-gray-400">{formatTime(content.time_limit_seconds - totalTime)}</span>
-        <span>{decisions.filter((d) => d.is_correct).length} correct</span>
-      </div>
-      <div className="h-1 bg-gray-800 rounded-full overflow-hidden">
-        <div
-          className="h-full bg-gradient-to-r from-cyan-500 to-purple-500 transition-all"
-          style={{ width: `${((currentGateIndex) / gates.length) * 100}%` }}
-        />
-      </div>
-
-      {/* Pressure injection overlay */}
-      {activePressure && (
-        <div className="border border-red-500/50 bg-red-500/10 rounded-xl p-4 animate-pulse">
-          <div className="flex items-start gap-3">
-            <span className="text-xl">{activePressure.type === "email" ? "📧" : activePressure.type === "call" ? "📞" : activePressure.type === "news" ? "📰" : "💬"}</span>
-            <div className="flex-1 min-w-0">
-              <div className="text-xs text-red-400 font-bold uppercase tracking-widest mb-1">INCOMING {activePressure.type.toUpperCase()}</div>
-              <div className="text-sm text-gray-300 font-semibold">{activePressure.from}</div>
-              {activePressure.subject && <div className="text-xs text-gray-400 mt-0.5">"{activePressure.subject}"</div>}
-              <div className="text-xs text-gray-400 mt-1 line-clamp-2">{activePressure.body}</div>
-            </div>
+    <div className="space-y-6">
+      {/* Score hero */}
+      <div className="text-center py-8 border border-gray-800 rounded-xl bg-gray-900/50">
+        <div className="text-xs text-gray-500 uppercase tracking-widest mb-2">Daily #{challenge.challenge_number} Result</div>
+        <div className="text-7xl font-black text-white mb-1">{sb.total_score.toLocaleString()}</div>
+        <div className={`text-xl font-bold uppercase tracking-widest ${outcomeColor}`}>{summary.outcome}</div>
+        {summary.rank !== undefined && (
+          <div className="mt-4 text-gray-400 text-sm">
+            You ranked <span className="text-white font-bold">#{summary.rank}</span> today
           </div>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* Alert feed */}
-      {phase === "alerts" && (
-        <div className="space-y-2">
-          <div className="text-xs text-gray-600 uppercase tracking-widest">Incoming alerts</div>
-          {alerts.slice(0, currentAlertIndex).map((alert, i) => (
-            <div key={i} className={`border-l-2 px-3 py-2 rounded-r-lg text-xs ${SEVERITY_COLOR[alert.severity] || "border-l-gray-700 bg-gray-900/30"}`}>
-              <div className="flex items-center gap-2 mb-1">
-                <span className={`uppercase font-bold text-[10px] ${alert.severity === "critical" ? "text-red-400" : alert.severity === "high" ? "text-orange-400" : alert.severity === "medium" ? "text-yellow-400" : "text-blue-400"}`}>
-                  {alert.severity}
-                </span>
-                <span className="text-gray-600">{alert.source_system}</span>
-                <span className="text-gray-700 font-mono">{alert.timestamp}</span>
+      {/* Score breakdown */}
+      <div className="border border-gray-800 rounded-xl p-5 space-y-3 bg-gray-900/30">
+        <div className="text-xs text-gray-500 uppercase tracking-widest mb-3">Score Breakdown</div>
+        <ScoreBar label="Evidence" value={sb.evidence_points} max={Math.max(sb.evidence_points, sb.evidence_total * 100, 1)} color="bg-cyan-500" />
+        <ScoreBar label="Speed Bonus" value={sb.speed_bonus} max={Math.max(sb.speed_bonus, 1)} color="bg-purple-500" />
+        <ScoreBar label="Total" value={sb.total_score} max={Math.max(sb.total_score, sb.outcome_base + sb.evidence_total * 100, 1)} color="bg-green-500" />
+      </div>
+
+      {/* Streak */}
+      <div className="border border-gray-800 rounded-xl p-5 bg-gray-900/30">
+        <div className="text-xs text-gray-500 uppercase tracking-widest mb-4">Your Streak</div>
+        <StreakBadge streak={streak} />
+      </div>
+
+      {/* Share */}
+      <button
+        onClick={onShare}
+        className="w-full py-4 rounded-xl bg-gradient-to-r from-cyan-500 to-purple-600 hover:from-cyan-400 hover:to-purple-500 text-white font-bold text-lg transition-all active:scale-95"
+      >
+        📋 Copy Result & Share
+      </button>
+
+      {/* Action-mode leaderboard */}
+      <div className="border border-gray-800 rounded-xl overflow-hidden">
+        <div className="px-5 py-3 bg-gray-900 border-b border-gray-800 flex items-center justify-between">
+          <span className="text-xs text-gray-400 uppercase tracking-widest">Today's Leaderboard</span>
+          <span className="text-xs text-gray-600">{summary.total_attempts_today ?? challenge.total_attempts} played</span>
+        </div>
+        <div className="divide-y divide-gray-800/50">
+          {leaderboard.slice(0, 10).map((entry) => (
+            <div key={entry.user_id} className={`flex items-center gap-3 px-5 py-3 ${entry.rank <= 3 ? "bg-yellow-500/5" : ""}`}>
+              <div className={`w-7 text-center font-bold text-sm ${entry.rank === 1 ? "text-yellow-400" : entry.rank === 2 ? "text-gray-300" : entry.rank === 3 ? "text-orange-400" : "text-gray-600"}`}>
+                {entry.rank === 1 ? "🥇" : entry.rank === 2 ? "🥈" : entry.rank === 3 ? "🥉" : `#${entry.rank}`}
               </div>
-              <div className="text-gray-300">{alert.description}</div>
-              <div className="mt-1 font-mono text-[10px] text-gray-600 truncate">{alert.raw_log}</div>
+              <div className="flex-1 text-sm text-gray-300">{entry.display_name}</div>
+              <div className="text-sm font-bold text-white">{entry.total_score.toLocaleString()}</div>
+              <div className="text-xs text-gray-600 uppercase">{entry.outcome}</div>
             </div>
           ))}
         </div>
-      )}
-
-      {/* Decision gate */}
-      {phase === "gate" && currentGate && !showResult && (
-        <div className="border border-gray-700 rounded-xl overflow-hidden">
-          {/* Countdown */}
-          <div className={`px-4 py-2 flex items-center justify-between ${countdown <= 15 ? "bg-red-500/20 border-b border-red-500/30" : "bg-gray-900 border-b border-gray-800"}`}>
-            <span className="text-xs text-gray-400 uppercase tracking-widest">Decide Now</span>
-            <span className={`font-mono font-bold text-lg ${countdown <= 15 ? "text-red-400 animate-pulse" : countdown <= 30 ? "text-yellow-400" : "text-white"}`}>
-              {formatTime(countdown)}
-            </span>
-          </div>
-
-          {/* Situation */}
-          <div className="p-4 border-b border-gray-800 bg-gray-900/50">
-            <p className="text-sm text-gray-300 leading-relaxed">{currentGate.context_summary}</p>
-          </div>
-
-          {/* Options */}
-          <div className="p-4 space-y-3">
-            {currentGate.options.map((opt, i) => (
-              <button
-                key={i}
-                onClick={() => handleChoice(i)}
-                className="w-full text-left px-4 py-3 rounded-lg border border-gray-700 hover:border-cyan-500/50 hover:bg-cyan-500/5 text-sm text-gray-300 transition-all active:scale-[0.98] group"
-              >
-                <span className="inline-block w-6 h-6 rounded-full border border-gray-600 group-hover:border-cyan-500 text-center text-xs leading-6 mr-2 font-bold">
-                  {String.fromCharCode(65 + i)}
-                </span>
-                {opt.text}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Result reveal */}
-      {phase === "gate" && showResult && choiceResult && (
-        <div className={`border rounded-xl p-5 ${choiceResult.correct ? "border-green-500/50 bg-green-500/10" : "border-red-500/50 bg-red-500/10"}`}>
-          <div className={`text-lg font-bold mb-2 ${choiceResult.correct ? "text-green-400" : "text-red-400"}`}>
-            {choiceResult.correct ? "✅ Correct Call" : "❌ Wrong Call"}
-          </div>
-          <p className="text-sm text-gray-300 mb-3">{choiceResult.consequence}</p>
-          <div className="border-t border-gray-700 pt-3">
-            <div className="text-xs text-gray-500 uppercase tracking-widest mb-1">NIST Rationale</div>
-            <p className="text-xs text-gray-400">{choiceResult.rationale}</p>
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }
 
+function buildActionModeShareCard(challenge: DailyChallenge, summary: RunEndSummary): string {
+  const streakTxt = (summary.current_streak ?? 0) > 1 ? `🔥 ${summary.current_streak}-day streak` : "";
+  return [
+    `🔐 BreachReplay Daily #${challenge.challenge_number}`,
+    challenge.scenario_title,
+    `Score: ${summary.score_breakdown.total_score.toLocaleString()} — ${summary.outcome.toUpperCase()}`,
+    streakTxt,
+    "breachreplay.com/daily",
+  ].filter(Boolean).join("\n");
+}
+
 // ── Page ───────────────────────────────────────────────────────────────────────
+
+interface DailyActionRunOut {
+  run_id: string;
+  daily_challenge_id: string;
+  challenge_number: number;
+  scenario_id: string;
+  seed: number;
+  mode: string;
+  cap_seconds: number;
+  resumed: boolean;
+}
 
 export default function DailyBreachPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const [gamePhase, setGamePhase] = useState<GamePhase>("lobby");
-  const [scenarioContent, setScenarioContent] = useState<ScenarioContent | null>(null);
-  const [result, setResult] = useState<any>(null);
+  const [runId, setRunId] = useState<string | null>(null);
+  const [result, setResult] = useState<RunEndSummary | null>(null);
   const [copied, setCopied] = useState(false);
   const [midnightCountdown, setMidnightCountdown] = useState(getCountdownToMidnight());
-  const [xpToast, setXpToast] = useState<{ xp: number; leveledUp: boolean; newTierLabel: string | null; achievements: string[] } | null>(null);
+  const [xpToast, setXpToast] = useState<{ xp: number; achievements: string[] } | null>(null);
 
   // Countdown to next daily
   useEffect(() => {
@@ -606,50 +470,48 @@ export default function DailyBreachPage() {
     queryFn: () => axiosInstance.get("/daily/streak").then((r) => r.data),
   });
 
+  // Legacy decision-gate leaderboard — kept for the (increasingly rare)
+  // pre-rework DailyAttempt branch below.
   const { data: leaderboard } = useQuery<LeaderboardEntry[]>({
     queryKey: ["daily-leaderboard", challenge?.id],
     queryFn: () => axiosInstance.get(`/daily/leaderboard/${challenge!.id}`).then((r) => r.data),
     enabled: !!challenge?.id,
   });
 
-  const submitMutation = useMutation({
-    mutationFn: (payload: any) => axiosInstance.post("/daily/attempt", payload).then((r) => r.data),
-    onSuccess: (data) => {
-      setResult(data);
-      setGamePhase("results");
-      if (data.xp_earned) {
-        setXpToast({
-          xp: data.xp_earned,
-          leveledUp: !!data.leveled_up,
-          newTierLabel: data.new_tier?.label ?? null,
-          achievements: data.new_achievements ?? [],
-        });
-      }
-      qc.invalidateQueries({ queryKey: ["daily-today"] });
-      qc.invalidateQueries({ queryKey: ["daily-streak"] });
-      qc.invalidateQueries({ queryKey: ["daily-leaderboard", challenge?.id] });
-    },
+  // Action mode's own leaderboard — different scale, never merged with the
+  // one above (daily.py's own module docstring: "score on different scales
+  // and are never ranked against each other").
+  const { data: actionLeaderboard } = useQuery<ActionLeaderboardEntry[]>({
+    queryKey: ["daily-action-leaderboard", challenge?.id],
+    queryFn: () => axiosInstance.get(`/daily/action-leaderboard/${challenge!.id}`).then((r) => r.data),
+    enabled: !!challenge?.id,
   });
 
   const handleStartGame = async () => {
     if (!challenge) return;
-    const res = await axiosInstance.get(`/daily/scenario/${challenge.id}`);
-    setScenarioContent(res.data);
-    setGamePhase("playing");
+    try {
+      const res = await axiosInstance.post<DailyActionRunOut>("/daily/action-run", {});
+      setRunId(res.data.run_id);
+      setGamePhase("playing");
+    } catch (err: any) {
+      alert(err.message);
+    }
   };
 
-  const handleGameComplete = useCallback((decisions: any[], timeTaken: number) => {
-    if (!challenge) return;
-    submitMutation.mutate({
-      daily_challenge_id: challenge.id,
-      decisions,
-      time_taken_seconds: timeTaken,
-    });
-  }, [challenge, submitMutation]);
+  const handleGameComplete = useCallback((summary: RunEndSummary) => {
+    setResult(summary);
+    setGamePhase("results");
+    if (summary.xp_awarded > 0) {
+      setXpToast({ xp: summary.xp_awarded, achievements: summary.new_achievements });
+    }
+    qc.invalidateQueries({ queryKey: ["daily-today"] });
+    qc.invalidateQueries({ queryKey: ["daily-streak"] });
+    qc.invalidateQueries({ queryKey: ["daily-action-leaderboard", challenge?.id] });
+  }, [qc, challenge?.id]);
 
   const handleShare = useCallback(() => {
-    const card = result?.share_card || challenge?.my_attempt?.share_card || "";
-    navigator.clipboard.writeText(card).then(() => {
+    if (!challenge || !result) return;
+    navigator.clipboard.writeText(buildActionModeShareCard(challenge, result)).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2500);
     });
@@ -671,13 +533,21 @@ export default function DailyBreachPage() {
     );
   }
 
-  const myAttempt = result
-    ? { ...challenge.my_attempt, score: result.score, rank: result.rank, decisions_correct: result.decisions_correct, decisions_total: result.decisions_total, time_taken_seconds: result.time_taken_seconds, share_card: result.share_card }
-    : challenge.my_attempt;
-
-  const effectiveStreak: StreakData = result
-    ? { current_streak: result.current_streak, longest_streak: result.longest_streak, total_dailies_played: result.total_dailies_played, last_played_date: null, played_today: true }
-    : streak || { current_streak: 0, longest_streak: 0, total_dailies_played: 0, last_played_date: null, played_today: false };
+  // Playing phase gets the full-height action console — no lobby chrome
+  // around it, matching ActionConsolePage's own layout.
+  if (gamePhase === "playing" && runId) {
+    return (
+      <div className="h-screen flex flex-col bg-gray-950">
+        <div className="border-b border-gray-800 px-4 py-2 flex items-center justify-between shrink-0">
+          <span className="text-xs text-gray-600 uppercase tracking-widest">Daily Breach #{challenge.challenge_number}</span>
+          <span className="text-xs text-gray-600">{challenge.scenario_title}</span>
+        </div>
+        <div className="flex-1 min-h-0">
+          <ActionConsole runId={runId} onComplete={handleGameComplete} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -693,104 +563,109 @@ export default function DailyBreachPage() {
       </div>
 
       <div className="max-w-2xl mx-auto px-4 py-8">
-        {/* Playing phase */}
-        {gamePhase === "playing" && scenarioContent && (
-          <DailyGame content={scenarioContent} onComplete={handleGameComplete} />
-        )}
-
-        {/* Lobby / Results */}
-        {(gamePhase === "lobby" || gamePhase === "results") && (
-          <div className="space-y-6">
-            {/* Challenge header */}
-            <div className="text-center space-y-2">
-              <div className="text-xs text-gray-600 uppercase tracking-[0.3em]">Daily Breach #{challenge.challenge_number}</div>
-              <h1 className="text-3xl font-black text-white">{challenge.scenario_title}</h1>
-              <div className="flex items-center justify-center gap-3 flex-wrap">
-                <span className={`text-xs px-2 py-1 rounded border font-bold uppercase ${DIFF_COLOR[challenge.scenario_difficulty]}`}>
-                  {challenge.scenario_difficulty}
+        <div className="space-y-6">
+          {/* Challenge header */}
+          <div className="text-center space-y-2">
+            <div className="text-xs text-gray-600 uppercase tracking-[0.3em]">Daily Breach #{challenge.challenge_number}</div>
+            <h1 className="text-3xl font-black text-white">{challenge.scenario_title}</h1>
+            <div className="flex items-center justify-center gap-3 flex-wrap">
+              <span className={`text-xs px-2 py-1 rounded border font-bold uppercase ${DIFF_COLOR[challenge.scenario_difficulty]}`}>
+                {challenge.scenario_difficulty}
+              </span>
+              {challenge.scenario_industry && (
+                <span className="text-xs text-gray-500 border border-gray-800 px-2 py-1 rounded">
+                  {challenge.scenario_industry.toUpperCase()}
                 </span>
-                {challenge.scenario_industry && (
-                  <span className="text-xs text-gray-500 border border-gray-800 px-2 py-1 rounded">
-                    {challenge.scenario_industry.toUpperCase()}
-                  </span>
-                )}
-                <span className="text-xs text-gray-500">{challenge.gates_count} decision gates · 10 min</span>
-              </div>
+              )}
+              <span className="text-xs text-gray-500">8 min compressed run</span>
             </div>
-
-            {/* Daily Drill — optional spaced-repetition knowledge check, independent of game state */}
-            <DailyDrillSection />
-
-            {/* Already played — show results */}
-            {(challenge.already_played || gamePhase === "results") && myAttempt ? (
-              <ResultsPanel
-                attempt={myAttempt as any}
-                challenge={challenge}
-                leaderboard={leaderboard || []}
-                streak={effectiveStreak}
-                onShare={handleShare}
-              />
-            ) : (
-              <>
-                {/* Streak */}
-                {streak && (
-                  <div className="border border-gray-800 rounded-xl p-5 bg-gray-900/30">
-                    <div className="text-xs text-gray-500 uppercase tracking-widest mb-4">Your Stats</div>
-                    <StreakBadge streak={streak} />
-                  </div>
-                )}
-
-                {/* Challenge brief */}
-                <div className="border border-gray-800 rounded-xl p-5 bg-gray-900/30 space-y-3">
-                  <div className="text-xs text-gray-500 uppercase tracking-widest">Mission Brief</div>
-                  <div className="text-sm text-gray-400 leading-relaxed">
-                    You have <span className="text-white font-bold">10 minutes</span> and{" "}
-                    <span className="text-white font-bold">{challenge.gates_count} decision gates</span> to respond to today's breach.
-                    Every second counts. Every wrong call cascades.
-                  </div>
-                  {challenge.initial_access_vector && (
-                    <div className="text-xs text-gray-600">
-                      <span className="text-gray-500">Initial access: </span>{challenge.initial_access_vector}
-                    </div>
-                  )}
-                  <div className="flex items-center gap-4 text-xs text-gray-600 pt-1">
-                    <span>🌍 {challenge.total_attempts} analysts played today</span>
-                    <span>⏱ Max 10 minutes</span>
-                    <span>🎯 One shot</span>
-                  </div>
-                </div>
-
-                {/* CTA */}
-                <button
-                  onClick={handleStartGame}
-                  className="w-full py-5 rounded-xl bg-gradient-to-r from-red-600 to-orange-500 hover:from-red-500 hover:to-orange-400 text-white font-black text-xl tracking-wide transition-all active:scale-95 shadow-lg shadow-red-900/30"
-                >
-                  🚨 RESPOND NOW
-                </button>
-
-                <p className="text-center text-xs text-gray-700">
-                  You get one attempt. Results are permanent. New breach drops at midnight UTC.
-                </p>
-
-                {/* Today's leaderboard preview */}
-                {leaderboard && leaderboard.length > 0 && (
-                  <div className="border border-gray-800 rounded-xl overflow-hidden">
-                    <div className="px-4 py-3 bg-gray-900 border-b border-gray-800 text-xs text-gray-500 uppercase tracking-widest">
-                      Top Analysts Today
-                    </div>
-                    {leaderboard.slice(0, 5).map((e) => (
-                      <div key={e.user_id} className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-800/50 last:border-0">
-                        <span className="text-sm w-6">{e.rank === 1 ? "🥇" : e.rank === 2 ? "🥈" : e.rank === 3 ? "🥉" : `#${e.rank}`}</span>
-                        <span className="flex-1 text-sm text-gray-400">{e.display_name}</span>
-                        <span className="text-sm font-bold text-white">{e.score.toLocaleString()}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
           </div>
-        )}
+
+          {/* Daily Drill — optional spaced-repetition knowledge check, independent of game state */}
+          <DailyDrillSection />
+
+          {gamePhase === "results" && result ? (
+            <ActionResultsPanel
+              summary={result}
+              challenge={challenge}
+              leaderboard={actionLeaderboard || []}
+              onShare={handleShare}
+            />
+          ) : challenge.already_played && challenge.my_attempt ? (
+            // Legacy decision-gate completion (DailyAttempt row) from
+            // before this rework shipped — kept working, unmodified.
+            <ResultsPanel
+              attempt={challenge.my_attempt}
+              challenge={challenge}
+              leaderboard={leaderboard || []}
+              streak={streak || { current_streak: 0, longest_streak: 0, total_dailies_played: 0, last_played_date: null, played_today: false }}
+              onShare={() => {
+                navigator.clipboard.writeText(challenge.my_attempt!.share_card).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2500);
+                });
+              }}
+            />
+          ) : (
+            <>
+              {/* Streak */}
+              {streak && (
+                <div className="border border-gray-800 rounded-xl p-5 bg-gray-900/30">
+                  <div className="text-xs text-gray-500 uppercase tracking-widest mb-4">Your Stats</div>
+                  <StreakBadge streak={streak} />
+                </div>
+              )}
+
+              {/* Challenge brief */}
+              <div className="border border-gray-800 rounded-xl p-5 bg-gray-900/30 space-y-3">
+                <div className="text-xs text-gray-500 uppercase tracking-widest">Mission Brief</div>
+                <div className="text-sm text-gray-400 leading-relaxed">
+                  You have <span className="text-white font-bold">8 minutes</span> to scan, investigate, and
+                  contain today's breach — the network map starts empty until you scan it.
+                  Every second counts. Every wrong call costs you.
+                </div>
+                {challenge.initial_access_vector && (
+                  <div className="text-xs text-gray-600">
+                    <span className="text-gray-500">Initial access: </span>{challenge.initial_access_vector}
+                  </div>
+                )}
+                <div className="flex items-center gap-4 text-xs text-gray-600 pt-1">
+                  <span>🌍 {challenge.total_attempts} analysts played today</span>
+                  <span>⏱ Max 8 minutes</span>
+                  <span>🎯 One shot</span>
+                </div>
+              </div>
+
+              {/* CTA */}
+              <button
+                onClick={handleStartGame}
+                className="w-full py-5 rounded-xl bg-gradient-to-r from-red-600 to-orange-500 hover:from-red-500 hover:to-orange-400 text-white font-black text-xl tracking-wide transition-all active:scale-95 shadow-lg shadow-red-900/30"
+              >
+                🚨 RESPOND NOW
+              </button>
+
+              <p className="text-center text-xs text-gray-700">
+                You get one attempt. Results are permanent. New breach drops at midnight UTC.
+              </p>
+
+              {/* Today's action-mode leaderboard preview */}
+              {actionLeaderboard && actionLeaderboard.length > 0 && (
+                <div className="border border-gray-800 rounded-xl overflow-hidden">
+                  <div className="px-4 py-3 bg-gray-900 border-b border-gray-800 text-xs text-gray-500 uppercase tracking-widest">
+                    Top Analysts Today
+                  </div>
+                  {actionLeaderboard.slice(0, 5).map((e) => (
+                    <div key={e.user_id} className="flex items-center gap-3 px-4 py-2.5 border-b border-gray-800/50 last:border-0">
+                      <span className="text-sm w-6">{e.rank === 1 ? "🥇" : e.rank === 2 ? "🥈" : e.rank === 3 ? "🥉" : `#${e.rank}`}</span>
+                      <span className="flex-1 text-sm text-gray-400">{e.display_name}</span>
+                      <span className="text-sm font-bold text-white">{e.total_score.toLocaleString()}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
 
         {/* Copy toast */}
         {copied && (
@@ -803,8 +678,6 @@ export default function DailyBreachPage() {
         {xpToast && (
           <XPToast
             xp={xpToast.xp}
-            leveledUp={xpToast.leveledUp}
-            newTierLabel={xpToast.newTierLabel ?? undefined}
             achievements={xpToast.achievements}
             onDone={() => setXpToast(null)}
           />

@@ -18,7 +18,7 @@ into `phase-2-action-console`. (Found the hard way in issue #3: a cold
 cloud-runner run correctly refused to reimplement Items 0–3 from scratch
 rather than open a divergent PR, and flagged the base branch as the fix.)
 
-## Status: Items 0–4 complete. Item 5 next.
+## Status: Items 0–5 complete.
 
 ### Completed
 
@@ -54,6 +54,25 @@ rather than open a divergent PR, and flagged the base branch as the fix.)
 
 Full backend suite: 422 passed, zero regressions, as of `b9d1f72`.
 
+- **Reconnect gap found + fixed during Item 5 planning** — `run.resync`
+  (`build_run_resync_event`) sent only clocks
+  (`elapsed_seconds`/`attacker_clock_seconds`/`cap_seconds`), never the
+  player's earned world state. A reconnecting player — the exact case
+  Item 3's resume-by-`run_id` support exists for — got clocks and an
+  empty map, losing every revealed host/IOC. Fixed as part of Item 5
+  (needed before the frontend could deliver a real "resume this run"
+  experience): `verb_engine.earned_state_snapshot` +
+  `_revealed_edges` reconstruct exactly what a player has earned
+  (`revealed_host_ids`/`discovered_ioc_keys` filtered, same fog-of-war
+  gating `apply_verb` already enforces per-delta), threaded through
+  `build_run_resync_event`'s new `hosts`/`revealed_iocs`/`edges` fields.
+  `scan_network`'s own delta also gained an `edges` key (topology among
+  the hosts it just revealed) — `CompiledRun.edges` existed since the
+  compiler but was never wired to any client-facing payload before this.
+  Two new tests in `test_action_run_ws_handler.py`: a leak test (fresh
+  run resyncs to nothing) and an earned-subset test (scan + query_logs on
+  one host resyncs to every host but only that host's IOCs).
+
 - **Item 4 — Daily Breach action mode** (`d942266`, migration 0030 in
   `ca4191a`) — `backend/app/api/routes/daily.py`: `_deterministic_daily_seed`
   (SHA-256 of challenge_date+scenario_id, mirroring
@@ -86,19 +105,75 @@ Full backend suite: 439 passed, zero regressions, as of `d942266`
 exposed by this item's new AsyncSessionLocal-based tests — see that
 commit).
 
-## Item 5 — Frontend (next)
+## Item 5 — Frontend
 
-- `ActionConsole.tsx` — 8 verb chips + cost labels, targets picked by
-  tapping the network map (Phase 1's `NetworkMap.tsx`, reused), mobile-first
-  (a desktop command input is secondary sugar, not the primary path).
-- Rework `DailyBreachPage.tsx`'s gameplay section to action mode; keep the
-  existing streak/score/leaderboard chrome unchanged.
-- `SimulationRoomPage.tsx` — add "Compressed Run (10 min)" as the default
-  mode for individual users; org sessions' full tabletop flow stays
-  untouched (same isolation rule as the backend).
-- Clock UI: redacted stage-progress bar in `bleed` (design tokens from
-  Phase 1's `frontend/src/theme/tokens.ts`). Fog of war: unexamined hosts
-  render dim/unknown until earned via `scan_network`/a reveal verb.
+The automated dispatch agent that was supposed to build this ran 48 turns
+against a genuinely fresh, correctly-triggered dispatch and produced no
+branch/commit/PR at all — silently incomplete, not crashed, with no error
+in the run logs. Not retried blind; built directly instead. (Separately,
+the same dispatch agent produced nothing at all on a prior trigger too —
+0 for 2. Needs a hard-failure mode, or removal from the loop, before
+Phase 3.)
+
+- `frontend/src/lib/useRunSocket.ts` — WS hook for `/ws/run/{run_id}`,
+  mirrors `useArenaSocket.ts`'s self-contained-state pattern. Merges every
+  verb's `state.delta` shape client-side (distinguished by which keys are
+  present, matching `apply_verb`'s own branches), plus `stage.advance`'s
+  `newly_compromised_hosts` — only merged into a host already revealed to
+  this player, so a stage firing on an unrevealed host stays invisible
+  until earned, same fog-of-war contract as every backend delta.
+- `frontend/src/components/ActionConsole.tsx` — 8 verb chips + cost
+  labels, mobile-first bottom bar (no desktop command-line alternative in
+  this version — greenfield layout, no existing bottom-sheet/action-bar
+  convention existed in this codebase to match). Targets: no-target verbs
+  submit immediately, host-target verbs enter a "tap a host on the map"
+  mode (reusing Phase 1's `NetworkMap.tsx` unmodified — client-side
+  layout only, grouped by `network_segment_id`, since the backend gives
+  topology but no coordinates), free-text verbs (`block_ip`'s IP,
+  `reset_creds`'s username — neither is a host id) get an inline text
+  input. Host detail drawer shows earned IOCs/forensics/credentials per
+  host. Clock UI: `bleed`-colored stage-progress bar. Inline debrief on
+  `run.end` (outcome, score breakdown, `XPToast` reuse) — no separate
+  debrief page needed.
+- **Routing**: individual/solo scenario launches get a brand-new page +
+  route (`frontend/src/pages/ActionConsolePage.tsx` at `/run/:runId`),
+  NOT a branch inside `SimulationRoomPage.tsx` — mirrors Arena mode's own
+  precedent (`ArenaMatchPage.tsx` is its own page for its own WS system)
+  and keeps REVIEW_CRITERIA.md's isolation rule (d) unambiguous.
+  `SimulationRoomPage.tsx` and `simulation_ws_handler` are untouched by
+  Item 5. `ScenarioLibraryPage.tsx`'s `launchScenario` — previously the
+  only caller that ever created a `mode="solo"` `SimulationSession` — now
+  calls `POST /action-runs` and navigates to `/run/{run_id}` instead;
+  this alone delivers "Compressed Run (10 min) as the default mode for
+  individual users" without touching the tabletop page, since
+  `POST /action-runs` already returns `mode: "scenario"` /
+  `cap_seconds: 600`.
+- `DailyBreachPage.tsx` — gameplay section reworked to `ActionConsole`;
+  `handleStartGame` now calls `POST /daily/action-run` instead of
+  fetching decision-gate scenario content. `ResultsPanel` (legacy
+  decision-gate shape) is untouched and still renders for a pre-rework
+  `DailyAttempt` row; a new `ActionResultsPanel` handles the
+  `RunEndSummary` shape action-mode runs actually produce — kept
+  separate rather than forcing both scoring models through one component.
+  Streak/leaderboard chrome (`StreakBadge`, `CountdownClock`,
+  `DailyDrillSection`) unchanged; a new `GET /daily/action-leaderboard`
+  query feeds the new results panel (action mode's own scale, never
+  mixed with the decision-gate leaderboard).
+- Fog of war: before `scan_network`, `hosts` is empty and the map is
+  empty — that void IS the fog (not a `NetworkMap.tsx` rendering mode).
+  This is honest to what `scan_network` actually earns today but is a
+  flatter opening than the spec's "dim/unknown" language implies — logged
+  to `docs/BACKLOG.md` for the Phase 5 tone pass rather than changed here
+  (changing what `scan_network` earns is a gameplay-balance decision, not
+  a UI one).
+- **No frontend test runner exists in this repo** (`package.json` has no
+  `test` script) — `claude-review.yml`'s automated reviewer only ever
+  runs the backend suite, so it is structurally blind to this PR's actual
+  frontend content; a green backend suite here is not evidence this UI
+  works. Verified manually instead (dev server, full solo + Daily Breach
+  play-throughs, mobile viewport, mid-run reconnect). Logged to
+  `docs/BACKLOG.md`: add a minimal vitest setup before Phase 3–5 land
+  more frontend work.
 
 ## After Item 5
 
