@@ -72,6 +72,10 @@ being reviewed blind.
 
 ## AppShell's sidebar doesn't collapse on mobile — blocks phone playability
 
+**RESOLVED** — fixed in PR #11 (merged), verified via Playwright at 390px
+and 1280px. See `PHASE2_ACCEPTANCE.md` criterion 8. Entry kept below for
+history.
+
 Found while verifying Item 5's mobile-first requirement in a real 390px
 viewport (Playwright, iPhone-sized). `frontend/src/components/AppShell.tsx`
 — the shared layout wrapper every authenticated page renders inside,
@@ -96,6 +100,33 @@ page, not just the new action console, so it's deliberately left out of
 Item 5's own PR rather than rushed in at the end of an already large
 change — but it needs a real pass before Phase 2's acceptance
 verification, not after.
+
+## Idle-but-connected player never loses — attacker clock is action-gated, not real-time
+
+Found during Phase 2 acceptance verification (`PHASE2_ACCEPTANCE.md`
+criterion 3). The spec's own loop description says the attacker clock
+"advances through its real stages ... whether or not the player acts," but
+`verb_engine.RunState.elapsed_seconds` only ever advances inside
+`apply_verb` — spent as a verb cost. `action_run_ws_handler`
+(`backend/app/websocket/handlers.py:1560`) only checks/advances the clock
+inside its `while True: await websocket.receive_text()` loop, entirely
+gated on the client sending `action.submit`. A player who stays connected
+and does nothing freezes the attacker clock at 0 forever — the breach never
+progresses, contradicting the spec's stated design. The only thing that
+eventually ends such a run is the unrelated abandonment sweep
+(`action_run_store.sweep_expired`), which force-finalizes at
+`cap_seconds + SWEEP_GRACE_SECONDS` real wall-clock time (540s/9min for
+Daily, not the spec's ≤8min) with an empty `action_log` — a "loss" outcome
+with no actual narrative to debrief.
+
+Fixing this properly means adding a genuine real-time tick to each live run
+(a background per-run ticker independent of verb submission, broadcasting
+`clock.tick`/`stage.advance` to a possibly-idle socket, with clock-drift
+handling) — a real architecture addition, not a bug-fix-sized change.
+Deliberately not bundled into the Phase 2 acceptance pass that found it;
+revisit before or alongside Phase 3's juice pass, since the "creeping
+pressure bar" UX Phase 3 describes assumes the clock already moves on its
+own.
 
 ## GET /daily/today's already_played/my_attempt don't see ActionRun completions
 

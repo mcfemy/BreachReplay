@@ -459,3 +459,37 @@ def test_compute_score_loss_awards_no_speed_bonus():
     breakdown = verb_engine.compute_score(run, "loss", cap_seconds=480)
     assert breakdown["speed_bonus"] == 0
     assert breakdown["outcome_base"] == 0
+
+
+def test_five_seeded_runs_win_or_lose_by_strategy_not_luck():
+    """Spec section 4 acceptance criterion: 'a skilled run can win with time
+    to spare; a sloppy run (wrong isolations) can still partially recover
+    ... play 5 seeded runs and confirm outcomes differ meaningfully by
+    strategy, not luck.' compile_scenario(seed=N) reshuffles which hosts
+    play which role in the attack path, so this replays the same two
+    strategies (isolate the real target vs. isolate an unrelated host)
+    across 5 different compiled worlds and asserts the outcome tracks the
+    choice, not which seed happened to compile."""
+    for seed in range(1, 6):
+        compiled = _compiled(seed=seed)
+        final = _final_stage(compiled)
+        assert final.compromises_host_ids, f"seed {seed}: final stage has no target host"
+        target_host_id = final.compromises_host_ids[0]
+
+        skilled_run = verb_engine.new_run(compiled)
+        skilled_run = verb_engine.apply_verb(skilled_run, "isolate", target_host_id).run
+        skilled_run = _run_clock_past(skilled_run, final.trigger_seconds)
+        assert verb_engine.determine_outcome(skilled_run) == "win", (
+            f"seed {seed}: isolating the real target before it fires should win"
+        )
+
+        attack_path = verb_engine._attack_path_host_ids(compiled)
+        off_path_host = next((h for h in compiled.world.hosts if h.id not in attack_path), None)
+        assert off_path_host is not None, f"seed {seed}: scenario has no off-attack-path host to test with"
+
+        sloppy_run = verb_engine.new_run(compiled)
+        sloppy_run = verb_engine.apply_verb(sloppy_run, "isolate", off_path_host.id).run
+        sloppy_run = _run_clock_past(sloppy_run, final.trigger_seconds)
+        assert verb_engine.determine_outcome(sloppy_run) != "win", (
+            f"seed {seed}: isolating an unrelated host while the real target fires unopposed should not win"
+        )
