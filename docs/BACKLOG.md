@@ -39,3 +39,24 @@ Phase 2 Item 3 wires exactly this pattern in for action-mode runs
 gap is pre-existing and untouched by Phase 2 (per the org-tabletop
 isolation rule — see `REVIEW_CRITERIA.md`); fixing it is a separate,
 future change, not bundled into Phase 2 item work.
+
+## `POST /learning/knowledge-check/{id}/attempt` has no re-submission guard
+
+Found while fixing the Daily Drill "Next repeats the same question" bug
+(`backend/app/api/routes/learning.py`). Structurally the same shape as the
+`/teaser/answer` bug documented in
+`docs/PHASE1_ANSWER_IDEMPOTENCY_HANDOFF.md` — a mutation endpoint with no
+guard against being called more than once for the same logical action — but
+NOT the cause of the Daily Drill bug (that was `get_next_knowledge_check`
+never excluding a just-answered question; fixed separately) and not
+currently harmful: a repo-wide search confirms `UserKnowledgeCheckAttempt`
+rows are written here and never read anywhere else in the backend, so a
+duplicate submission today has no observable effect on score, mastery, or
+any metric. Unlike teaser (a one-time landing-page decision), this endpoint
+is legitimately re-answerable by design — spaced repetition means the same
+question should be able to resurface and be re-attempted on a later day — so
+a blind "first-answer-wins forever" guard (teaser's fix) would be actively
+wrong here. If this table ever grows a real reader (e.g. drill attempts
+start feeding `mastery_service` — see the fix commit's docstring for why
+they currently don't), revisit with a debounce-style guard scoped to a short
+time window instead.

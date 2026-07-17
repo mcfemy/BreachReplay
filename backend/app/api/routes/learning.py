@@ -40,6 +40,25 @@ async def get_next_knowledge_check(
         key=lambda tid: technique_mastery[tid]["accuracy_pct"],
     )
 
+    # compute_user_mastery is driven by SessionDecision/RedTeamMove history,
+    # not by knowledge-check attempts (drilling a question doesn't change its
+    # own technique's accuracy_pct) — so a user's weakest technique stays
+    # exactly where it was before and after answering. Most seeded techniques
+    # have exactly one KnowledgeCheck row, so without this exclusion "Next"
+    # would hand back the very question just answered, every time, forever.
+    # Excluding only the single most recent attempt is enough to break that:
+    # it forces a different question (from this technique if it has more than
+    # one, otherwise the next-weakest technique, or the fallback pool) without
+    # blocking a question from legitimately resurfacing later, which spaced
+    # repetition depends on.
+    last_attempt_result = await db.execute(
+        select(UserKnowledgeCheckAttempt.knowledge_check_id)
+        .where(UserKnowledgeCheckAttempt.user_id == current_user.id)
+        .order_by(UserKnowledgeCheckAttempt.created_at.desc())
+        .limit(1)
+    )
+    excluded_ids = {row[0] for row in last_attempt_result.all()}
+
     question = None
 
     # Try weakest techniques first, in order of ascending accuracy.
@@ -47,15 +66,22 @@ async def get_next_knowledge_check(
         result = await db.execute(
             select(KnowledgeCheck).where(KnowledgeCheck.technique_id == technique_id)
         )
-        candidates = result.scalars().all()
+        candidates = [c for c in result.scalars().all() if c.id not in excluded_ids]
         if candidates:
             question = random.choice(candidates)
             break
 
-    # Fallback: no mastery data yet, or no question matches any weak technique.
+    # Fallback: no mastery data yet, no question matches any weak technique,
+    # or every candidate for the weakest technique(s) was just excluded.
     if question is None:
         result = await db.execute(select(KnowledgeCheck))
-        candidates = result.scalars().all()
+        all_checks = result.scalars().all()
+        candidates = [c for c in all_checks if c.id not in excluded_ids]
+        if not candidates:
+            # Every question (including the excluded one) has been exhausted
+            # — only possible with a single-question bank. Allow the repeat
+            # rather than 404ing a user who legitimately has nothing else.
+            candidates = all_checks
         if not candidates:
             raise HTTPException(status_code=404, detail="No knowledge checks available")
         question = random.choice(candidates)
