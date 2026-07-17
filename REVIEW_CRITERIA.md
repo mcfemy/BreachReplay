@@ -148,3 +148,24 @@ ran its full turn budget and posted nothing, no error). Before adding any
 token override to fix a "mention didn't fire" problem, check the actual
 comment author on a run that DID post successfully — don't assume which
 token was in play.
+
+**(l) Item kickoff is human-initiated, not automated.** There used to be
+a `claude-dispatch.yml` that auto-started the next Phase 2 item on PR
+merge — removed. It went 0 for 2: on both Item 4's and Item 5's merges it
+ran to completion, reported success, and pushed no branch, no commit, no
+PR — silently, with no error anywhere in the run logs, structurally
+indistinguishable from "nothing to do" without checking by hand. Items 4
+and 5 both turned out to require a real design call *before* any code
+could be written (Item 4: the daily-challenge seed/leaderboard model;
+Item 5: whether solo-run routing lived in `SimulationRoomPage.tsx` or a
+new page, and the `run.resync` earned-state gap found only by tracing the
+actual WS contract) — exactly the kind of judgment a blind, unattended
+agent has no way to make safely, and its silent-nothing record on both
+suggests the *abstraction* was wrong, not just a bug in the workflow file
+worth patching. The reviewer (`claude-review.yml`) and the `@claude`
+auto-fix mention (`claude.yml`, criterion (k)) are unaffected by this —
+both are mechanical, narrowly-scoped, and have now run correctly for
+real. If a fully-automated next-item dispatcher is reintroduced later, it
+must fail the job loudly whenever it completes without pushing a branch —
+"ran successfully and did nothing" must never again be a silent,
+indistinguishable-from-idle outcome.
