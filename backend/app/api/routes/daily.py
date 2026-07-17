@@ -67,6 +67,16 @@ class DailyChallengeOut(BaseModel):
     total_attempts: int
     already_played: bool
     my_attempt: Optional[dict] = None
+    # Populated instead of (never alongside) my_attempt when today's
+    # challenge was completed through the action-console path — a
+    # RunEndSummary-shaped reconstruction (see
+    # _reconstruct_daily_action_attempt), not a DailyAttempt row. Kept as
+    # its own field rather than overloading my_attempt's shape: the two
+    # play paths score on different scales and the frontend renders them
+    # through entirely different result panels (ResultsPanel vs
+    # ActionResultsPanel) — conflating the shapes would make one of those
+    # panels crash on the other path's fields.
+    my_action_attempt: Optional[dict] = None
 
 
 class LeaderboardEntry(BaseModel):
@@ -258,6 +268,50 @@ def _deterministic_daily_seed(challenge_date: date, scenario_id: str) -> int:
     return int.from_bytes(h[:4], "big") % (2**31 - 1)
 
 
+async def _reconstruct_daily_action_attempt(db: AsyncSession, challenge: DailyChallenge, run: ActionRun) -> dict:
+    """Read-only reconstruction of a RunEndSummary-shaped payload for a
+    completed action-mode daily run, for `/daily/today` to hand the
+    frontend on a page load/reload — deliberately NOT a call to
+    `record_daily_action_run_result` (that function mutates
+    `challenge.total_attempts`/`avg_score`/the streak row and must run
+    exactly once, at the run's actual completion; calling it again here
+    would double-count every time this GET endpoint is hit). `rank` and
+    the streak fields are recomputed via plain reads instead — safe to
+    call as often as the page reloads, and `rank` in particular SHOULD be
+    live (other players' scores keep coming in after this run finished).
+
+    `xp_awarded`/`new_achievements` are deliberately zeroed/emptied — that
+    one-time celebration was already shown live at the run's actual
+    run.end; a reload isn't a second completion and shouldn't replay it.
+    """
+    better_count = await db.scalar(
+        select(func.count()).select_from(ActionRun).where(
+            ActionRun.daily_challenge_id == challenge.id,
+            ActionRun.total_score > run.total_score,
+        )
+    )
+    rank = (better_count or 0) + 1
+
+    streak_result = await db.execute(select(UserStreak).where(UserStreak.user_id == run.user_id))
+    streak = streak_result.scalar_one_or_none()
+
+    return {
+        "action_run_id": run.id,
+        "outcome": run.outcome,
+        "score_breakdown": run.score_breakdown,
+        "xp_awarded": 0,
+        "new_achievements": [],
+        "daily_challenge_id": challenge.id,
+        "challenge_number": challenge.challenge_number,
+        "rank": rank,
+        "current_streak": streak.current_streak if streak else 0,
+        "longest_streak": streak.longest_streak if streak else 0,
+        "total_dailies_played": streak.total_dailies_played if streak else 0,
+        "total_attempts_today": challenge.total_attempts,
+        "avg_score_today": round(challenge.avg_score or 0),
+    }
+
+
 async def record_daily_action_run_result(
     db: AsyncSession, daily_challenge_id: str, user_id: str, total_score: int,
 ) -> dict:
@@ -360,6 +414,25 @@ async def get_today_challenge(
             "share_card": share_card,
         }
 
+    # Action-mode completion — a player who played today's challenge
+    # through the action console has no DailyAttempt row at all (that
+    # table belongs solely to the legacy decision-gate path); without this
+    # check, already_played/my_attempt were blind to it, so a page reload
+    # after finishing an action-mode run showed the lobby ("Start") again
+    # instead of the result the player had just earned.
+    my_action_attempt_data = None
+    if my_attempt is None:
+        action_run_result = await db.execute(
+            select(ActionRun).where(
+                ActionRun.daily_challenge_id == challenge.id,
+                ActionRun.user_id == current_user.id,
+                ActionRun.mode == "daily",
+            )
+        )
+        action_run = action_run_result.scalar_one_or_none()
+        if action_run is not None:
+            my_action_attempt_data = await _reconstruct_daily_action_attempt(db, challenge, action_run)
+
     gates = scenario.decision_tree or []
 
     return DailyChallengeOut(
@@ -373,8 +446,9 @@ async def get_today_challenge(
         initial_access_vector=scenario.initial_access_vector,
         gates_count=min(len(gates), DAILY_GATE_LIMIT),
         total_attempts=challenge.total_attempts,
-        already_played=my_attempt is not None,
+        already_played=my_attempt is not None or my_action_attempt_data is not None,
         my_attempt=my_attempt_data,
+        my_action_attempt=my_action_attempt_data,
     )
 
 

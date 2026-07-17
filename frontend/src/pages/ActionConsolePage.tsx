@@ -17,7 +17,14 @@ export default function ActionConsolePage() {
 
   return (
     <div className="h-[calc(100vh-0px)] flex flex-col">
-      <ActionConsole runId={runId} />
+      {/* flex-1 min-h-0 — without both, this slot sizes to ActionConsole's
+          own content height instead of the remaining viewport space, which
+          breaks its internal h-full and turns the whole page into one long
+          scroll (verb chips pushed below the fold, clock bar's sticky
+          having to fight a much taller scroll region than necessary). */}
+      <div className="flex-1 min-h-0">
+        <ActionConsole runId={runId} />
+      </div>
       <div className="shrink-0 p-3 bg-panel border-t border-dim/20 text-center">
         <button
           onClick={() => navigate("/scenarios")}

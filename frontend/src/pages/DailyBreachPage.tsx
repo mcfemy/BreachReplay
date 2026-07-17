@@ -135,6 +135,13 @@ interface DailyChallenge {
     time_taken_seconds: number;
     share_card: string;
   } | null;
+  // Set instead of (never alongside) my_attempt when today's challenge was
+  // completed through the action console — a read-only RunEndSummary
+  // reconstruction from the persisted ActionRun row, built fresh on every
+  // /daily/today load (see backend's _reconstruct_daily_action_attempt).
+  // xp_awarded/new_achievements are always 0/[] here — that celebration
+  // already played once, live, at the run's actual completion.
+  my_action_attempt: RunEndSummary | null;
 }
 
 interface LeaderboardEntry {
@@ -590,6 +597,22 @@ export default function DailyBreachPage() {
               challenge={challenge}
               leaderboard={actionLeaderboard || []}
               onShare={handleShare}
+            />
+          ) : challenge.already_played && challenge.my_action_attempt ? (
+            // Action-mode completion, discovered on page load/reload rather
+            // than lived through this session (result/gamePhase reset on
+            // every mount) — same panel, backend-reconstructed data instead
+            // of the live run.end payload.
+            <ActionResultsPanel
+              summary={challenge.my_action_attempt}
+              challenge={challenge}
+              leaderboard={actionLeaderboard || []}
+              onShare={() => {
+                navigator.clipboard.writeText(buildActionModeShareCard(challenge, challenge.my_action_attempt!)).then(() => {
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2500);
+                });
+              }}
             />
           ) : challenge.already_played && challenge.my_attempt ? (
             // Legacy decision-gate completion (DailyAttempt row) from

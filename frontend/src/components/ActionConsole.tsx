@@ -11,6 +11,7 @@ import {
   type Verb,
   type HostSummary,
   type RunEndSummary,
+  type VerbResult,
 } from "../lib/useRunSocket";
 
 /**
@@ -89,6 +90,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   const [textInput, setTextInput] = useState("");
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
   const [xpVisible, setXpVisible] = useState(false);
+  const [resultToast, setResultToast] = useState<VerbResult | null>(null);
 
   useEffect(() => {
     if (run.runEnd) {
@@ -98,6 +100,22 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     // Fire once per completed run — run.runEnd only ever transitions null -> summary.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.runEnd]);
+
+  useEffect(() => {
+    // Surfaces block_ip/reset_creds outcomes — the only verbs that submit
+    // without a host tap the drawer can react to on its own. A correct
+    // block_ip also earns a host_id (isolation + its IOC), so that host's
+    // drawer opens too, same as the host-targeted path below — the point
+    // in both cases is that paying for a verb always has an immediate,
+    // visible consequence, never a silent state change the player has to
+    // go dig for.
+    if (!run.lastVerbResult) return;
+    setResultToast(run.lastVerbResult);
+    if (run.lastVerbResult.hostId) setSelectedHostId(run.lastVerbResult.hostId);
+    const timer = setTimeout(() => setResultToast(null), 3500);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.lastVerbResult]);
 
   const nodes = layoutHosts(run.hosts);
   const nodeStates: Record<string, NodeState> = {};
@@ -124,6 +142,12 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     if (targetVerb) {
       run.submitVerb(targetVerb, hostId);
       setTargetVerb(null);
+      // Auto-open this host's drawer — the verb's result (revealed IOCs,
+      // forensics, credentials, or just the isolation state) IS the drawer
+      // content, and it renders reactively as the delta arrives. Without
+      // this, paying 30-90s for a verb had no visible effect until the
+      // player happened to tap the same host again.
+      setSelectedHostId(hostId);
       return;
     }
     setSelectedHostId(hostId);
@@ -141,24 +165,49 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   }
 
   const selectedHost = run.hosts.find((h) => h.id === selectedHostId) ?? null;
+  // Time SPENT, not time remaining — this is a budget the player is
+  // drawing down with every verb, not a countdown running on its own; the
+  // bar tracks the same number so it visibly moves on every submit instead
+  // of only jumping when a stage happens to fire.
+  const timeSpent = Math.min(run.attackerClockSeconds, run.capSeconds || run.attackerClockSeconds);
+  const clockProgress = run.capSeconds > 0 ? timeSpent / run.capSeconds : 0;
   const capRemaining = Math.max(0, run.capSeconds - run.attackerClockSeconds);
-  const stageProgress = run.totalStages > 0 ? run.stagesFired / run.totalStages : 0;
+  const nearCap = run.capSeconds > 0 && capRemaining <= 60;
 
   return (
     <div className="flex flex-col h-full bg-void text-white font-body">
-      {/* Clock / stage-progress bar — redacted (no stage names/targets), just length + time */}
-      <div className="shrink-0 px-4 pt-3 pb-2 border-b border-dim/20">
+      {/* Clock / stage bar — sticky so it can never scroll out of view once
+          the map/drawer/chip bar push the page taller than the viewport. */}
+      <div className="sticky top-0 z-20 shrink-0 px-4 pt-3 pb-2 border-b border-dim/20 bg-void">
         <div className="flex items-center justify-between text-xs font-term text-dim mb-1">
           <span>ATTACKER CLOCK</span>
-          <span className={capRemaining <= 60 ? "text-bleed" : "text-dim"}>{formatClock(capRemaining)} remaining</span>
+          <span className={nearCap ? "text-bleed" : "text-dim"}>
+            {formatClock(timeSpent)} / {formatClock(run.capSeconds)} spent
+          </span>
         </div>
         <div className="h-2 rounded-full bg-panel overflow-hidden">
           <div
             className="h-full bg-bleed transition-all duration-500"
-            style={{ width: `${Math.min(100, stageProgress * 100)}%` }}
+            style={{ width: `${Math.min(100, clockProgress * 100)}%` }}
           />
         </div>
+        <div className="flex items-center justify-between text-[9px] font-term text-dim/70 mt-1.5">
+          <span>STAGES</span>
+          <span>{run.stagesFired} / {run.totalStages}</span>
+        </div>
       </div>
+
+      {resultToast && (
+        <div
+          className={`shrink-0 px-4 py-2 text-xs font-term uppercase tracking-widest border-b ${
+            resultToast.correct
+              ? "text-contain bg-contain/10 border-contain/30"
+              : "text-bleed bg-bleed/10 border-bleed/30"
+          }`}
+        >
+          {VERB_LABELS[resultToast.verb]}: {resultToast.correct ? "Correct" : "Incorrect"}
+        </div>
+      )}
 
       {run.error && (
         <div className="shrink-0 px-4 py-2 text-xs text-bleed bg-bleed/10 border-b border-bleed/30">
