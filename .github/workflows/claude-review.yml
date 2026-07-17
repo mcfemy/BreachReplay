@@ -18,9 +18,17 @@ name: Claude PR Review
 #   - --max-turns scales to the diff size (15 default, 50 only past ~400
 #     changed lines) instead of a flat 50 for every PR — two runaway
 #     reviews on PR #5 burned real money producing nothing before this.
-#   - Docs-only PRs (only .md files / docs/) skip the Claude review
-#     entirely — a one-line skip comment passes the gate for free. PR #12
-#     (a docs-only PR) cost $0.42 and produced no verdict before this.
+#   - The review is SKIPPED ENTIRELY unless the diff touches one of the
+#     small set of paths where REVIEW_CRITERIA.md's blocking criteria
+#     (leak safety, determinism, org-tabletop isolation, playability) can
+#     actually be violated: backend/app/services/, backend/app/websocket/,
+#     backend/migrations/, or frontend WS/state handling
+#     (frontend/src/lib/*Socket*, frontend/src/store/). Everywhere else —
+#     docs, config, workflows, styling, small route fixes — passes on CI
+#     alone; a one-line "auto-skipped — CI is the gate" comment passes the
+#     gate for free. PR #12 (a docs-only PR, which this rule also covers)
+#     cost $0.42 and produced no verdict before this. REVIEW_CRITERIA.md
+#     (n) has the full path list and reasoning.
 #   - A cheap 1-turn preflight call runs before the real review to detect
 #     "the Claude API itself is unreachable" (billing/auth/quota) and
 #     report that distinctly from a genuine review failure — see
@@ -85,10 +93,11 @@ jobs:
       - name: Compute diff stats
         id: diffstats
         # Pure git — no Python needed. Decides two things purely from the
-        # diff's shape, before anything costs money: whether this PR is
-        # docs-only (skip Claude entirely — see REVIEW_CRITERIA.md (n)),
-        # and how large a turn budget the real review gets if it does run
-        # (REVIEW_CRITERIA.md (m)).
+        # diff's shape, before anything costs money: whether this PR
+        # touches any path REVIEW_CRITERIA.md's blocking criteria can
+        # actually apply to (skip Claude entirely otherwise — see
+        # REVIEW_CRITERIA.md (n)), and how large a turn budget the real
+        # review gets if it does run (REVIEW_CRITERIA.md (m)).
         run: |
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
@@ -98,12 +107,20 @@ jobs:
             | grep -oE '[0-9]+ (insertion|deletion)' | grep -oE '[0-9]+' \
             | awk '{sum+=$1} END {print sum+0}')
 
-          DOCS_ONLY=true
+          # Reviewed paths — where leak safety, determinism, org-tabletop
+          # isolation, and playability (REVIEW_CRITERIA.md's blocking
+          # criteria) can actually be violated. frontend/src/lib/*Socket*
+          # covers every WS hook across both branches (useArenaSocket.ts,
+          # useArenaSpectatorSocket.ts, useSimulationSocket.ts, and
+          # phase-2-action-console's useRunSocket.ts, which doesn't exist
+          # on main yet); frontend/src/store/ is the zustand state layer.
+          SKIP_REVIEW=true
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             case "$f" in
-              *.md|docs/*) ;;
-              *) DOCS_ONLY=false ;;
+              backend/app/services/*|backend/app/websocket/*|backend/migrations/*|frontend/src/lib/*Socket*|frontend/src/store/*)
+                SKIP_REVIEW=false
+                ;;
             esac
           done <<< "$CHANGED_FILES"
 
@@ -112,15 +129,15 @@ jobs:
 
           echo "Changed files:"
           echo "$CHANGED_FILES"
-          echo "changed_lines=$CHANGED_LINES docs_only=$DOCS_ONLY max_turns=$MAX_TURNS"
+          echo "changed_lines=$CHANGED_LINES skip_review=$SKIP_REVIEW max_turns=$MAX_TURNS"
 
-          echo "docs_only=$DOCS_ONLY" >> "$GITHUB_OUTPUT"
+          echo "skip_review=$SKIP_REVIEW" >> "$GITHUB_OUTPUT"
           echo "changed_lines=$CHANGED_LINES" >> "$GITHUB_OUTPUT"
           echo "max_turns=$MAX_TURNS" >> "$GITHUB_OUTPUT"
 
       - name: Wait for CI's test check
         id: wait_ci
-        if: steps.diffstats.outputs.docs_only != 'true'
+        if: steps.diffstats.outputs.skip_review != 'true'
         # ci.yml runs on the same `pull_request` trigger as this workflow
         # and starts at roughly the same time — polls rather than assuming
         # it's already finished. Treats "no check run yet" the same as
@@ -159,7 +176,7 @@ jobs:
 
       - name: "Preflight: verify the Claude API is reachable"
         id: preflight
-        if: steps.diffstats.outputs.docs_only != 'true' && steps.wait_ci.outputs.ci_conclusion == 'success'
+        if: steps.diffstats.outputs.skip_review != 'true' && steps.wait_ci.outputs.ci_conclusion == 'success'
         # Cheapest possible real call (1 turn, no tools) before committing
         # to the full review's turn budget. Exists specifically to catch
         # "the API is down/out of credit/unauthorized" BEFORE spending
@@ -181,7 +198,7 @@ jobs:
 
       - name: Check preflight result
         id: preflight_check
-        if: steps.diffstats.outputs.docs_only != 'true' && steps.wait_ci.outputs.ci_conclusion == 'success'
+        if: steps.diffstats.outputs.skip_review != 'true' && steps.wait_ci.outputs.ci_conclusion == 'success'
         # claude-code-action@v1 writes its execution result JSON to this
         # path (confirmed directly from run logs on PR #12/#14: "Log saved
         # to /home/runner/work/_temp/claude-execution-output.json").
@@ -232,7 +249,7 @@ jobs:
 
       - name: Claude PR Review
         id: claude_review
-        if: steps.diffstats.outputs.docs_only != 'true' && steps.wait_ci.outputs.ci_conclusion == 'success' && steps.preflight_check.outputs.available == 'true'
+        if: steps.diffstats.outputs.skip_review != 'true' && steps.wait_ci.outputs.ci_conclusion == 'success' && steps.preflight_check.outputs.available == 'true'
         # Let a hard failure of this step (auth error, crash, the
         # max-turns cap being hit) fall through to the gate step below
         # instead of failing the job here directly — that step needs to
@@ -350,8 +367,8 @@ jobs:
         # place that decides pass/fail and posts every terminal status
         # comment, so there is exactly one source of truth for what this
         # check's red/green means. Four distinguishable outcomes now
-        # (REVIEW_CRITERIA.md (i)/(j)/(m)/(n)): docs-only skip (pass, no
-        # Claude spent), CI red (fail, no Claude spent), Claude API
+        # (REVIEW_CRITERIA.md (i)/(j)/(m)/(n)): out-of-scope-path skip
+        # (pass, no Claude spent), CI red (fail, no Claude spent), Claude API
         # unavailable (fail, clearly NOT a PR problem), and the original
         # two (a real verdict, or a genuine dead-review error). Deliberately
         # uses the default token, not CLAUDE_BOT_PAT — nothing this step
@@ -363,9 +380,9 @@ jobs:
           set -e
           PR=${{ github.event.pull_request.number }}
 
-          if [ "${{ steps.diffstats.outputs.docs_only }}" = "true" ]; then
-            echo "Docs-only PR — passing without a Claude review."
-            gh pr comment "$PR" --body "docs-only, review skipped"
+          if [ "${{ steps.diffstats.outputs.skip_review }}" = "true" ]; then
+            echo "Diff doesn't touch a reviewed path — passing on CI alone, no Claude spent."
+            gh pr comment "$PR" --body "auto-skipped — CI is the gate"
             exit 0
           fi
 
