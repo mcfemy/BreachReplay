@@ -202,13 +202,29 @@ jobs:
             exit 0
           fi
 
-          IS_ERROR=$(jq -r '.is_error // false' "$OUT_FILE")
-          COST=$(jq -r '.total_cost_usd // 0' "$OUT_FILE")
-          TURNS=$(jq -r '.num_turns // 0' "$OUT_FILE")
-          DURATION=$(jq -r '.duration_ms // 0' "$OUT_FILE")
+          # The file is a JSON ARRAY of the full streamed SDK message log
+          # (system/init, assistant turns, final result — one array element
+          # per message), NOT a single flat result object; the final
+          # "result"-type message is what carries is_error/cost/turns.
+          # Confirmed the hard way: an earlier version of this step assumed
+          # a flat object and crashed with "Cannot index array with string"
+          # on its first real run. `// empty` short-circuits every field to
+          # "unavailable" if the result message is missing entirely, rather
+          # than letting jq's own error propagate and kill the step again.
+          RESULT_MSG=$(jq -c '[.[]? // empty | select(.type=="result")] | last // empty' "$OUT_FILE" 2>/dev/null || echo "")
+          if [ -z "$RESULT_MSG" ]; then
+            echo "No 'result' message found in preflight output — treating as unavailable."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          IS_ERROR=$(echo "$RESULT_MSG" | jq -r '.is_error // false')
+          COST=$(echo "$RESULT_MSG" | jq -r '.total_cost_usd // 0')
+          TURNS=$(echo "$RESULT_MSG" | jq -r '.num_turns // 0')
+          DURATION=$(echo "$RESULT_MSG" | jq -r '.duration_ms // 0')
           echo "Preflight: is_error=$IS_ERROR cost=$COST turns=$TURNS duration_ms=$DURATION"
 
-          if [ "$IS_ERROR" = "true" ] && [ "$COST" = "0" ] && [ "$TURNS" -le 1 ] && [ "$DURATION" -lt 5000 ]; then
+          if [ "$IS_ERROR" = "true" ] && [ "$COST" = "0" ] && [ "${TURNS:-0}" -le 1 ] && [ "${DURATION:-0}" -lt 5000 ]; then
             echo "available=false" >> "$GITHUB_OUTPUT"
           else
             echo "available=true" >> "$GITHUB_OUTPUT"
