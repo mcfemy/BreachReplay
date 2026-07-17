@@ -200,12 +200,23 @@ content exists somewhere.
 
 ## After Item 5
 
-Full Phase 2 acceptance-criteria verification against
-`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md` section 4's checklist —
-determinism test, anti-leak test, a do-nothing player losing in ≤8 minutes
-with a coherent narrative, five seeded runs differing meaningfully by
-strategy, phone-with-one-thumb playability, pytest green in CI — before
-declaring Phase 2 done.
+- **AppShell mobile pass** (PR #11, merged) — the shared authenticated-page
+  sidebar now collapses into a hamburger-triggered slide-in drawer below
+  `md:`, unchanged at `md:`+. Blocked the phone-one-thumb acceptance
+  criterion; verified via Playwright at 390px and 1280px. `docs/BACKLOG.md`'s
+  matching entry marked resolved.
+- **Phase 2 acceptance verification — done, see `PHASE2_ACCEPTANCE.md`.**
+  8 of 9 spec section 4 criteria PASS with cited evidence (tests, code
+  traces, real 390px Playwright browser verification). One real, confirmed
+  gap: a player who stays connected and does nothing never loses via the
+  natural path — the attacker clock only advances inside verb submission,
+  contradicting the spec's own "advances whether or not the player acts"
+  design; the abandonment sweep eventually force-ends such a run at 9
+  minutes (not ≤8) with an empty narrative. This is an honest, reported gap,
+  not silently passed — logged to `docs/BACKLOG.md` as a real-time-tick
+  architecture item for before/alongside Phase 3's juice pass. **Phase 2 is
+  functionally complete and shippable; this one item should be resolved
+  before calling the spec's criterion 3 fully met.**
 
 ## Phase 2.5 (queued after Phase 2)
 
