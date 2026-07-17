@@ -26,10 +26,12 @@ name: Claude PR Review
 # on the mistaken assumption this step also used the default token — that
 # override actually broke it: the review ran 26 turns and posted nothing
 # at all, silently. Do not reintroduce it without first confirming which
-# identity actually posts the comment.) See
-# .github/workflows/claude-dispatch.yml for the OTHER half of this loop —
-# what actually kicks off the next NEW item, on PR *merge*, independent of
-# this file.
+# identity actually posts the comment.)
+#
+# There used to be a companion `claude-dispatch.yml` that auto-kicked off
+# the next Phase 2 item on PR merge — removed (see REVIEW_CRITERIA.md).
+# Item kickoff is human-initiated now; this file's job ends at the verdict
+# either way, unchanged.
 #
 # Review-only by design: `permissions.contents: read` means the job's own
 # default token cannot push to the repo, and Edit/Write/NotebookEdit are
