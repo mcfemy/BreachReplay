@@ -6,7 +6,7 @@ name: Claude PR Review
 # branch protection actually blocks a merge on CHANGES REQUESTED (see the
 # "Gate the check on the posted verdict" step below).
 #
-# Cost-reduction rework (see REVIEW_CRITERIA.md (i)/(j)/(m)/(n) for the
+# Cost-reduction rework (see REVIEW_CRITERIA.md (i)/(j)/(m)/(n)/(o) for the
 # full reasoning behind each piece):
 #   - The reviewer no longer runs pytest itself. ci.yml already runs the
 #     full suite independently on the same commit — this job waits for
@@ -34,6 +34,14 @@ name: Claude PR Review
 #     report that distinctly from a genuine review failure — see
 #     REVIEW_CRITERIA.md (j) for why conflating these is a trust problem,
 #     not just a cosmetic one.
+#   - --model is pinned explicitly (claude-opus-4-8) in both the preflight
+#     and the real review, rather than left unset. The action's own
+#     default was never documented anywhere — confirmed directly from 5
+#     real run logs on this repo (PR #12/#13/#14), not assumed. Pinning
+#     means an upstream default change can never silently change this
+#     workflow's cost or review quality without a visible diff in this
+#     file. See REVIEW_CRITERIA.md (o) for why Opus specifically, given
+#     the review is now rare by design (n).
 #
 # A PR comment posted via a workflow job's DEFAULT GITHUB_TOKEN does not
 # trigger other workflows — GitHub deliberately suppresses that to prevent
@@ -191,8 +199,14 @@ jobs:
           # to give an unambiguous signal. The prompt needs no tools
           # regardless, so the action's own default tool set is harmless
           # here; --max-turns 1 is what actually keeps this cheap.
+          # --model pinned to the SAME model the real review uses (see
+          # REVIEW_CRITERIA.md (o)) — this step exists to verify "the
+          # model the real review depends on is reachable," which a
+          # different/cheaper model wouldn't actually confirm if an
+          # outage or quota issue were scoped to one model specifically.
           claude_args: |
             --max-turns 1
+            --model claude-opus-4-8
           prompt: |
             Reply with exactly this and nothing else: PREFLIGHT_OK
 
@@ -266,8 +280,16 @@ jobs:
           # token) already posts as a real actor and already triggers
           # claude.yml's @claude listener; overriding it broke posting
           # entirely.
+          # --model pinned explicitly — see REVIEW_CRITERIA.md (o). This
+          # is a decision, not an inheritance: reviews are now rare by
+          # design (n) — every one that actually runs already touches a
+          # path where leak safety/determinism/isolation/playability can
+          # break, which is where the strongest reasoning belongs, not
+          # where it's cheapest. An unpinned model would drift silently
+          # if the action's own default ever changed.
           claude_args: |
             --max-turns ${{ steps.diffstats.outputs.max_turns }}
+            --model claude-opus-4-8
             --allowedTools "Read,Grep,Glob,Bash,mcp__github_inline_comment__create_inline_comment"
           prompt: |
             REPO: ${{ github.repository }}

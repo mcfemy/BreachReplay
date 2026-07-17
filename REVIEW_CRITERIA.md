@@ -238,3 +238,32 @@ previously paying for a review that could never find anything a passing
 CI run hadn't already proven. A PR that mixes any reviewed-path change
 with unrelated files still gets the full review — this only skips when
 **none** of the changed files touch a reviewed path.
+
+**(o) The review model is pinned explicitly, not inherited.**
+`claude-review.yml` passes `--model claude-opus-4-8` to both the
+preflight and real review steps in `claude_args`. Before this, no model
+was specified at all — `claude-code-action`'s own documentation never
+states what model it defaults to, and the actual behavior had to be
+confirmed directly from 5 real run logs on this repo (PR #12/#13/#14),
+all of which independently reported `"model": "claude-opus-4-8[1m]"` in
+their init message. That is: this review has been running on Opus the
+entire time, silently, as an inherited default rather than a decision —
+exactly the kind of unpinned dependency that can change cost or quality
+out from under this workflow the moment the action's own default changes,
+with no diff in this repo to explain why.
+
+Opus was kept deliberately rather than switched to a cheaper model,
+specifically **because** of (n): the review is now rare by design, so
+every review that actually runs already touches a path where leak
+safety, determinism, org-tabletop isolation, or playability can
+genuinely break. That's where the strongest available reasoning belongs,
+not where it's cheapest to run — the volume that used to justify
+economizing on model choice (a review on every PR, most of which could
+never fail a blocking criterion) no longer exists after (n). Opus has
+also already demonstrated the kind of cross-file lifecycle finding this
+gate exists to catch: the block_ip/resync asymmetry on PR #8 (a live
+delta silently under-reporting evidence a resync would show), found by
+the automated reviewer and missed on an independent human pass. If the
+model is ever revisited, that should be its own explicit decision with
+its own stated reasoning — never a silent side effect of leaving
+`--model` unset again.
