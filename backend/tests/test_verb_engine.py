@@ -214,7 +214,17 @@ def test_block_ip_answer_is_discoverable_through_legitimate_play():
     extracted_ip = match.group(0)
 
     result = verb_engine.apply_verb(reveal.run, "block_ip", extracted_ip)
-    assert result.delta == {"correct": True, "host_id": ip_placement.host_id}
+    # revealed_iocs included for live/resync parity (see
+    # test_action_run_ws_handler.py's
+    # test_block_ip_correct_guess_includes_the_matched_ioc_body_live_and_on_resync)
+    # — discovered_ioc_keys already counts this as earned the instant the
+    # correct IP is blocked, so the live delta must show what a resync
+    # would show, not under-report it.
+    assert result.delta == {
+        "correct": True,
+        "host_id": ip_placement.host_id,
+        "revealed_iocs": [ip_placement.to_dict()],
+    }
 
 
 def test_block_ip_wrong_address_records_a_penalty_and_isolates_nothing():

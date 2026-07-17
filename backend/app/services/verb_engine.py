@@ -295,7 +295,14 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
         if matched is not None:
             world = _set_host_isolated(world, matched.host_id)
             discovered_ioc_keys = discovered_ioc_keys | {(matched.host_id, matched.rule_id)}
-            delta = {"correct": True, "host_id": matched.host_id}
+            # matched IS added to discovered_ioc_keys above, so
+            # earned_state_snapshot's revealed_iocs will include its full
+            # body on any future resync regardless of what this delta
+            # sends — include it here too so a live client sees the exact
+            # same content immediately instead of only learning it on a
+            # later reconnect. The key is genuinely earned the moment the
+            # correct IP is blocked, not just recorded for scoring.
+            delta = {"correct": True, "host_id": matched.host_id, "revealed_iocs": [matched.to_dict()]}
         else:
             penalties = penalties + ({"type": "wrong_block_ip", "addr": target, "amount": PRECISION_PENALTY},)
             delta = {"correct": False}

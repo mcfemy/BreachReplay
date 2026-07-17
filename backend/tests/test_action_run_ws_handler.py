@@ -307,3 +307,54 @@ async def test_resync_after_scan_and_query_returns_exactly_the_earned_subset():
 
     async with action_run_store._lock:
         action_run_store._runs.pop(run_id, None)
+
+
+async def test_block_ip_correct_guess_includes_the_matched_ioc_body_live_and_on_resync():
+    """QA-review-flagged asymmetry, live on PR #8: a correct block_ip adds
+    its matched IOC to discovered_ioc_keys (so any later resync's
+    earned_state_snapshot already includes its full body), but the LIVE
+    delta used to send only {"correct": True, "host_id": ...} — a
+    reconnecting player would see IOC content the live delta never
+    actually showed them. Confirmed not a leak (the key is genuinely
+    earned the instant the correct IP is blocked — verb_engine.py's own
+    apply_verb already records it as discovered), just an inconsistency:
+    the live delta was under-reporting evidence it had already credited.
+    Fixed for parity — block_ip's delta now includes the same
+    revealed_iocs entry a resync would. This test asserts parity
+    directly: live and resync must show IDENTICAL content, not just that
+    content exists somewhere."""
+    from tests.conftest import ensure_test_user_row
+    await ensure_test_user_row("action-run-owner-9")
+    scenario = await _make_scenario(hidden_iocs=_MULTI_HOST_HIDDEN_IOCS)
+    run_id, compiled = await _start_live_run(scenario, "action-run-owner-9")
+
+    ip_placement = next(p for p in compiled.ioc_placements if p.matches_on.get("ip"))
+
+    ws = FakeWebSocket(incoming=[
+        f'{{"type": "action.submit", "verb": "block_ip", "target": "{ip_placement.matches_on["ip"]}"}}',
+    ])
+    await action_run_ws_handler(ws, run_id, "action-run-owner-9")
+
+    delta_event = next(m for m in ws.sent if m["type"] == "state.delta")
+    assert delta_event["delta"]["correct"] is True
+    assert delta_event["delta"]["host_id"] == ip_placement.host_id
+    live_iocs = delta_event["delta"]["revealed_iocs"]
+    assert len(live_iocs) == 1
+    assert live_iocs[0]["rule_id"] == ip_placement.rule_id
+    assert live_iocs[0]["description"] == ip_placement.description
+
+    # Reconnect: a wholly separate handler call, simulating a fresh WS
+    # connection resuming this run_id.
+    ws2 = FakeWebSocket(incoming=[])
+    await action_run_ws_handler(ws2, run_id, "action-run-owner-9")
+    resync = ws2.sent[0]
+    assert resync["type"] == "run.resync"
+    resync_iocs = [i for i in resync["revealed_iocs"] if i["rule_id"] == ip_placement.rule_id]
+    assert len(resync_iocs) == 1
+
+    # Parity: identical content live and on resync, not just presence —
+    # this is the actual asymmetry the review caught.
+    assert live_iocs[0] == resync_iocs[0]
+
+    async with action_run_store._lock:
+        action_run_store._runs.pop(run_id, None)
