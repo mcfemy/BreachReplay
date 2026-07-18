@@ -252,8 +252,31 @@ async def test_run_over_triggers_finalize_and_a_run_end_event():
     assert await action_run_store.get(run_id) is None
 
 
+# _place_iocs now binds hidden_iocs to the attack path (hosts a
+# decision_gate stage actually compromises), not any host in the world —
+# with only _FAST_DECISION_TREE's single gate, the attack path is exactly
+# one host, so both entries below would land on the SAME host and this
+# fixture's own "multiple hosts" premise would silently stop holding.
+# This wider tree gives the attack path enough hosts (up to 3, shuffled
+# per seed) for _place_iocs's own rng.choice to actually have room to
+# scatter two IOCs onto different ones — verified empirically for this
+# file's seed=1 by the assertion at the top of each test that uses it,
+# not hand-derived from the RNG.
+_MULTI_HOST_DECISION_TREE = [
+    {"id": "gate-001", "trigger_timestamp": "+2m", "mitre_technique": "T1078",
+     "context_summary": "Suspicious VPN activity.", "options": [], "correct_index": 0,
+     "consequence_if_wrong": "Missed.", "rationale": "Correlate anomalies.", "nist_control_ref": "DE.AE-2"},
+    {"id": "gate-002", "trigger_timestamp": "+8m", "mitre_technique": "T1003",
+     "context_summary": "Credential dump detected.", "options": [], "correct_index": 1,
+     "consequence_if_wrong": "Missed.", "rationale": "Preserve evidence.", "nist_control_ref": "RS.AN-3"},
+    {"id": "gate-003", "trigger_timestamp": "+15m", "mitre_technique": "T1021",
+     "context_summary": "Lateral movement detected.", "options": [], "correct_index": 0,
+     "consequence_if_wrong": "Missed.", "rationale": "Contain spread.", "nist_control_ref": "RS.MI-1"},
+]
+
 # Two hidden_iocs deliberately bound to different hosts (via
-# action_engine._place_iocs's seeded RNG) — needed so
+# action_engine._place_iocs's seeded RNG, over the attack path
+# _MULTI_HOST_DECISION_TREE above provides) — needed so
 # test_resync_after_scan_and_query_returns_exactly_the_earned_subset can
 # assert the OTHER host's IOC never leaks into a resync that only earned
 # the first one.
@@ -276,7 +299,7 @@ async def test_resync_after_scan_and_query_returns_exactly_the_earned_subset():
     specific host), never another host's still-undiscovered hidden_iocs."""
     from tests.conftest import ensure_test_user_row
     await ensure_test_user_row("action-run-owner-8")
-    scenario = await _make_scenario(hidden_iocs=_MULTI_HOST_HIDDEN_IOCS)
+    scenario = await _make_scenario(decision_tree=_MULTI_HOST_DECISION_TREE, hidden_iocs=_MULTI_HOST_HIDDEN_IOCS)
     run_id, compiled = await _start_live_run(scenario, "action-run-owner-8")
 
     queried_placement = compiled.ioc_placements[0]
@@ -325,7 +348,7 @@ async def test_block_ip_correct_guess_includes_the_matched_ioc_body_live_and_on_
     content exists somewhere."""
     from tests.conftest import ensure_test_user_row
     await ensure_test_user_row("action-run-owner-9")
-    scenario = await _make_scenario(hidden_iocs=_MULTI_HOST_HIDDEN_IOCS)
+    scenario = await _make_scenario(decision_tree=_MULTI_HOST_DECISION_TREE, hidden_iocs=_MULTI_HOST_HIDDEN_IOCS)
     run_id, compiled = await _start_live_run(scenario, "action-run-owner-9")
 
     ip_placement = next(p for p in compiled.ioc_placements if p.matches_on.get("ip"))

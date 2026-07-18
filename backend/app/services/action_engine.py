@@ -307,20 +307,46 @@ def _rewrite_raw_log_for_host(raw_log: str, matches_on: dict, host: Optional[Hos
     return raw_log
 
 
-def _place_iocs(hidden_iocs: list[dict], world: OrgState, seed: int) -> tuple[IOCPlacement, ...]:
-    """Deterministically assigns each hidden_ioc to a synthesized host, via
-    a seeded RNG independent of _build_stages's attack-path draw, and
+def _place_iocs(
+    hidden_iocs: list[dict], world: OrgState, seed: int, stages: tuple[Stage, ...] = (),
+) -> tuple[IOCPlacement, ...]:
+    """Deterministically assigns each hidden_ioc to a synthesized host that
+    a decision-gate stage actually compromises — the attack path — via a
+    seeded RNG independent of _build_stages's own attack-path draw, and
     rewrites its raw_log so the revealed evidence never contradicts the
-    network map (see _rewrite_raw_log_for_host)."""
+    network map (see _rewrite_raw_log_for_host).
+
+    Binding to the attack path (rather than any host in the world, the
+    original behavior) is what makes investigating a compromised host
+    actually teach something: before this, a hidden_ioc could land on a
+    host no stage ever touches, so querying the host that's visibly being
+    compromised could legitimately reveal nothing, while an untouched host
+    held the evidence instead — disconnected from what the map is showing.
+    Falls back to any host in the world if the attack path is empty (a
+    scenario with no decision_tree gates has no attack path to bind to)."""
     host_ids = [h.id for h in world.hosts]
     if not host_ids:
         return ()
+
+    # De-dup while preserving first-seen order (stages is already sorted by
+    # trigger_seconds) so the candidate pool is deterministic and doesn't
+    # over-weight a host multiple stages happen to compromise.
+    seen: set[str] = set()
+    candidate_ids: list[str] = []
+    for s in stages:
+        for hid in s.compromises_host_ids:
+            if hid not in seen:
+                seen.add(hid)
+                candidate_ids.append(hid)
+    if not candidate_ids:
+        candidate_ids = host_ids
+
     rng = _derive_rng(seed, "ioc-placement")
     placements: list[IOCPlacement] = []
     for ioc in (hidden_iocs or []):
         if not isinstance(ioc, dict):
             continue
-        host_id = rng.choice(host_ids)
+        host_id = rng.choice(candidate_ids)
         host = world.get_host(host_id)
         matches_on = ioc.get("matches_on") or {}
         placements.append(IOCPlacement(
@@ -355,7 +381,7 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
     alert_sequence = _field(scenario, "alert_sequence") or []
 
     stages = _build_stages(decision_tree, pressure_injections, host_ids, seed)
-    ioc_placements = _place_iocs(hidden_iocs, world, seed)
+    ioc_placements = _place_iocs(hidden_iocs, world, seed, stages)
 
     alert_lines = tuple(
         {**a, "trigger_seconds": _parse_trigger_seconds(a.get("timestamp", "+0m"))}

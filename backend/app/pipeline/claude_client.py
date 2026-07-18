@@ -95,6 +95,7 @@ MANDATORY REQUIREMENTS — do not reduce these:
 - MINIMUM 12 decision gates spread across the 45-minute timeline (gate every 3-4 minutes)
 - MINIMUM 20 alerts in alert_sequence — mix real indicators with false positives and red herrings
 - MINIMUM 6 pressure_injections (CEO emails, legal calls, board demands, breaking news)
+- MINIMUM 4 hidden_iocs — real evidence from the document that never appears in alert_sequence
 - Every gate has countdown_seconds between 30-75 (shorter = more pressure, use 30 for critical)
 - Alert timestamps should be dense and overlapping — multiple alerts per minute at peak
 
@@ -122,6 +123,19 @@ Return ONLY valid JSON inside <extracted> tags:
       "rule_id": "RULE-001",
       "description": "Alert exactly as it would appear on a real SOC dashboard — specific, technical, actionable",
       "raw_log": "src_ip=10.0.0.1 user=admin proc=lsass.exe bytes=94000000 dst=185.220.101.34"
+    }}
+  ],
+
+  "hidden_iocs": [
+    {{
+      "matches_on": {{"ip": "185.220.101.34"}},
+      "timestamp": "+1m",
+      "severity": "medium",
+      "source_system": "Auth|EDR|Zeek|CloudTrail|Okta|VPN Gateway|IAM|DNS (pick whatever this document's own environment actually used)",
+      "rule_id": "AUTH-009",
+      "description": "What a SOC analyst would see if they pivoted an investigation on this exact ip/hostname/username/process_name — written as a real finding, not a summary",
+      "raw_log": "auth=success user=svc_backup src_ip=185.220.101.34 service=legacy_ftp_portal geo=RU",
+      "mitre_technique": "T1078"
     }}
   ],
 
@@ -169,6 +183,35 @@ REALISM RULES:
 5. context_summary must feel like a live SOC call — chaotic, specific, time-pressured
 6. All three options at every gate must seem plausible under pressure — no obvious wrong answers
 7. Use real technical details from the source document; extrapolate realistically when needed
+
+HIDDEN_IOCS — real evidence that rewards investigation instead of just reacting to the alert feed:
+- Every entry must be something the source document actually documents or clearly implies (an
+  attacker IP, a compromised hostname, an abused account, a malicious process) — never invented
+  from nothing. If the document names a real C2 IP, malware hash, or domain, use the REAL value.
+- `matches_on` is the pivot key: exactly one of {{"ip": "..."}}, {{"hostname": "..."}},
+  {{"username": "..."}}, {{"process_name": "..."}} — the literal value from the document that an
+  analyst would type into an investigation panel to surface this entry.
+- `raw_log` must be written in that entry's OWN source system's real log format, not generic
+  prose describing what happened:
+  - Windows Security/Sysmon: real Event IDs and field names, e.g.
+    `event=4624 user=jsmith logon_type=3 src_ip=185.220.101.34` (4624=logon),
+    `event=4688 new_proc=powershell.exe cmdline=-enc<b64> parent=outlook.exe` (4688=process creation)
+  - Zeek conn.log-style network evidence: `id.orig_h=10.0.4.12 id.resp_h=185.220.101.34
+    id.resp_p=443 proto=tcp service=ssl duration=812.4 orig_bytes=48200 resp_bytes=910000000
+    conn_state=SF`
+  - AWS CloudTrail-style cloud evidence: `eventName=AssumeRoleWithSAML
+    eventSource=sts.amazonaws.com sourceIPAddress=185.220.101.34
+    userIdentity.arn=arn:aws:sts::111122223333:assumed-role/AdminAccess/svc_backup
+    awsRegion=us-east-1`
+  - Match the source_system to whatever the document's own environment actually is — do not
+    force CloudTrail onto an on-prem-only incident.
+- `mitre_technique` is the ATT&CK technique this specific piece of evidence demonstrates — it can
+  differ from the decision_tree gate it's near, since one gate often has multiple techniques in
+  play (e.g. the gate is about lateral movement, T1021, but this IOC is the credential-dumping
+  evidence, T1003, that enabled it).
+- Each hidden_ioc should connect to something already in alert_sequence (the same IP, the same
+  account, the same host) — the reward for pivoting is confirming a hunch the visible feed only
+  hinted at, not a disconnected fact.
 
 OVERALL SCENARIO DIFFICULTY — set the top-level "difficulty" field based on how demanding the incident is as a whole:
 - "awareness": Single attack vector, slower pace, mostly clear-cut decisions — suited to teams new to IR tabletop exercises
