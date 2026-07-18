@@ -1,9 +1,24 @@
-# Hidden IOC drafts — 4 remaining seed.py scenarios (for review)
+# Hidden IOC drafts — 4 remaining seed.py scenarios (APPROVED, with 2 edits)
 
 Colonial Pipeline already has hand-authored `hidden_iocs` (unchanged, used as the format
-template — see `backend/seed.py`'s `COLONIAL_PIPELINE["hidden_iocs"]`). These four don't yet:
-SolarWinds Orion, MGM Resorts, Log4Shell, NHS WannaCry. This file is the reviewable draft —
-nothing has been folded into `seed.py` or reseeded yet.
+template — see `backend/seed.py`'s `COLONIAL_PIPELINE["hidden_iocs"]`). These four didn't:
+SolarWinds Orion, MGM Resorts, Log4Shell, NHS WannaCry.
+
+**Status: approved for `seed.py`, with two edits made after review** (see the two entries below
+marked accordingly):
+1. SolarWinds entry 3 (legacy-auth bypass) — **dropped**. Its citation was technique-level, not
+   incident-specific, and the description implied incident-specific sourcing it didn't support.
+   Three well-cited SolarWinds IOCs beat four where one overclaims.
+2. MGM entry 2 (AnyDesk) — **strengthened, not softened**. Re-verified against AA23-320A's own
+   text this session: the advisory names AnyDesk explicitly ("AnyDesk enables remote access to
+   network devices for management, bypassing security alerts due to AnyDesk being a legitimate
+   application"), alongside ScreenConnect, TeamViewer, Splashtop, and Tactical.RMM. This is now a
+   confirmed fact, not an illustrative placeholder — description updated accordingly.
+
+The WannaCry wallet address was independently re-confirmed and lands as originally drafted. The
+other four flagged items (Log4Shell Cobalt Strike/IP pairing, WannaCry NTLM phrasing, WannaCry
+cross-Trust single-IP) are approved as-is — honestly-labeled scenario-internal elaboration, no
+changes needed.
 
 **Convention, matching Colonial Pipeline's own precedent:** internal hostnames/usernames in
 these scenarios are fictionalized reconstructions (`orion-mgmt-01`, `d.park@mgmresorts.com`,
@@ -72,7 +87,12 @@ forgery via a stolen krbtgt hash, MITRE T1558.001).
 - **Fictionalized, pivots off:** `adfs-01.corp.internal` and `svc_orion`, already in `alert_sequence` (`SIEM-088`).
 - **MITRE T1606.002** (Forge Web Credentials: SAML Tokens) — real, standard ATT&CK ID.
 
-### 3. Legacy-auth sign-in on the impossible-travel account
+### ~~3. Legacy-auth sign-in on the impossible-travel account~~ — DROPPED
+
+Original draft below, kept for the record. Citation was technique-level, not incident-specific,
+while the description implied incident-specific sourcing — decided to drop rather than soften,
+per review: three well-cited SolarWinds IOCs beat four where one overclaims.
+
 ```python
 {"matches_on": {"username": "m.garcia@corp.internal"}, "timestamp": "+21m", "severity": "high",
  "source_system": "Azure AD", "rule_id": "SUNBURST-LEGACYAUTH-01",
@@ -80,9 +100,7 @@ forgery via a stolen krbtgt hash, MITRE T1558.001).
  "raw_log": "appDisplayName=Office365_Shell_WCSS-Client clientAppUsed=IMAP4 conditionalAccessStatus=notApplied mfaResult=n/a userPrincipalName=m.garcia@corp.internal status=success",
  "mitre_technique": "T1078.004"}
 ```
-- **Weaker citation, flagged honestly:** I could not find a source tying legacy-IMAP-auth abuse to the SolarWinds campaign *specifically* — the general technique (legacy auth bypassing Conditional Access) is real and widely documented, but this entry's citation is at the technique level, not "CISA/FireEye documented this exact behavior in this campaign." Worth a second look, or softening the description further, if you want every entry at incident-specific confidence.
-- **Fictionalized, pivots off:** `m.garcia@corp.internal`, already in `alert_sequence` (`CLOUD-001`, the impossible-travel alert).
-- **MITRE T1078.004** (Valid Accounts: Cloud Accounts) — real, standard ATT&CK ID, already in this scenario's own `mitre_techniques` list.
+NOT going into `seed.py`.
 
 ### 4. Golden Ticket — forged PAC with Domain Admin membership
 ```python
@@ -115,16 +133,15 @@ forgery via a stolen krbtgt hash, MITRE T1558.001).
 - **Fictionalized, pivots off:** `d.park@mgmresorts.com`, the scenario's own central identity (`HD-001` through `OKTA-019` in `alert_sequence`).
 - **MITRE T1556** (Modify Authentication Process) — real, standard ATT&CK ID; reasonable fit for federation-trust abuse, though ATT&CK has no single sub-technique specifically named "cross-tenant impersonation."
 
-### 2. RMM tool for persistence
+### 2. RMM tool for persistence — CITATION STRENGTHENED
 ```python
 {"matches_on": {"process_name": "AnyDesk.exe"}, "timestamp": "+13m", "severity": "high",
  "source_system": "Sysmon", "rule_id": "MGM-RMM-01",
- "description": "Remote access software installed silently on 4 domain controllers minutes after the Okta API token was created — CISA's Scattered Spider advisory (AA23-320A) specifically documents this group's use of legitimate RMM tools for persistence that blends into normal IT administrative activity",
+ "description": "Remote access software installed silently on 4 domain controllers minutes after the Okta API token was created — AnyDesk is explicitly named in CISA's Scattered Spider advisory (AA23-320A) as a legitimate tool this group repurposes for remote access, chosen specifically because it 'bypasses security alerts due to being a legitimate application'",
  "raw_log": "event=1 Image=AnyDesk.exe CommandLine='--install --silent --start-with-win' ParentImage=powershell.exe hosts=DC-01,DC-02,DC-03,DC-04",
  "mitre_technique": "T1219"}
 ```
-- **Real & cited:** AA23-320A documents Scattered Spider's use of legitimate RMM/remote-access tools for persistence as a named TTP.
-- **Not verified to the specific tool:** I did not confirm AnyDesk by name in the advisory (vs. other RMM tools this group is documented using) — the *pattern* is cited, the specific product name in this entry is a plausible illustrative choice, not a confirmed detail.
+- **Real & cited, now a confirmed fact:** re-verified against AA23-320A's own text this session — the advisory explicitly names AnyDesk ("AnyDesk enables remote access to network devices for management, bypassing security alerts due to AnyDesk being a legitimate application"), alongside ScreenConnect, TeamViewer, Splashtop, and Tactical.RMM. The first draft had this as an illustrative placeholder; it isn't one — description updated to state the citation directly instead of the generic "RMM tools" framing.
 - **Fictionalized, pivots off:** the domain controller hosts already implied by the scenario's escalation (`OKTA-021`'s mass MFA disable across "all MGM properties").
 - **MITRE T1219** (Remote Access Software) — real, standard ATT&CK ID.
 
@@ -278,12 +295,14 @@ forgery via a stolen krbtgt hash, MITRE T1558.001).
 
 ---
 
-## Summary of what needs your attention
+## Review resolution
 
-1. **WannaCry wallet address** (NHS-3) — flagged per your instruction; independently verified this session against 3 sources, but you may want your own fourth check.
-2. **SolarWinds entry 3** (legacy-auth bypass) — citation is technique-level, not incident-specific; consider softening the description or dropping if you want every entry at incident-specific confidence.
-3. **MGM entry 2** (AnyDesk) — the RMM-persistence *pattern* is cited to AA23-320A; the specific tool name (AnyDesk) is illustrative, not confirmed against the advisory's own text.
-4. **Log4Shell entry 4** (Cobalt Strike/CloudFront) — technique is real and general; the pairing with this scenario's specific C2 IP is scenario-internal elaboration.
-5. **WannaCry entry 4** (NTLM credential harvesting) — general technique confirmed; the specific "in-memory harvesting on already-encrypted hosts" phrasing wasn't re-verified against a primary source this session.
-6. **WannaCry entry 5** (cross-Trust IP) — real phenomenon (NAO-documented multi-Trust simultaneous impact), compressed into a simplified single-IP narrative; flagged so it's not mistaken for "this exact IP was documented as scanning both Trusts."
-7. **SolarWinds entry 4** — corrected from the first draft: `HealthMailbox123` is this scenario's own fictionalized identifier (already in `alert_sequence`), not a real campaign detail as the earlier draft implied.
+1. **WannaCry wallet address** (NHS-3) — ✅ verified against 3 sources, confirmed correct, lands as drafted.
+2. **SolarWinds entry 3** (legacy-auth bypass) — ✅ **dropped**. SolarWinds ships with 3 hidden_iocs, not 4.
+3. **MGM entry 2** (AnyDesk) — ✅ **strengthened**. AA23-320A names AnyDesk explicitly; description updated to cite that directly instead of the generic "RMM tools" framing.
+4. **Log4Shell entry 4** (Cobalt Strike/CloudFront) — approved as-is, honestly-labeled scenario-internal elaboration.
+5. **WannaCry entry 4** (NTLM credential harvesting) — approved as-is.
+6. **WannaCry entry 5** (cross-Trust IP) — approved as-is.
+7. **SolarWinds entry 4** (HealthMailbox123) — approved as-is (already corrected in the first pass — this is a fictionalized identifier, not a claimed real-campaign detail).
+
+**Final counts going into `seed.py`:** SolarWinds 3, MGM 4, Log4Shell 4, NHS WannaCry 5 — 16 hidden_iocs across the 4 scenarios, plus Colonial Pipeline's existing 5.
