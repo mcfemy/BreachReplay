@@ -112,6 +112,42 @@ def test_ioc_placements_bind_to_real_synthesized_hosts():
         assert placement.host_id in host_ids
 
 
+def test_ioc_placements_bind_to_the_attack_path_not_any_host():
+    """The reason to bind placement to the attack path at all: investigating
+    a host a stage actually compromises must be able to teach you something.
+    Every placed IOC's host must be one _build_stages assigned to a
+    decision_gate stage — never an off-path host the attacker's own
+    progression never touches, even when the world has more hosts than
+    that available to place on."""
+    compiled = action_engine.compile_scenario(_SCENARIO, seed=42)
+    attack_path_host_ids = {hid for s in compiled.stages for hid in s.compromises_host_ids}
+
+    assert attack_path_host_ids, "fixture must have at least one decision_gate stage for this test to mean anything"
+    assert len(attack_path_host_ids) < len(compiled.world.hosts), (
+        "fixture must have off-path hosts too, or binding is indistinguishable from placing on any host"
+    )
+
+    for placement in compiled.ioc_placements:
+        assert placement.host_id in attack_path_host_ids
+
+
+def test_ioc_placements_fall_back_to_any_host_when_there_is_no_attack_path():
+    """A scenario with hidden_iocs but no decision_tree gates has no attack
+    path to bind to at all — must still place IOCs (on any host) rather
+    than silently dropping them or raising."""
+    no_gates = dict(_SCENARIO, decision_tree=[])
+    compiled = action_engine.compile_scenario(no_gates, seed=42)
+    # pressure_injections still produce a stage, but pressure stages never
+    # compromise a host — the attack path (compromises_host_ids across all
+    # stages) is empty even though compiled.stages itself isn't.
+    assert not any(s.compromises_host_ids for s in compiled.stages)
+
+    host_ids = {h.id for h in compiled.world.hosts}
+    assert len(compiled.ioc_placements) == len(_SCENARIO["hidden_iocs"])
+    for placement in compiled.ioc_placements:
+        assert placement.host_id in host_ids
+
+
 def test_alert_lines_carry_parsed_trigger_seconds():
     compiled = action_engine.compile_scenario(_SCENARIO, seed=3)
     by_timestamp = {a["timestamp"]: a["trigger_seconds"] for a in compiled.alert_lines}
