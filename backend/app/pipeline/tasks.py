@@ -34,10 +34,16 @@ redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
 _ALERT_REQUIRED = {"timestamp", "severity", "source_system", "description"}
 _GATE_REQUIRED = {"id", "trigger_timestamp", "context_summary", "options", "correct_index"}
 _PRESSURE_REQUIRED = {"id", "trigger_timestamp", "type", "body"}
+# matches_on is the pivot key the investigation panel (main's
+# _match_hidden_iocs) and the action-console compiler (action_engine.py's
+# _place_iocs, Phase 2 only) both key off of — without it an entry is
+# unreachable through legitimate play on either path, so it's required
+# here same as the other three fields, not left to degrade gracefully.
+_HIDDEN_IOC_REQUIRED = {"rule_id", "description", "source_system", "raw_log", "matches_on"}
 
 
 def _validate_extracted(extracted: dict) -> dict:
-    """Strip malformed alerts/gates/injections so bad Claude output doesn't crash streaming."""
+    """Strip malformed alerts/gates/injections/hidden_iocs so bad Claude output doesn't crash streaming."""
     alerts = extracted.get("alert_sequence") or []
     valid_alerts = [a for a in alerts if isinstance(a, dict) and _ALERT_REQUIRED.issubset(a)]
     if len(valid_alerts) < len(alerts):
@@ -53,7 +59,21 @@ def _validate_extracted(extracted: dict) -> dict:
     if len(valid_injections) < len(injections):
         logger.warning("Dropped %d malformed pressure injections (missing required fields)", len(injections) - len(valid_injections))
 
-    return {**extracted, "alert_sequence": valid_alerts, "decision_tree": valid_gates, "pressure_injections": valid_injections}
+    iocs = extracted.get("hidden_iocs") or []
+    valid_iocs = [
+        i for i in iocs
+        if isinstance(i, dict) and _HIDDEN_IOC_REQUIRED.issubset(i) and isinstance(i.get("matches_on"), dict) and i["matches_on"]
+    ]
+    if len(valid_iocs) < len(iocs):
+        logger.warning("Dropped %d malformed hidden_iocs (missing required fields or empty matches_on)", len(iocs) - len(valid_iocs))
+
+    return {
+        **extracted,
+        "alert_sequence": valid_alerts,
+        "decision_tree": valid_gates,
+        "pressure_injections": valid_injections,
+        "hidden_iocs": valid_iocs,
+    }
 
 
 def _store_task_failure(task_name: str, task_id: str, error: str) -> None:
@@ -142,6 +162,7 @@ def process_advisory_url(self, url: str, source_type: str = "cisa", source_refer
             "alert_sequence": extracted.get("alert_sequence"),
             "decision_tree": extracted.get("decision_tree"),
             "pressure_injections": extracted.get("pressure_injections"),
+            "hidden_iocs": extracted.get("hidden_iocs"),
             "status": "approved" if extracted.get("extraction_confidence", 0) >= 0.7 else "review",
         }
 
@@ -576,6 +597,7 @@ def process_uploaded_document_task(self, document_id: str):
                 "alert_sequence": extracted.get("alert_sequence"),
                 "decision_tree": extracted.get("decision_tree"),
                 "pressure_injections": extracted.get("pressure_injections"),
+            "hidden_iocs": extracted.get("hidden_iocs"),
                 "status": "approved" if extracted.get("extraction_confidence", 0) >= 0.7 else "review",
                 "is_private": True,
                 "owner_org_id": doc.organization_id,
