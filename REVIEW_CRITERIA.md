@@ -15,7 +15,8 @@ in review and would otherwise have shipped broken.
    or drifts from the current item's stated scope is not approvable no
    matter how clean the code is.
 2. Read the diff.
-3. Run the full backend test suite yourself (see rule (i) below).
+3. Trust CI's independently-run test result for this exact commit — do not
+   re-run the suite yourself (see rule (i) below).
 4. Check every BLOCKING criterion below explicitly, pass/fail, not just a
    prose summary.
 
@@ -95,35 +96,52 @@ the standard being enforced here.
 
 ## Process rule for the reviewer
 
-**(i) Run the tests yourself.** The reviewer (human or Claude) must
-actually run the full backend pytest suite in its own environment and
-treat any failure as blocking. Never accept a PR description's or commit
-message's claim of "all tests pass" as evidence — verify it directly:
+**(i) Trust independent machine evidence; never trust the PR's own
+claims.** This rule never actually required the reviewer to personally
+re-run pytest — it required never accepting a PR description's or commit
+message's claim of "tests pass" as evidence. `ci.yml` already runs the
+full backend suite independently, in its own job, on the exact same
+commit — that IS independent machine evidence, the same category as if
+the reviewer had run it directly, and is trusted as such.
+`claude-review.yml` waits for that check's conclusion via `gh` before
+invoking Claude at all: a red CI check blocks the PR
+immediately, with zero Claude turns spent analyzing a build already known
+to be broken, and Claude is told CI's result as an established fact
+rather than asked to re-verify it. This changed because the reviewer's
+own duplicate `pytest -q` run was pure waste — CI had already produced the
+identical answer, independently, for free, before Claude ever started.
+What did NOT change: a PR description or commit message asserting "tests
+pass," "verified locally," or similar is still never evidence on its own.
+Only CI's own machine-reported conclusion on that exact SHA counts. A PR
+whose description claims a green suite but whose CI check is red (or
+never completed) is `CHANGES REQUESTED`/blocked, not `APPROVED` pending
+clarification.
 
-```
-cd backend && pytest -q
-```
-
-A PR whose description claims a green suite but which the reviewer cannot
-independently reproduce as green is `CHANGES REQUESTED`, not `APPROVED`
-pending clarification.
-
-**(j) Distinguish "reviewer said no" from "reviewer never finished."** A
-real `VERDICT: CHANGES REQUESTED` and a review run that crashed, hit its
-turn/time cap, or otherwise died without posting any verdict are NOT the
-same signal, and a loop that conflates them is not trustworthy — a human
-(or the next automated step) reading a red check must be able to tell
-"the reviewer looked at this and said no" from "the reviewer never
-actually looked." This came out of PR #5's review run failing outright
-(no verdict posted, ~5 minutes, red) with nothing distinguishing it from a
-real CHANGES REQUESTED in the check history. `claude-review.yml`'s "Gate
-the check on the posted verdict" step enforces this structurally: it fails
-the check either way (so branch protection blocks the merge in both
-cases), but only posts a visible `REVIEW ERRORED — no verdict, see run
-logs` marker when the review step itself failed or produced no verdict
-line — never when a real verdict (either one) was posted. Any future
-review automation must preserve this distinction, not just "make the
-check red on any problem."
+**(j) Distinguish "reviewer said no," "reviewer never finished," and "the
+reviewer never got to start."** A real `VERDICT: CHANGES REQUESTED`, a
+review run that crashed or hit its turn/time cap without posting a
+verdict, and a run that never even started because the Claude API itself
+was unreachable are THREE different signals, not one — a human (or the
+next automated step) reading a red check must be able to tell all three
+apart. The first two came out of PR #5's review run failing outright (no
+verdict posted, ~5 minutes, red) with nothing distinguishing it from a
+real CHANGES REQUESTED in the check history; `claude-review.yml`'s "Gate
+the check on the posted verdict" step enforces the distinction
+structurally, posting a visible `REVIEW ERRORED — no verdict, see run
+logs` marker only when the review step itself failed or produced no
+verdict line, never on a real verdict. The third came out of PR #12 and
+PR #14 both failing with the identical signature — `is_error: true`,
+under 500ms, exactly 1 turn, $0 cost — hours apart, on structurally
+unrelated diffs, strongly indicating the Claude API itself was
+unreachable (billing, auth, or quota) rather than either PR having a real
+problem. A cheap 1-turn preflight call now runs before the real review
+specifically to catch this signature early and post a distinctly-worded
+`REVIEW UNAVAILABLE — ... not a problem with this PR` marker instead of
+letting a dry balance masquerade as `REVIEW ERRORED` (which reads as "the
+review crashed on this PR's content," a materially different and
+misleading signal). All three outcomes still fail the check — branch
+protection blocks the merge in every case — but the posted comment must
+always make clear which of the three actually happened.
 
 **(k) Auto-fix trigger convention.** When a review posts `VERDICT: CHANGES
 REQUESTED`, the SAME top-level comment must end with the literal line
@@ -169,3 +187,83 @@ real. If a fully-automated next-item dispatcher is reintroduced later, it
 must fail the job loudly whenever it completes without pushing a branch —
 "ran successfully and did nothing" must never again be a silent,
 indistinguishable-from-idle outcome.
+
+**(m) Turn budget scales to the diff, not a flat maximum.** `--max-turns`
+is computed per-PR from the diff's total changed lines (15 by default, 50
+only past ~400 changed lines), not hardcoded to 50 for every review
+regardless of size. Two runaway reviews on PR #5 burned real money running
+up against a flat 50-turn cap and produced nothing — a small PR has no
+business being given the same budget as a 400+ line one. If the review
+genuinely needs more turns than its tier allows and hits the cap, that's
+still a `REVIEW ERRORED` outcome per (j) — the fix is to reconsider the
+threshold or split the PR, not to raise the ceiling back to a flat maximum
+"just in case."
+
+**(n) The reviewer only runs on paths where its blocking criteria can
+actually be violated.** Every blocking criterion above lives in a small,
+specific set of files: leak safety (b) and playability (e) live in the
+verb/WS layer; determinism (c) lives in `action_engine.compile_scenario`
+and what it calls; org tabletop isolation (d) lives in
+`simulation_ws_handler`/`ConnectionManager`; server authority (f) lives in
+clock/score computation; migrations (g) is self-evidently
+`backend/migrations/`. None of these can be violated by a docs change, a
+workflow-file edit, a styling tweak, or a small route fix that doesn't
+touch the paths above — CI's independently-run test suite (i) is a
+complete, sufficient check for that class of change on its own.
+
+Concretely, `claude-review.yml`'s `Compute diff stats` step skips the
+Claude review entirely — a one-line `auto-skipped — CI is the gate`
+comment and a passing check, no Claude invocation at all — unless the
+diff touches at least one of:
+
+- `backend/app/services/` (the compiler, verb engine, mastery/XP/pipeline
+  services — where determinism and most of the domain logic live)
+- `backend/app/websocket/` (leak safety, org tabletop isolation, server
+  authority all live in the WS handlers)
+- `backend/migrations/` (criterion (g) is entirely about this directory)
+- `frontend/src/lib/*Socket*` and `frontend/src/store/` (the frontend
+  halves of leak safety and server authority — a WS hook merging a
+  server delta incorrectly, or a state store trusting a client-computed
+  value, are the frontend-side ways (b)/(f) get violated)
+
+This computation happens purely from `git diff --name-only`, before
+anything costs money. It supersedes and subsumes the narrower docs-only
+skip this criterion originally described — a docs-only PR is just one
+instance of "touches none of the reviewed paths," not a special case
+needing its own rule. PR #12 (docs-only, cost $0.42, produced no verdict —
+the API-unavailable failure (j) now catches that class separately) was
+the original motivating case; the broader rule additionally covers
+config, workflow-file, styling, and small route-fix PRs that were
+previously paying for a review that could never find anything a passing
+CI run hadn't already proven. A PR that mixes any reviewed-path change
+with unrelated files still gets the full review — this only skips when
+**none** of the changed files touch a reviewed path.
+
+**(o) The review model is pinned explicitly, not inherited.**
+`claude-review.yml` passes `--model claude-opus-4-8` to both the
+preflight and real review steps in `claude_args`. Before this, no model
+was specified at all — `claude-code-action`'s own documentation never
+states what model it defaults to, and the actual behavior had to be
+confirmed directly from 5 real run logs on this repo (PR #12/#13/#14),
+all of which independently reported `"model": "claude-opus-4-8[1m]"` in
+their init message. That is: this review has been running on Opus the
+entire time, silently, as an inherited default rather than a decision —
+exactly the kind of unpinned dependency that can change cost or quality
+out from under this workflow the moment the action's own default changes,
+with no diff in this repo to explain why.
+
+Opus was kept deliberately rather than switched to a cheaper model,
+specifically **because** of (n): the review is now rare by design, so
+every review that actually runs already touches a path where leak
+safety, determinism, org-tabletop isolation, or playability can
+genuinely break. That's where the strongest available reasoning belongs,
+not where it's cheapest to run — the volume that used to justify
+economizing on model choice (a review on every PR, most of which could
+never fail a blocking criterion) no longer exists after (n). Opus has
+also already demonstrated the kind of cross-file lifecycle finding this
+gate exists to catch: the block_ip/resync asymmetry on PR #8 (a live
+delta silently under-reporting evidence a resync would show), found by
+the automated reviewer and missed on an independent human pass. If the
+model is ever revisited, that should be its own explicit decision with
+its own stated reasoning — never a silent side effect of leaving
+`--model` unset again.
