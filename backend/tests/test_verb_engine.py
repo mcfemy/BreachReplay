@@ -459,3 +459,156 @@ def test_compute_score_loss_awards_no_speed_bonus():
     breakdown = verb_engine.compute_score(run, "loss", cap_seconds=480)
     assert breakdown["speed_bonus"] == 0
     assert breakdown["outcome_base"] == 0
+
+
+# ── Phase 2 acceptance re-verification (spec section 4 checklist) ──────────────
+#
+# Added during acceptance re-verification after compression_ratio scaling and
+# BREACH_HEAD_START_SECONDS pre-fire (action_engine.py) — the two changes that
+# made Colonial Pipeline's REAL authored timeline (gates spanning +4m to
+# +49m) actually fit inside a real 480s/600s mode cap in the first place.
+# `_SCENARIO` above has no compression_ratio, by design (existing tests in
+# this file rely on its gates staying far outside any real cap — see e.g.
+# `test_is_run_over_true_once_the_final_stage_has_fired_even_under_the_cap`'s
+# 10_000s cap) — the tests below use a compressed copy specifically to
+# exercise the realistic, now-actually-playable timeline.
+
+_COMPRESSED_SCENARIO = dict(_SCENARIO, compression_ratio=8.0)
+
+# seed=1 against _COMPRESSED_SCENARIO deterministically produces: two hosts
+# (host-8, host-9) pre-fired to "foothold" by BREACH_HEAD_START_SECONDS at
+# t=0, host-9 bound to the AUTH-009 (ip-matched) hidden_ioc, and a final
+# stage at 367s (< both the 480s daily and 600s scenario cap) targeting
+# host-1 — confirmed by direct inspection before writing this test, not
+# assumed from the compiler's general behavior.
+_CORE_LOOP_SEED = 1
+
+
+def test_core_loop_scan_query_block_and_win_are_all_reachable_within_the_cap():
+    """Phase 2 acceptance — the core loop, end to end, against a real
+    compiled run (not mocked): scan reveals an already-in-progress breach,
+    querying a compromised host surfaces its IOC (a real C2 IP), blocking
+    that IP contains the matched host, and containing the final stage's
+    real target before it fires wins — all inside the 480s daily cap."""
+    compiled = action_engine.compile_scenario(_COMPRESSED_SCENARIO, seed=_CORE_LOOP_SEED)
+    ip_ioc_host_ids = {p.host_id for p in compiled.ioc_placements if p.matches_on.get("ip")}
+    run = verb_engine.new_run(compiled)
+
+    # 1. scan reveals a seeded breach already in progress — not a clean map.
+    result = verb_engine.apply_verb(run, "scan_network")
+    run = result.run
+    red_hosts = [n for n in result.delta["nodes"] if n["compromise_level"] != "none"]
+    assert len(red_hosts) >= 1
+
+    # 2. querying a compromised host that has evidence returns its IOC,
+    # including a real C2 IP in the raw log text.
+    target_host = next(n["id"] for n in red_hosts if n["id"] in ip_ioc_host_ids)
+    result = verb_engine.apply_verb(run, "query_logs", target_host)
+    run = result.run
+    assert any("185.220.101.34" in ioc["raw_log"] for ioc in result.delta["revealed_iocs"])
+
+    # 3. blocking that exact IP contains the matched host.
+    result = verb_engine.apply_verb(run, "block_ip", "185.220.101.34")
+    run = result.run
+    assert result.delta["correct"] is True
+    assert run.world.get_host(result.delta["host_id"]).isolated is True
+
+    # 4. the win condition is reachable within the cap: isolate the final
+    # stage's real target before it fires, let the clock pass it, and
+    # confirm both "win" and that it happened inside the DAILY cap (the
+    # tighter of the two real caps — scenario mode's 600s is even looser).
+    final = next(s for s in compiled.stages if s.is_final)
+    for host_id in final.compromises_host_ids:
+        run = verb_engine.apply_verb(run, "isolate", host_id).run
+    while verb_engine.attacker_clock_seconds(run) <= final.trigger_seconds:
+        run = verb_engine.apply_verb(run, "scan_network").run
+
+    assert verb_engine.determine_outcome(run) == "win"
+    assert run.elapsed_seconds <= 480
+
+
+def test_no_leak_on_initial_resync_despite_a_pre_fired_world():
+    """Phase 2 acceptance criterion 2, re-verified against the new
+    pre-fired-world behavior specifically: BREACH_HEAD_START_SECONDS means
+    `run.world` already has compromised hosts the instant a run starts, but
+    `earned_state_snapshot` (what a fresh WS connect resyncs to, per
+    `action_run_ws_handler`) must still show nothing until a verb actually
+    reveals it — compromise state existing server-side is not the same as
+    it being earned. This exact interaction (pre-fired world + zero verbs
+    played) did not exist before today's BREACH_HEAD_START_SECONDS change
+    and had no prior test coverage."""
+    compiled = action_engine.compile_scenario(_COMPRESSED_SCENARIO, seed=_CORE_LOOP_SEED)
+    assert any(h.compromise_level != "none" for h in compiled.world.hosts), (
+        "fixture must actually have a pre-fired host or this test proves nothing"
+    )
+
+    run = verb_engine.new_run(compiled)
+    snapshot = verb_engine.earned_state_snapshot(run)
+    assert snapshot == {"hosts": [], "revealed_iocs": [], "edges": []}
+
+
+def test_five_seeded_runs_win_or_lose_by_strategy_not_luck():
+    """Phase 2 acceptance criterion 4 (spec section 4 checklist): 'a skilled
+    run can win with time to spare; a sloppy run can still partially
+    recover ... play 5 seeded runs and confirm outcomes differ meaningfully
+    by strategy, not luck.' For each of 5 seeds against the now-realistic
+    compressed timeline: isolating the final stage's real target before it
+    fires always wins; isolating an unrelated, off-attack-path host instead
+    never does. Outcome tracks the choice made, not which seed it was."""
+    for seed in range(1, 6):
+        compiled = action_engine.compile_scenario(_COMPRESSED_SCENARIO, seed=seed)
+        final = _final_stage(compiled)
+
+        skilled = verb_engine.new_run(compiled)
+        for host_id in final.compromises_host_ids:
+            skilled = verb_engine.apply_verb(skilled, "isolate", host_id).run
+        skilled = _run_clock_past(skilled, final.trigger_seconds)
+        assert verb_engine.determine_outcome(skilled) == "win", f"seed {seed}: isolating the real target must win"
+
+        attack_path = verb_engine._attack_path_host_ids(compiled)
+        off_path_host = next(h for h in compiled.world.hosts if h.id not in attack_path)
+        sloppy = verb_engine.new_run(compiled)
+        sloppy = verb_engine.apply_verb(sloppy, "isolate", off_path_host.id).run
+        sloppy = _run_clock_past(sloppy, final.trigger_seconds)
+        assert verb_engine.determine_outcome(sloppy) != "win", f"seed {seed}: isolating the wrong host must not win"
+
+
+def test_spending_the_full_cap_without_containment_loses_with_a_coherent_narrative():
+    """Phase 2 acceptance criterion 3, REWRITTEN. The original checklist
+    item ('a player who does nothing loses in <=8 minutes with a coherent
+    narrative') assumed a real-time clock that advances independent of the
+    player — it does not, and was never meant to: `RunState.elapsed_seconds`
+    is a turn-based spend-clock, advanced only by verb costs
+    (`action_run_store.py`'s own module docstring is explicit that this is
+    intentional, not a bug). 'Do nothing' is incoherent against a clock that
+    only moves when you act — there is no such thing as this player losing
+    via the natural path at all, since the clock never leaves 0.
+
+    The coherent replacement: a player who SPENDS the full time budget
+    without containing the breach loses, and the loss is narratable — the
+    final stage actually fired, and its real target host is left
+    compromised and un-isolated. Verified end to end: spend the entire 480s
+    daily cap on scan_network calls (a legitimate, if unproductive, play
+    pattern — never isolating anything), and confirm all three: the run
+    ends via the cap, the outcome is a loss/partial (never a win), and the
+    final stage's target is genuinely compromised and unisolated in the
+    resulting world state — not just a bare "loss" string with nothing
+    behind it."""
+    compiled = action_engine.compile_scenario(_COMPRESSED_SCENARIO, seed=_CORE_LOOP_SEED)
+    final = _final_stage(compiled)
+    run = verb_engine.new_run(compiled)
+
+    daily_cap = 480
+    while run.elapsed_seconds < daily_cap:
+        run = verb_engine.apply_verb(run, "scan_network").run
+
+    assert verb_engine.is_run_over(run, cap_seconds=daily_cap) is True
+    assert verb_engine.attacker_clock_seconds(run) >= final.trigger_seconds, "the final stage must actually have fired"
+
+    outcome = verb_engine.determine_outcome(run)
+    assert outcome in ("loss", "partial")
+
+    final_hosts = [run.world.get_host(hid) for hid in final.compromises_host_ids]
+    assert all(h.compromise_level != "none" and not h.isolated for h in final_hosts), (
+        "coherent narrative: the final stage's real target must be left compromised and un-isolated"
+    )
