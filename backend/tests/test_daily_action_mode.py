@@ -89,7 +89,25 @@ async def _make_scenario() -> "Scenario":
             difficulty="practitioner",
             industry_vertical="energy",
             status="approved",
+            # This row is a REAL, non-rolled-back commit against whatever DB
+            # AsyncSessionLocal points at (see this file's module docstring)
+            # — is_synthetic=True is what keeps the real daily-challenge
+            # picker (_get_or_create_daily_challenge) from ever selecting it,
+            # now that picker filters on this flag rather than status alone.
+            # A prior leak of un-flagged rows just like this one WAS
+            # selected for a real Daily Breach challenge in this environment
+            # — see docs/BACKLOG.md.
+            is_synthetic=True,
             decision_tree=_SLOW_DECISION_TREE,
+            # Pinned to 1.0 (no compression) — this test's whole point is a
+            # gate that sits PAST the daily cap (see comment above), which
+            # only holds if +15m stays literal 900s. Scenario.
+            # compression_ratio defaults to 8.0 at the DB level, which would
+            # otherwise compress it to ~112s (well inside the 480s cap) and
+            # invalidate every "ended via CAP, not final stage" assertion
+            # below. Compression scaling itself is covered separately by
+            # test_action_engine.py.
+            compression_ratio=1.0,
             alert_sequence=[],
         )
         db.add(scenario)

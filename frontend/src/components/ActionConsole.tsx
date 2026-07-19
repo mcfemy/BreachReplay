@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import NetworkMap, { type NetworkMapNode } from "./NetworkMap";
-import { colors, type NodeState } from "../theme/tokens";
+import { colors, nodeStateColor, type NodeState } from "../theme/tokens";
 import XPToast from "./XPToast";
 import {
   useRunSocket,
@@ -89,6 +89,17 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   const [textInput, setTextInput] = useState("");
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
   const [xpVisible, setXpVisible] = useState(false);
+  const [resultToast, setResultToast] = useState<{ text: string; good: boolean } | null>(null);
+  const [idleNudgeVisible, setIdleNudgeVisible] = useState(false);
+  const lastActionAtRef = useRef(0);
+  const idleNudgedThisStretchRef = useRef(false);
+
+  // Run-start baseline for the idle clock — set here (not in the ref
+  // initializer above) so Date.now() is never called during render.
+  useEffect(() => {
+    lastActionAtRef.current = Date.now();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (run.runEnd) {
@@ -98,6 +109,71 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     // Fire once per completed run — run.runEnd only ever transitions null -> summary.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.runEnd]);
+
+  // The core-loop fix: a verb's result must be the immediate visible
+  // outcome of paying its cost, not something the player has to already
+  // have the right drawer open to notice. Reacts to whatever the server
+  // just confirmed (run.lastDelta), not what was optimistically tapped —
+  // a rejected verb never produces a state.delta at all, so this never
+  // fires on failure. Covers every host-targeted verb uniformly
+  // (query_logs/isolate/image_disk/interview_user all carry `host_id`)
+  // plus the free-text verbs (block_ip/reset_creds carry `correct`).
+  useEffect(() => {
+    const delta = run.lastDelta;
+    if (!delta) return;
+
+    if (typeof delta.host_id === "string") {
+      setSelectedHostId(delta.host_id);
+    }
+
+    if (typeof delta.correct === "boolean") {
+      setResultToast(
+        delta.correct
+          ? { text: delta.host_id ? "Correct — host isolated." : "Correct — credential disabled.", good: true }
+          : { text: "No match for that input.", good: false },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.lastDelta]);
+
+  useEffect(() => {
+    if (!resultToast) return;
+    const t = setTimeout(() => setResultToast(null), 3000);
+    return () => clearTimeout(t);
+  }, [resultToast]);
+
+  // Idle nudge (onboarding layer 1 — see BREACHREPLAY_GAME_OVERHAUL_SPEC.md
+  // Phase 5 for the full guided first-run this is a small slice of). A
+  // push to act, never a hint about WHAT to do: no host/IP/direction is
+  // named. Any successful verb (a new lastDelta) resets the idle clock and
+  // this stretch's one-shot flag, so the nudge can fire again later in the
+  // run without ever repeating inside the same idle stretch.
+  useEffect(() => {
+    if (!run.lastDelta) return;
+    lastActionAtRef.current = Date.now();
+    idleNudgedThisStretchRef.current = false;
+    setIdleNudgeVisible(false);
+  }, [run.lastDelta]);
+
+  const IDLE_NUDGE_THRESHOLD_MS = 25_000;
+
+  useEffect(() => {
+    if (run.runEnd) return;
+    const poll = setInterval(() => {
+      if (idleNudgedThisStretchRef.current) return;
+      if (Date.now() - lastActionAtRef.current >= IDLE_NUDGE_THRESHOLD_MS) {
+        idleNudgedThisStretchRef.current = true;
+        setIdleNudgeVisible(true);
+      }
+    }, 2000);
+    return () => clearInterval(poll);
+  }, [run.runEnd]);
+
+  useEffect(() => {
+    if (!idleNudgeVisible) return;
+    const t = setTimeout(() => setIdleNudgeVisible(false), 4000);
+    return () => clearTimeout(t);
+  }, [idleNudgeVisible]);
 
   const nodes = layoutHosts(run.hosts);
   const nodeStates: Record<string, NodeState> = {};
@@ -160,6 +236,17 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
         </div>
       </div>
 
+      {/* Objective line — persistent, one line, in-voice. Never names a
+          host/IP/direction; that deduction is the game (onboarding layer 1,
+          see BREACHREPLAY_GAME_OVERHAUL_SPEC.md — the full guided first-run
+          is Phase 5, this is deliberately smaller than that). */}
+      <div className="shrink-0 px-4 py-1.5 border-b border-dim/20 bg-panel/50">
+        <p className="text-[11px] font-term text-white/80 leading-snug">
+          <span className="text-phosphor font-bold">OBJECTIVE</span>{" "}
+          Contain the breach before the attacker reaches its final target.
+        </p>
+      </div>
+
       {run.error && (
         <div className="shrink-0 px-4 py-2 text-xs text-bleed bg-bleed/10 border-b border-bleed/30">
           {run.error}
@@ -168,6 +255,29 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
 
       {/* Map */}
       <div className="flex-1 min-h-0 overflow-auto relative">
+        {/* Legend — colors read directly from nodeStateColor (theme/tokens.ts),
+            the same map NetworkMap itself renders from, so this can never
+            drift out of sync with what a host's dot actually looks like.
+            Teaches the controls, not the deduction: no mention of which
+            host/IP is involved, only what a color/connection MEANS. */}
+        <div className="absolute top-2 right-2 z-10 bg-panel/90 border border-dim/20 rounded-md px-2 py-1.5 text-[9px] font-term text-dim leading-tight max-w-[150px] pointer-events-none">
+          <div className="flex items-center gap-1.5">
+            <span
+              className="inline-block w-2 h-2 rounded-full shrink-0"
+              style={{ backgroundColor: nodeStateColor.compromised }}
+            />
+            <span>compromised</span>
+          </div>
+          <div className="flex items-center gap-1.5 mt-1">
+            <span
+              className="inline-block w-2 h-2 rounded-full shrink-0"
+              style={{ backgroundColor: nodeStateColor.contained }}
+            />
+            <span>contained</span>
+          </div>
+          <div className="mt-1 text-dim/70">Attacker spreads along connections.</div>
+        </div>
+
         {nodes.length === 0 ? (
           <div className="flex h-full items-center justify-center px-6 text-center">
             <div>
@@ -256,6 +366,28 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
           </button>
         ))}
       </div>
+
+      {/* block_ip / reset_creds result — these have no host-drawer to open
+          on a wrong guess (and reset_creds never opens one at all), so this
+          is their only visible confirmation that the cost bought something. */}
+      {resultToast && (
+        <div
+          className={`fixed bottom-24 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-full text-sm font-bold shadow-lg ${
+            resultToast.good ? "bg-contain text-void" : "bg-bleed text-void"
+          }`}
+        >
+          {resultToast.good ? "✓ " : "✗ "}{resultToast.text}
+        </div>
+      )}
+
+      {/* Idle nudge — a push to act, never a hint about what to do: names
+          no host, IP, or direction. Onboarding layer 1 (see the objective
+          line's comment above); fires at most once per idle stretch. */}
+      {idleNudgeVisible && (
+        <div className="fixed bottom-40 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-full text-sm font-bold shadow-lg bg-phosphor text-void">
+          The attacker is still active — every second counts.
+        </div>
+      )}
     </div>
   );
 }

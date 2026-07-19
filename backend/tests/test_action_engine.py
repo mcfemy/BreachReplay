@@ -8,7 +8,7 @@ seed.py directly, so these tests don't depend on that script's content
 staying stable. These are pure, synchronous tests — compile_scenario and
 world_state_at do no I/O, so no async client/db fixtures are needed.
 """
-from app.services import action_engine
+from app.services import action_engine, verb_engine
 
 _SCENARIO = {
     "id": "test-scenario-colonial",
@@ -209,6 +209,128 @@ def test_ioc_raw_log_is_rewritten_to_match_the_bound_synthesized_host():
     assert bound_host is not None
     assert bound_host.hostname in placement.raw_log
     assert hostname_ioc["matches_on"]["hostname"] not in placement.raw_log
+
+
+def test_missing_compression_ratio_defaults_to_no_scaling():
+    """_SCENARIO carries no compression_ratio field at all — must behave
+    exactly as before this feature existed (real-world minutes used as
+    literal seconds)."""
+    compiled = action_engine.compile_scenario(_SCENARIO, seed=5)
+    final_stage = next(s for s in compiled.stages if s.is_final)
+    assert final_stage.trigger_seconds == 49 * 60
+
+
+def test_compression_ratio_scales_trigger_seconds_and_stays_deterministic():
+    """The actual bug fix: an 8.0 compression_ratio (the DB column's
+    default) must scale every trigger_timestamp — decision gates, pressure
+    injections, and alert_lines alike, since all three parse through
+    _parse_trigger_seconds — and repeated compilation of the same
+    (scenario, seed) must still be byte-identical, per Phase 4's ghost
+    replay requirement."""
+    scenario = dict(_SCENARIO, compression_ratio=8.0)
+    run_a = action_engine.compile_scenario(scenario, seed=99)
+    run_b = action_engine.compile_scenario(scenario, seed=99)
+
+    assert [s.to_dict() for s in run_a.stages] == [s.to_dict() for s in run_b.stages]
+    assert run_a.alert_lines == run_b.alert_lines
+    assert [p.to_dict() for p in run_a.ioc_placements] == [p.to_dict() for p in run_b.ioc_placements]
+
+    # +49m (2940s raw) / 8.0 floors to 367s, not the unscaled 2940s.
+    final_stage = next(s for s in run_a.stages if s.is_final)
+    assert final_stage.trigger_seconds == 2940 // 8
+    assert final_stage.source_id == "gate-012"
+
+    # Alerts scale identically, so the ambient feed never references a time
+    # the compressed stage clock will never reach.
+    by_timestamp = {a["timestamp"]: a["trigger_seconds"] for a in run_a.alert_lines}
+    assert by_timestamp["+8m"] == 480 // 8
+
+    # Scaling must never disturb sort order or final-stage selection.
+    trigger_times = [s.trigger_seconds for s in run_a.stages]
+    assert trigger_times == sorted(trigger_times)
+
+
+def test_compress_seconds_floors_rather_than_rounds():
+    """250s / 7.0 = 35.71...; floor is 35, round-to-nearest would be 36 —
+    asserting the exact value pins down which policy is in effect."""
+    assert action_engine._compress_seconds(250, 7.0) == 35
+
+
+def test_compress_seconds_falls_back_to_no_scaling_for_invalid_ratio():
+    """A missing/zero/negative authored compression_ratio must never raise
+    (ZeroDivisionError) or silently produce a nonsensical negative/inflated
+    trigger_seconds — falls back to ratio 1.0 (no compression), matching
+    every other "bad authored content never crashes compilation" guard in
+    this module."""
+    assert action_engine._compress_seconds(120, 0) == 120
+    assert action_engine._compress_seconds(120, -5) == 120
+    assert action_engine._compress_seconds(120, None) == 120
+
+
+def test_breach_head_start_pre_fires_several_hosts_and_stays_deterministic():
+    """The 'incident already in progress' fix: world_state_at(compiled, 0)
+    — and therefore the player's very first scan_network — must already
+    show multiple compromised hosts, not a pristine map, and repeated
+    compilation of the same (scenario, seed) must still be byte-identical."""
+    scenario = dict(_SCENARIO, compression_ratio=8.0)
+    run_a = action_engine.compile_scenario(scenario, seed=7)
+    run_b = action_engine.compile_scenario(scenario, seed=7)
+
+    assert run_a.world.to_dict() == run_b.world.to_dict()
+    assert run_a.breach_head_start_seconds == run_b.breach_head_start_seconds
+
+    compromised_at_zero = [
+        h for h in action_engine.world_state_at(run_a, 0).hosts if h.compromise_level != "none"
+    ]
+    assert len(compromised_at_zero) >= 2
+
+    # The final (terminal) stage must never be pre-fired at compile time —
+    # the player always has an active, not-yet-lost run to walk into.
+    final_stage = next(s for s in run_a.stages if s.is_final)
+    assert run_a.breach_head_start_seconds < final_stage.trigger_seconds
+
+
+def test_breach_head_start_never_reaches_the_final_stage_of_a_short_scenario():
+    """A scenario whose final stage's compressed trigger_seconds falls at
+    or below BREACH_HEAD_START_SECONDS must clamp the effective head start
+    below it, not pre-fire the loss/terminal condition before the player
+    has taken a single action."""
+    short_scenario = dict(
+        _SCENARIO,
+        compression_ratio=100.0,  # 49m (2940s) / 100 = 29s final trigger
+    )
+    compiled = action_engine.compile_scenario(short_scenario, seed=3)
+    final_stage = next(s for s in compiled.stages if s.is_final)
+
+    assert final_stage.trigger_seconds <= action_engine.BREACH_HEAD_START_SECONDS
+    assert compiled.breach_head_start_seconds < final_stage.trigger_seconds
+
+    state_at_zero = action_engine.world_state_at(compiled, 0)
+    final_targets = [state_at_zero.get_host(hid) for hid in final_stage.compromises_host_ids]
+    assert all(h is not None and h.compromise_level == "none" for h in final_targets)
+
+
+def test_new_run_world_matches_world_state_at_zero_and_advances_without_double_firing():
+    """verb_engine.new_run must start from the exact same pre-fired world
+    action_engine.world_state_at(compiled, 0) produces (not a pristine
+    one), and its attacker_clock_offset must be seeded so a live run's
+    apply_verb never re-applies a stage already folded into that baseline."""
+    scenario = dict(_SCENARIO, compression_ratio=8.0)
+    compiled = action_engine.compile_scenario(scenario, seed=7)
+
+    run = verb_engine.new_run(compiled)
+    assert run.world.to_dict() == action_engine.world_state_at(compiled, 0).to_dict()
+    assert verb_engine.attacker_clock_seconds(run) == compiled.breach_head_start_seconds
+
+    # A cheap verb (block_ip, cost 15s, deliberately wrong target so it's a
+    # pure clock-advance with no world mutation of its own) must not
+    # double-advance any host the head start already compromised.
+    result = verb_engine.apply_verb(run, "block_ip", target="no-such-ip")
+    pre_fired_ids = {hid for s in compiled.stages if s.trigger_seconds <= compiled.breach_head_start_seconds for hid in s.compromises_host_ids}
+    for hid in pre_fired_ids:
+        before = run.world.get_host(hid)
+        after = result.run.world.get_host(hid)
+        assert before.compromise_level == after.compromise_level
 
 
 def test_compile_scenario_accepts_a_missing_or_empty_content_gracefully():

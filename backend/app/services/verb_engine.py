@@ -85,17 +85,36 @@ class VerbResult:
 
 
 def new_run(compiled: CompiledRun) -> RunState:
-    """A fresh RunState at t=0: no clock spent, nothing revealed, the
-    attacker hasn't advanced past t=0 yet (world == compiled.world,
-    identical to action_engine.world_state_at(compiled, 0))."""
-    return RunState(compiled=compiled, world=compiled.world)
+    """A fresh RunState at t=0: no clock spent, nothing revealed. `world ==
+    compiled.world`, which already has every stage through
+    `compiled.breach_head_start_seconds` folded in (action_engine.py's
+    "incident already in progress" fix) — identical to
+    action_engine.world_state_at(compiled, 0), not a pristine, all-clean
+    world.
+
+    `attacker_clock_offset` starts NEGATIVE, at
+    `-compiled.breach_head_start_seconds`, so `attacker_clock_seconds`
+    below reads `breach_head_start_seconds` at elapsed_seconds=0 instead of
+    0 — the attacker's effective clock starts already that far ahead,
+    exactly matching what's already been folded into `world`. This is what
+    makes `_advance_stages` (called from `apply_verb` below) safe to run
+    completely unchanged: its (from_clock, to_clock] window never revisits
+    a stage at or before `breach_head_start_seconds`, since `from_clock`
+    for the very first verb is `attacker_clock_seconds(run)` at t=0, i.e.
+    `breach_head_start_seconds` itself — so no stage already baked into
+    `world` is ever double-applied."""
+    return RunState(compiled=compiled, world=compiled.world, attacker_clock_offset=-compiled.breach_head_start_seconds)
 
 
 def attacker_clock_seconds(run: RunState) -> int:
-    """The attacker's own effective clock — always <= run.elapsed_seconds,
-    permanently lagging by `attacker_clock_offset` once `escalate` has been
-    used (a "management call" buys a fixed 60s of attacker inactivity, not
-    a time-boxed pause window)."""
+    """The attacker's own effective clock: `elapsed_seconds -
+    attacker_clock_offset`. `attacker_clock_offset` starts negative (see
+    new_run) so this clock starts AHEAD of `elapsed_seconds` by
+    `breach_head_start_seconds` — the attacker doesn't pause and wait for
+    the player to show up. `escalate` then ADDS a fixed 60s to the offset
+    (a "management call" buys 60s of attacker inactivity, not a time-boxed
+    pause window), which first eats into that head start and, once the
+    offset turns positive, makes the clock lag `elapsed_seconds` instead."""
     return max(0, run.elapsed_seconds - run.attacker_clock_offset)
 
 

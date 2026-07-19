@@ -234,6 +234,14 @@ async def approved_scenario(db):
         difficulty="practitioner",
         status="approved",
         decision_tree=DECISION_TREE,
+        # Pinned to 1.0 (no compression): DECISION_TREE's "+15m" gate is
+        # deliberately past what any test using this fixture spends in
+        # clock-seconds, so it never fires mid-test. Scenario.compression_ratio
+        # defaults to 8.0 at the DB level, which would compress +15m to ~112s
+        # and fire it well inside these tests' normal action budget — action_
+        # engine.py's own compression scaling is covered by its dedicated
+        # tests in test_action_engine.py, not here.
+        compression_ratio=1.0,
         alert_sequence=[
             {
                 "timestamp": "+0m",

@@ -76,6 +76,13 @@ async def _make_org_tabletop_session(user_id: str):
             source_reference=f"TEST-ORG-{uuid.uuid4().hex[:8]}",
             difficulty="practitioner",
             status="approved",
+            # Real, non-rolled-back commit (see this file's module
+            # docstring on why AsyncSessionLocal is used directly) —
+            # is_synthetic=True keeps the real daily-challenge picker from
+            # ever selecting it. An earlier, un-flagged version of this
+            # exact fixture WAS selected for a real Daily Breach challenge
+            # in this environment — see docs/BACKLOG.md.
+            is_synthetic=True,
             decision_tree=_DECISION_TREE,
             alert_sequence=[],
         )

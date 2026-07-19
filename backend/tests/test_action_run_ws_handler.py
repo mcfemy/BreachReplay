@@ -74,6 +74,13 @@ async def _make_scenario(decision_tree=None, hidden_iocs=None) -> "Scenario":
             difficulty="practitioner",
             industry_vertical="energy",
             status="approved",
+            # Real, non-rolled-back commit (see this file's own docstring on
+            # why AsyncSessionLocal is used directly) — is_synthetic=True
+            # keeps the real daily-challenge picker from ever selecting it.
+            # An earlier, un-flagged version of this exact fixture WAS
+            # selected for a real Daily Breach challenge in this
+            # environment — see docs/BACKLOG.md.
+            is_synthetic=True,
             decision_tree=decision_tree if decision_tree is not None else _FAST_DECISION_TREE,
             alert_sequence=[],
             hidden_iocs=hidden_iocs or [],

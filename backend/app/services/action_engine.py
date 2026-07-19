@@ -48,21 +48,82 @@ _TIMESTAMP_RE = re.compile(r'^\+(\d+)([ms])$')
 # duplicated locally since that name is private to org_simulation.py.
 _COMPROMISE_LEVELS = ("none", "foothold", "admin", "domain_admin")
 
+# The "incident already in progress" fix: a responder walking into a real
+# breach never finds a pristine network — they find a SOC that's already
+# noticed *something*. Without this, world_state_at(compiled, 0) (and
+# therefore the player's very first scan_network) showed every host
+# "none", because compile_scenario built `world` from generate_org_state's
+# pristine baseline and left stage-firing entirely to the live game clock.
+#
+# Fixed (already-compressed) attacker-clock seconds treated as already
+# elapsed at compile time: every stage whose (post-compression_ratio)
+# trigger_seconds falls at or before this gets folded into `CompiledRun.
+# world` directly, not just the FIRST stage — see compile_scenario's
+# `_apply_stages_up_to(world, stages, head_start)` call. 90s was chosen
+# against Colonial Pipeline's 8x-compressed timeline (gates every ~30s):
+# it pre-fires 3 of 12 gates, leaving 9 ahead of the player and ~390 of the
+# 480s daily-mode budget still to play — "several compromised hosts", not
+# a still-mostly-untouched map, and not "half the game already decided".
+# Tunable by feel exactly like Scenario.compression_ratio; not adaptive
+# per-scenario on purpose, to keep this a single, deterministic knob.
+#
+# Never allowed to reach/pass the scenario's own final (terminal) stage —
+# see compile_scenario's clamp against final_stage.trigger_seconds - 1 —
+# so a heavily-compressed or short scenario can never pre-fire its own
+# loss condition before the player has taken a single action.
+#
+# Also never applied at all if nothing would actually fall within the
+# window (see compile_scenario's any_stage_pre_fires check) — an
+# uncompressed or sparsely-timed scenario whose earliest gate lands well
+# past this constant has nothing to visibly pre-fire, so the effective
+# head start (and the attacker_clock_offset shift verb_engine.new_run
+# derives from it) both fall back to 0 rather than silently
+# fast-forwarding every later stage for no visible reason at t=0.
+BREACH_HEAD_START_SECONDS = 90
 
-def _parse_trigger_seconds(timestamp: str) -> int:
-    """Parse an authored timestamp like '+4m' into elapsed seconds. All
-    authored content (backend/seed.py) uses '+Nm' (minutes); 's' is
-    tolerated for forward-compatibility but unused today. Malformed/missing
-    timestamps fall back to 0 rather than raising, so one bad authored
-    field can't crash compilation — consistent with org_simulation.py's
-    "never raises" style for content-derived input."""
+
+def _compress_seconds(raw_seconds: int, compression_ratio: float) -> int:
+    """Scales an authored real-world timestamp (already converted to
+    seconds) down to the action-console's compressed game clock. Colonial
+    Pipeline's authored gates span +4m to +49m — real-incident pacing meant
+    for the old tabletop mode's alert stream, not the 8/10-minute action-
+    console caps (CAP_SECONDS_BY_MODE in action_run_store.py). Left
+    unscaled, ~10 of 12 gates fell past every mode's cap and never fired in
+    a playable session — this is the fix.
+
+    Floors rather than rounds: a stage landing a second earlier than exact
+    compression is harmless (the attacker just advances slightly sooner),
+    while rounding UP risks pushing a stage past a cap it would otherwise
+    have fit inside — exactly the failure mode this function exists to
+    eliminate. Falls back to no compression (ratio 1.0) for a
+    missing/non-positive authored ratio rather than raising or dividing by
+    zero, consistent with this module's "bad authored content never crashes
+    compilation" convention (see _parse_trigger_seconds).
+
+    Deterministic: plain IEEE-754 double division followed by a floor, no
+    RNG — the same (raw_seconds, compression_ratio) always produces the
+    same integer on any platform, which is what Phase 4's "same seed, same
+    run" ghost replay requires of every step compile_scenario takes."""
+    ratio = compression_ratio if compression_ratio and compression_ratio > 0 else 1.0
+    return int(raw_seconds // ratio)
+
+
+def _parse_trigger_seconds(timestamp: str, compression_ratio: float = 1.0) -> int:
+    """Parse an authored timestamp like '+4m' into elapsed seconds, then
+    scale it by `compression_ratio` (see _compress_seconds). All authored
+    content (backend/seed.py) uses '+Nm' (minutes); 's' is tolerated for
+    forward-compatibility but unused today. Malformed/missing timestamps
+    fall back to 0 rather than raising, so one bad authored field can't
+    crash compilation — consistent with org_simulation.py's "never raises"
+    style for content-derived input."""
     if not isinstance(timestamp, str):
         return 0
     m = _TIMESTAMP_RE.match(timestamp.strip())
     if not m:
         return 0
     value, unit = int(m.group(1)), m.group(2)
-    return value * 60 if unit == "m" else value
+    raw_seconds = value * 60 if unit == "m" else value
+    return _compress_seconds(raw_seconds, compression_ratio)
 
 
 # industry_vertical -> ORG_ARCHETYPES key. Scenario.industry_vertical values
@@ -189,6 +250,13 @@ class CompiledRun:
     ioc_placements: tuple[IOCPlacement, ...]
     alert_lines: tuple[dict, ...]  # scenario alert_sequence w/ parsed trigger_seconds; ambient feed, not hidden
     final_stage_id: Optional[str]
+    # How many (already-compressed) attacker-clock seconds are pre-folded
+    # into `world` above — see BREACH_HEAD_START_SECONDS. `world_state_at`
+    # and verb_engine.new_run both need this exact value (not just the
+    # module constant) to avoid re-applying a stage that's already baked
+    # in, since compile_scenario clamps it down for scenarios whose final
+    # stage would otherwise fire before the run even starts.
+    breach_head_start_seconds: int = 0
 
 
 def _build_edges(state: OrgState) -> tuple[MapEdge, ...]:
@@ -227,6 +295,7 @@ def _build_stages(
     pressure_injections: list[dict],
     host_ids: list[str],
     seed: int,
+    compression_ratio: float = 1.0,
 ) -> tuple[Stage, ...]:
     """Deterministically converts decision_tree + pressure_injections into a
     sorted stage timeline. Each decision_gate stage advances the compromise
@@ -239,9 +308,16 @@ def _build_stages(
     the MAXIMUM trigger_seconds — never assumed from array position, since
     authored content is not guaranteed to be listed in chronological order
     (ties broken by earliest array occurrence, so exactly one stage is ever
-    final)."""
+    final).
+
+    `compression_ratio` (the scenario's own field, see _compress_seconds)
+    scales every authored trigger_timestamp before it ever becomes a
+    trigger_seconds value here — max trigger_seconds selection, sort order,
+    and everything downstream all operate on the already-compressed clock."""
     gates = [g for g in (decision_tree or []) if isinstance(g, dict)]
-    gate_trigger_seconds = [_parse_trigger_seconds(g.get("trigger_timestamp", "+0m")) for g in gates]
+    gate_trigger_seconds = [
+        _parse_trigger_seconds(g.get("trigger_timestamp", "+0m"), compression_ratio) for g in gates
+    ]
     final_gate_index: Optional[int] = None
     if gate_trigger_seconds:
         final_gate_index = gate_trigger_seconds.index(max(gate_trigger_seconds))
@@ -268,7 +344,7 @@ def _build_stages(
             continue
         stages.append(Stage(
             id=f"stage-{p.get('id', 'pressure')}",
-            trigger_seconds=_parse_trigger_seconds(p.get("trigger_timestamp", "+0m")),
+            trigger_seconds=_parse_trigger_seconds(p.get("trigger_timestamp", "+0m"), compression_ratio),
             kind="pressure",
             source_id=str(p.get("id", "")),
             mitre_technique=None,
@@ -379,17 +455,47 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
     pressure_injections = _field(scenario, "pressure_injections") or []
     hidden_iocs = _field(scenario, "hidden_iocs") or []
     alert_sequence = _field(scenario, "alert_sequence") or []
+    # Scenario.compression_ratio (default 8.0 at the DB level) — see
+    # _compress_seconds. Defaults to 1.0 (no scaling) for content that
+    # doesn't carry the field at all, e.g. plain-dict test fixtures.
+    compression_ratio = _field(scenario, "compression_ratio", 1.0)
 
-    stages = _build_stages(decision_tree, pressure_injections, host_ids, seed)
+    stages = _build_stages(decision_tree, pressure_injections, host_ids, seed, compression_ratio)
     ioc_placements = _place_iocs(hidden_iocs, world, seed, stages)
 
     alert_lines = tuple(
-        {**a, "trigger_seconds": _parse_trigger_seconds(a.get("timestamp", "+0m"))}
+        {**a, "trigger_seconds": _parse_trigger_seconds(a.get("timestamp", "+0m"), compression_ratio)}
         for a in alert_sequence
         if isinstance(a, dict)
     )
 
-    final_stage_id = next((s.id for s in stages if s.is_final), None)
+    final_stage = next((s for s in stages if s.is_final), None)
+    final_stage_id = final_stage.id if final_stage is not None else None
+
+    # "Incident already in progress" fix (see BREACH_HEAD_START_SECONDS):
+    # clamped below the final stage's own trigger_seconds so a heavily-
+    # compressed or short scenario can never pre-fire its own terminal
+    # event — the player always has an active, not-yet-lost run to walk
+    # into, however small BREACH_HEAD_START_SECONDS ends up mattering here.
+    if final_stage is not None:
+        candidate_head_start = min(BREACH_HEAD_START_SECONDS, max(final_stage.trigger_seconds - 1, 0))
+    else:
+        candidate_head_start = BREACH_HEAD_START_SECONDS
+    # ... but only actually apply it if some decision_gate stage genuinely
+    # falls within that window. A scenario whose earliest gate lands well
+    # past BREACH_HEAD_START_SECONDS (or one with no gates at all) has
+    # nothing to visibly pre-fire — falling back to a "head start" that
+    # compromises zero hosts would still shift verb_engine.new_run's
+    # attacker_clock_offset (see that function), quietly fast-forwarding
+    # every LATER stage for no visible reason at t=0. Keeping the two in
+    # lockstep (a real head start iff something actually got pre-fired)
+    # is what lets scenarios/fixtures with a sparse or distant timeline
+    # opt out for free, with no separate flag needed.
+    any_stage_pre_fires = any(
+        s.trigger_seconds <= candidate_head_start and s.compromises_host_ids for s in stages
+    )
+    breach_head_start_seconds = candidate_head_start if any_stage_pre_fires else 0
+    world = _apply_stages_up_to(world, stages, breach_head_start_seconds)
 
     return CompiledRun(
         scenario_id=scenario_id,
@@ -400,20 +506,27 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
         ioc_placements=ioc_placements,
         alert_lines=alert_lines,
         final_stage_id=final_stage_id,
+        breach_head_start_seconds=breach_head_start_seconds,
     )
 
 
-def world_state_at(compiled: CompiledRun, elapsed_seconds: int) -> OrgState:
-    """Pure: the hidden OrgState if the attacker has been completely
-    unopposed from 0 to `elapsed_seconds` — every stage whose
-    trigger_seconds <= elapsed_seconds has fired and applied its host
-    compromise. This is the baseline, no-defender-action timeline; the
-    later verb-application layer (isolate/etc.) applies defender actions on
-    top of it, the same way org_simulation.apply_defender_action does for
-    Arena. Deterministic and pure: same (compiled, elapsed_seconds) always
-    produces a byte-identical OrgState."""
-    state = compiled.world
-    for stage in compiled.stages:
+def _apply_stages_up_to(
+    world: OrgState, stages: tuple[Stage, ...], elapsed_seconds: int, already_applied_through: int = 0,
+) -> OrgState:
+    """Applies every stage whose trigger_seconds falls in
+    (already_applied_through, elapsed_seconds] against `world`, advancing
+    each targeted host's compromise_level by one step (never past
+    domain_admin, never onto an isolated host — there is none to isolate
+    yet at compile time, but this is shared with world_state_at's general
+    case). `already_applied_through` lets a caller skip stages that are
+    already folded into `world`'s own baseline (see compile_scenario's
+    BREACH_HEAD_START_SECONDS pre-fire) instead of re-applying them and
+    double-advancing a host. Pure and deterministic: same inputs always
+    produce a byte-identical OrgState."""
+    state = world
+    for stage in stages:
+        if stage.trigger_seconds <= already_applied_through:
+            continue
         if stage.trigger_seconds > elapsed_seconds:
             continue
         for host_id in stage.compromises_host_ids:
@@ -436,3 +549,24 @@ def world_state_at(compiled: CompiledRun, elapsed_seconds: int) -> OrgState:
                 global_flags=state.global_flags,
             )
     return state
+
+
+def world_state_at(compiled: CompiledRun, elapsed_seconds: int) -> OrgState:
+    """Pure: the hidden OrgState if the attacker has been completely
+    unopposed from 0 to `elapsed_seconds` — every stage whose
+    trigger_seconds <= elapsed_seconds has fired and applied its host
+    compromise. This is the baseline, no-defender-action timeline; the
+    later verb-application layer (isolate/etc.) applies defender actions on
+    top of it, the same way org_simulation.apply_defender_action does for
+    Arena. Deterministic and pure: same (compiled, elapsed_seconds) always
+    produces a byte-identical OrgState.
+
+    `compiled.world` already has every stage through
+    `compiled.breach_head_start_seconds` folded in at compile time (the
+    "incident already in progress" fix — see BREACH_HEAD_START_SECONDS), so
+    `world_state_at(compiled, 0)` returns that pre-fired state directly
+    rather than a pristine, all-clean world."""
+    return _apply_stages_up_to(
+        compiled.world, compiled.stages, elapsed_seconds,
+        already_applied_through=compiled.breach_head_start_seconds,
+    )

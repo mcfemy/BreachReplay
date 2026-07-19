@@ -223,7 +223,14 @@ async def _get_or_create_daily_challenge(db: AsyncSession) -> DailyChallenge:
 
     sc_result = await db.execute(
         select(Scenario)
-        .where(Scenario.status == "approved")
+        # is_synthetic excludes test/fixture content structurally (a real
+        # column, not a title match) — see Scenario.is_synthetic's
+        # docstring and docs/BACKLOG.md's "Daily-challenge picker can
+        # select synthetic/test-titled scenarios" entry. `status ==
+        # "approved"` alone isn't sufficient: some test fixtures
+        # legitimately need that exact status to exercise "approved"
+        # behavior, so this must be a second, independent condition.
+        .where(Scenario.status == "approved", Scenario.is_synthetic.is_(False))
         .order_by(func.random())
         .limit(1)
     )

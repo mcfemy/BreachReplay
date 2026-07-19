@@ -111,3 +111,35 @@ live-run lookup, DB constraint) still correctly blocks/resumes a repeat
 attempt — it's purely a "lost my results view on refresh" UX gap.
 Fixing it means teaching `/daily/today` to also check `ActionRun` for
 today's challenge; deferred out of Item 5's frontend-rework scope.
+
+## Daily-challenge picker can select synthetic/test-titled scenarios — prod-safety, not just test hygiene
+
+Found while chasing an unrelated `compression_ratio` bug (action_engine.py
+gate-timing fix): `_get_or_create_daily_challenge`
+(`backend/app/api/routes/daily.py`) picks a random `status="approved"`
+scenario for the day, with no notion of "real content" vs "test
+fixture" — it trusts `status` alone. Several tests
+(`test_daily_action_mode.py`, `test_action_run_ws_handler.py`) create
+`Scenario` rows with `status="approved"` and commit them for real via
+`app.db.session.AsyncSessionLocal` directly, bypassing the `db` fixture's
+rolled-back transaction, because `action_run_store.finalize()` opens its
+own session — a different connection than the test's, so writes made only
+through the rolled-back `db` fixture would be invisible to it (documented
+in `test_daily_action_mode.py`'s module docstring). Confirmed live: a
+scenario titled "Daily Action Mode Test Scenario" — left behind by a prior
+test run against the shared dev DB — was the scenario actually backing a
+real Daily Breach challenge in this environment.
+
+Two fixes worth considering, not mutually exclusive:
+  1. The picker should exclude non-production scenarios via a real flag on
+     `Scenario` (e.g. `is_test_fixture` or similar), not a title-string
+     match — a title match is exactly the kind of check that silently stops
+     working the moment someone names a test fixture something ordinary.
+  2. These tests should run against an isolated test database instead of
+     the shared dev DB, so a failed/aborted test run can't leave `approved`
+     rows behind for the real app to find at all.
+
+Not bundled into the `compression_ratio` fix because it's an orthogonal,
+pre-existing latent bug (present before that work and unrelated to it) —
+but it's a real prod-safety gap, not merely test-suite flakiness, since it
+can put synthetic content in front of an actual player.

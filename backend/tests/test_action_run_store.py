@@ -43,6 +43,14 @@ async def fast_scenario(db):
         industry_vertical="energy",
         status="approved",
         decision_tree=_FAST_DECISION_TREE,
+        # Pinned to 1.0 (no compression) — the "+2m" trigger above is chosen
+        # as literal seconds against this file's own store/finalize timing
+        # assertions, not to exercise action_engine's compression scaling
+        # (covered separately by test_action_engine.py). Scenario.
+        # compression_ratio defaults to 8.0 at the DB level, which would
+        # otherwise compress +2m to 15s and fire the gate far earlier than
+        # these tests assume.
+        compression_ratio=1.0,
         alert_sequence=[],
     )
     db.add(scenario)

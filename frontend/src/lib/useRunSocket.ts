@@ -100,6 +100,16 @@ export interface RunEndSummary {
   avg_score_today?: number;
 }
 
+// A `state.delta` message's raw delta, verb-agnostic — see
+// verb_engine.apply_verb's per-verb shapes. Exposed as-is (not pre-parsed
+// into a union) so ActionConsole can react generically: any delta
+// carrying a string `host_id` came from a verb whose result belongs on
+// that host's drawer (query_logs/isolate/image_disk/interview_user, and
+// block_ip's correct-guess case), and any delta carrying a boolean
+// `correct` is a free-text verb's (block_ip/reset_creds) guess result,
+// whether or not it also carries a host_id.
+type LastDelta = Record<string, unknown> | null;
+
 interface RunSocketState {
   connected: boolean;
   elapsedSeconds: number;
@@ -115,6 +125,7 @@ interface RunSocketState {
   isFinalReached: boolean;
   error: string | null;
   runEnd: RunEndSummary | null;
+  lastDelta: LastDelta;
 }
 
 const INITIAL_STATE: RunSocketState = {
@@ -130,6 +141,7 @@ const INITIAL_STATE: RunSocketState = {
   stagesFired: 0,
   totalStages: 0,
   isFinalReached: false,
+  lastDelta: null,
   error: null,
   runEnd: null,
 };
@@ -205,12 +217,18 @@ export function useRunSocket(runId: string) {
           // which keys are present, matching apply_verb's own branches.
           const delta = msg.delta as Record<string, unknown>;
           setState((s) => {
+            // `lastDelta` is attached to every branch below (including the
+            // escalate/no-op fallthrough) — ActionConsole reacts to it
+            // generically (any `host_id` opens that host's drawer; any
+            // `correct` surfaces a block_ip/reset_creds result) rather than
+            // this hook needing to know what the UI does with it.
             if (Array.isArray(delta.nodes)) {
               // scan_network
               return {
                 ...s,
                 hosts: delta.nodes as HostSummary[],
                 edges: (delta.edges as RunEdge[]) ?? s.edges,
+                lastDelta: delta,
               };
             }
             // Checked BEFORE the generic revealed_iocs branch below:
@@ -229,9 +247,9 @@ export function useRunSocket(runId: string) {
                 const revealedIocs = Array.isArray(delta.revealed_iocs)
                   ? mergeIocs(s.revealedIocs, delta.revealed_iocs as RevealedIoc[])
                   : s.revealedIocs;
-                return { ...s, hosts, revealedIocs };
+                return { ...s, hosts, revealedIocs, lastDelta: delta };
               }
-              return s;
+              return { ...s, lastDelta: delta };
             }
             if (Array.isArray(delta.revealed_iocs)) {
               // query_logs or image_disk
@@ -246,6 +264,7 @@ export function useRunSocket(runId: string) {
                 hosts,
                 forensicsByHost,
                 revealedIocs: mergeIocs(s.revealedIocs, delta.revealed_iocs as RevealedIoc[]),
+                lastDelta: delta,
               };
             }
             if (Array.isArray(delta.credentials)) {
@@ -254,14 +273,15 @@ export function useRunSocket(runId: string) {
               return {
                 ...s,
                 credentialsByHost: { ...s.credentialsByHost, [hostId]: delta.credentials as RevealedCredential[] },
+                lastDelta: delta,
               };
             }
             if (typeof delta.isolated === "boolean") {
               // isolate
-              return { ...s, hosts: upsertHost(s.hosts, delta.host_id as string, { isolated: true }) };
+              return { ...s, hosts: upsertHost(s.hosts, delta.host_id as string, { isolated: true }), lastDelta: delta };
             }
             // escalate_used: no host/IOC/edge change, nothing to merge.
-            return s;
+            return { ...s, lastDelta: delta };
           });
           break;
         }
