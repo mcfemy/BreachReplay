@@ -41,6 +41,14 @@ class Scenario(Base):
     hidden_iocs: Mapped[list] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
 
     status: Mapped[str] = mapped_column(SAEnum("draft", "review", "approved", "rejected", "archived", name="scenario_status"), default="draft")
+    # Structural guard against the daily-challenge picker (and anything else
+    # that queries "real playable content") ever selecting test/fixture
+    # data — a real column, not a title match, so it can't be defeated by a
+    # test fixture picking an ordinary-looking title. Test code that must
+    # persist a real (non-rolled-back) `status="approved"` Scenario row for
+    # its own purposes sets this True explicitly at creation time; every
+    # production scenario defaults False.
+    is_synthetic: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     is_private: Mapped[bool] = mapped_column(Boolean, default=False)
     is_capstone: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     owner_org_id: Mapped[str] = mapped_column(String, nullable=True)

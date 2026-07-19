@@ -16,6 +16,7 @@ from app.models.arena import ArenaMatch, ArenaAction
 from app.models.arena_event import ArenaEvent
 from app.models.teaser_event import TeaserEvent
 from app.models.xp_transaction import XPTransaction
+from app.models.action_run import ActionRun
 
 __all__ = [
     "Base",
@@ -44,4 +45,5 @@ __all__ = [
     "ArenaEvent",
     "TeaserEvent",
     "XPTransaction",
+    "ActionRun",
 ]

@@ -23,7 +23,7 @@ from app.core.logging import set_request_context, setup_logging
 from app.core.redis import get_redis
 from app.core.security import limiter, sentry_before_send
 from app.db.session import engine
-from app.websocket.handlers import simulation_ws_handler, arena_ws_handler, arena_spectator_ws_handler
+from app.websocket.handlers import simulation_ws_handler, arena_ws_handler, arena_spectator_ws_handler, action_run_ws_handler
 
 if settings.SENTRY_DSN:
     sentry_sdk.init(
@@ -63,16 +63,61 @@ async def _arena_event_queue_sweep_loop():
             logger.exception("arena event queue sweep iteration failed")
 
 
+# Phase 2 (action console core loop) — same "must run inside this exact
+# backend process" reasoning as the Arena sweep above: only this process
+# holds the real live app.services.action_run_store state. An abandoned
+# run (tab closed, no more action.submit messages) would otherwise never
+# get an ActionRun row at all — this sweep is what guarantees one, for
+# both funnel data and Phase 4 ghost availability. 30s trades a slightly
+# longer worst-case grace beyond the store's own 60s SWEEP_GRACE_SECONDS
+# for not hammering the DB every tick, same tradeoff the Arena sweep makes.
+_ACTION_RUN_SWEEP_INTERVAL_SECONDS = 30
+
+
+async def _run_action_run_sweep_iteration() -> None:
+    """One sweep pass: force-finalize expired runs, then broadcast run.end
+    to whichever socket (if any) is still connected under each swept
+    run_id — without this, a connected-but-slow player whose run the sweep
+    force-finalizes would be left with a dead socket instead of their
+    debrief. Factored out of the while-loop below so it can be exercised
+    directly in tests without dealing with asyncio.sleep/an infinite loop,
+    the same shape arena_matchmaking_service.sweep_closed_event_queues
+    already has for the Arena sweep."""
+    from app.db.session import AsyncSessionLocal
+    from app.services.action_run_store import action_run_store
+    from app.websocket.manager import manager, build_run_end_event
+
+    async with AsyncSessionLocal() as db:
+        finalized = await action_run_store.sweep_expired(db)
+    for run_id, summary in finalized:
+        await manager.broadcast(run_id, build_run_end_event(summary))
+
+
+async def _action_run_sweep_loop():
+    while True:
+        await asyncio.sleep(_ACTION_RUN_SWEEP_INTERVAL_SECONDS)
+        try:
+            await _run_action_run_sweep_iteration()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("action run sweep iteration failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
     sweep_task = asyncio.create_task(_arena_event_queue_sweep_loop())
+    action_run_sweep_task = asyncio.create_task(_action_run_sweep_loop())
     try:
         yield
     finally:
         sweep_task.cancel()
+        action_run_sweep_task.cancel()
         with suppress(asyncio.CancelledError):
             await sweep_task
+        with suppress(asyncio.CancelledError):
+            await action_run_sweep_task
 
 
 app = FastAPI(
@@ -241,6 +286,47 @@ async def websocket_session(websocket: WebSocket, session_id: str):
         return
 
     await simulation_ws_handler(websocket, session_id, user_id)
+
+
+@app.websocket("/ws/run/{run_id}")
+async def websocket_action_run(websocket: WebSocket, run_id: str):
+    """Phase 2 action console core loop connection. Identical rate-limit +
+    deferred-auth-frame protocol to websocket_session above (copied, not
+    shared, matching this file's existing convention of not factoring that
+    block out between /ws/session and /ws/arena either) — see
+    action_run_ws_handler's own docstring for what happens once a real
+    user_id reaches it."""
+    client_ip = _get_client_ip(websocket)
+    r = await get_redis()
+    if not await _ws_rate_allowed(r, client_ip):
+        await websocket.close(code=4029)
+        return
+
+    await websocket.accept()
+
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=3.0)
+        auth_msg = json.loads(raw)
+        if auth_msg.get("type") != "auth":
+            await websocket.close(code=4001)
+            return
+        token = auth_msg.get("token", "")
+    except (asyncio.TimeoutError, json.JSONDecodeError, Exception):
+        await websocket.close(code=4001)
+        return
+
+    try:
+        payload = jose_jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        user_id: str = payload.get("sub")
+        if not user_id:
+            raise ValueError("Missing sub claim")
+    except (JWTError, ValueError):
+        await websocket.close(code=4001)
+        return
+
+    await action_run_ws_handler(websocket, run_id, user_id)
 
 
 @app.websocket("/ws/arena/{match_id}")

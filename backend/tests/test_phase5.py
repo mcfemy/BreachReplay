@@ -147,9 +147,18 @@ async def test_compliance_analytics_as_admin(client, admin_user, approved_scenar
     assert "calibrations" in data
     assert "compliance_evidence" in data
 
-    # Verify scenario coverage
+    # Verify scenario coverage. Matched by title rather than indexing [0]:
+    # this endpoint aggregates across every scenario with a session in the
+    # shared test database, not just this test's own approved_scenario —
+    # other tests that commit real (non-rolled-back) Scenario rows via
+    # AsyncSessionLocal directly (see e.g. test_org_tabletop_regression.py,
+    # test_action_run_ws_handler.py) can legitimately add entries ahead of
+    # this one depending on test execution order.
     assert len(data["scenario_coverage"]) >= 1
-    assert data["scenario_coverage"][0]["title"] == approved_scenario.title
+    coverage_entry = next(
+        (c for c in data["scenario_coverage"] if c["title"] == approved_scenario.title), None,
+    )
+    assert coverage_entry is not None
 
     # Verify analyst performance shows the admin user WITH the completed session
     admin_stats = next(

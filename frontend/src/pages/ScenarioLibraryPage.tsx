@@ -62,9 +62,15 @@ export default function ScenarioLibraryPage() {
   }
 
   async function launchScenario(scenarioId: string) {
+    // Phase 2 Item 5: individual/solo launches now go through the action
+    // console (mode="scenario", 10-minute "Compressed Run" cap) instead of
+    // the org-tabletop SimulationSession flow — this button was already the
+    // only caller that ever created a "solo" session, so the multiplayer
+    // lobby flow (reached elsewhere, via SessionMultiplayerLobbyPage) is
+    // untouched.
     try {
-      const session = await api.post<{ id: string }>("/sessions", { scenario_id: scenarioId, mode: "solo" });
-      navigate(`/session/${session.id}/intro`);
+      const run = await api.post<{ run_id: string }>("/action-runs", { scenario_id: scenarioId });
+      navigate(`/run/${run.run_id}`);
     } catch (err: any) {
       alert(err.message);
     }

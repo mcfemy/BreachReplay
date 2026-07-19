@@ -1,22 +1,35 @@
 """
 Daily Breach — the Wordle of cybersecurity.
 One scenario per day, global leaderboard, streaks, share cards.
+
+Two coexisting play paths, per PHASE2_STATE.md's Item 4 isolation rule:
+the original decision-gate quiz (routes below down to `/history`) stays
+intact and unmodified; action-console mode (`/action-run`,
+`/action-leaderboard/{id}`) is the new path new daily challenges are
+actually played through. Both read/write the same `DailyChallenge` row
+and `UserStreak` (via `_get_or_create_streak`/`_update_streak`, already
+idempotent per calendar day), but score on different scales and are
+never ranked against each other — `DailyAttempt.score` vs
+`ActionRun.total_score` stay in their own leaderboards.
 """
+import hashlib
 import uuid
 from datetime import datetime, date, timedelta
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update, desc
 from pydantic import BaseModel
 
 from app.db.session import get_db
+from app.models.action_run import ActionRun
 from app.models.daily_challenge import DailyChallenge, DailyAttempt, UserStreak
 from app.models.scenario import Scenario
 from app.models.user import User
 from app.core.security import get_current_user
 from app.core.logging import get_logger
-from app.services import xp_service
+from app.services import action_engine, xp_service
+from app.services.action_run_store import CAP_SECONDS_BY_MODE, action_run_store
 
 router = APIRouter(prefix="/daily", tags=["daily"])
 logger = get_logger(__name__)
@@ -72,6 +85,26 @@ class StreakOut(BaseModel):
     total_dailies_played: int
     last_played_date: Optional[str]
     played_today: bool
+
+
+class DailyActionRunOut(BaseModel):
+    run_id: str
+    daily_challenge_id: str
+    challenge_number: int
+    scenario_id: str
+    seed: int
+    mode: str
+    cap_seconds: int
+    resumed: bool = False
+
+
+class ActionLeaderboardEntry(BaseModel):
+    rank: int
+    user_id: str
+    display_name: str
+    total_score: int
+    outcome: str
+    duration_seconds: int
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -174,6 +207,124 @@ async def _recalculate_ranks(db: AsyncSession, challenge_id: str) -> None:
         attempt.rank = rank
 
 
+async def _get_or_create_daily_challenge(db: AsyncSession) -> DailyChallenge:
+    """Shared by both play paths (`/today`'s decision-gate view and
+    `/action-run`'s action-mode creation) — one DailyChallenge row per
+    calendar date regardless of which mode a player reaches it through.
+    Extracted from `/today`'s original inline body, behavior unchanged."""
+    today = date.today()
+
+    result = await db.execute(
+        select(DailyChallenge).where(DailyChallenge.challenge_date == today)
+    )
+    challenge = result.scalar_one_or_none()
+    if challenge:
+        return challenge
+
+    sc_result = await db.execute(
+        select(Scenario)
+        # is_synthetic excludes test/fixture content structurally (a real
+        # column, not a title match) — see Scenario.is_synthetic's
+        # docstring and docs/BACKLOG.md's "Daily-challenge picker can
+        # select synthetic/test-titled scenarios" entry. `status ==
+        # "approved"` alone isn't sufficient: some test fixtures
+        # legitimately need that exact status to exercise "approved"
+        # behavior, so this must be a second, independent condition.
+        .where(Scenario.status == "approved", Scenario.is_synthetic.is_(False))
+        .order_by(func.random())
+        .limit(1)
+    )
+    scenario = sc_result.scalar_one_or_none()
+    if not scenario:
+        raise HTTPException(status_code=404, detail="No approved scenarios available for today's challenge")
+
+    num_result = await db.execute(select(func.count()).select_from(DailyChallenge))
+    count = num_result.scalar() or 0
+
+    challenge = DailyChallenge(
+        id=str(uuid.uuid4()),
+        scenario_id=scenario.id,
+        challenge_date=today,
+        challenge_number=count + 1,
+        created_at=datetime.utcnow(),
+    )
+    db.add(challenge)
+    await db.commit()
+    await db.refresh(challenge)
+    return challenge
+
+
+def _deterministic_daily_seed(challenge_date: date, scenario_id: str) -> int:
+    """Same (date, scenario) always compiles to the identical CompiledRun —
+    every player gets the same map/IOC placement/stage timeline that day
+    (same-day-leaderboard comparability, and load-bearing for Phase 4
+    ghosts). Mirrors action_engine._derive_rng's SHA-256-based derivation;
+    NOT secrets.randbelow, which is only for POST /action-runs' individual,
+    non-shared scenario runs."""
+    h = hashlib.sha256(f"{challenge_date.isoformat()}:{scenario_id}".encode()).digest()
+    return int.from_bytes(h[:4], "big") % (2**31 - 1)
+
+
+async def record_daily_action_run_result(
+    db: AsyncSession, daily_challenge_id: str, user_id: str, total_score: int,
+) -> dict:
+    """Daily Breach action-mode's `run.end` carry-over — called from
+    `action_run_ws_handler` right after `action_run_store.finalize()`
+    commits the ActionRun row for a mode="daily" run. Mirrors
+    `submit_attempt`'s DailyChallenge aggregate update and its
+    `_update_streak` call on the decision-gate path (same streak model,
+    same idempotent-per-day guard), but ranks off `action_runs.total_score`
+    instead of `DailyAttempt.score` — the two modes score on different
+    scales and are never compared against each other. Field names
+    (rank/current_streak/longest_streak/total_dailies_played) match what
+    the existing streak/leaderboard chrome already expects, per
+    PHASE2_STATE.md's Item 4 note, rather than inventing new ones."""
+    result = await db.execute(select(DailyChallenge).where(DailyChallenge.id == daily_challenge_id))
+    challenge = result.scalar_one_or_none()
+    if challenge is None:
+        return {}
+
+    challenge.total_attempts += 1
+    if challenge.avg_score is None:
+        challenge.avg_score = float(total_score)
+    else:
+        challenge.avg_score = (
+            (challenge.avg_score * (challenge.total_attempts - 1) + total_score)
+            / challenge.total_attempts
+        )
+
+    streak = await _get_or_create_streak(db, user_id)
+    await _update_streak(db, streak)
+
+    await db.flush()
+
+    # This run's own row is already committed by finalize() before this is
+    # called, so it counts itself here — rank = 1 + how many other rows on
+    # this challenge scored strictly higher.
+    better_count = await db.scalar(
+        select(func.count())
+        .select_from(ActionRun)
+        .where(
+            ActionRun.daily_challenge_id == daily_challenge_id,
+            ActionRun.total_score > total_score,
+        )
+    )
+    rank = (better_count or 0) + 1
+
+    await db.commit()
+
+    return {
+        "daily_challenge_id": daily_challenge_id,
+        "challenge_number": challenge.challenge_number,
+        "rank": rank,
+        "current_streak": streak.current_streak,
+        "longest_streak": streak.longest_streak,
+        "total_dailies_played": streak.total_dailies_played,
+        "total_attempts_today": challenge.total_attempts,
+        "avg_score_today": round(challenge.avg_score or 0),
+    }
+
+
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
 @router.get("/today", response_model=DailyChallengeOut)
@@ -183,38 +334,7 @@ async def get_today_challenge(
 ):
     """Return today's Daily Breach challenge with metadata."""
     today = date.today()
-
-    result = await db.execute(
-        select(DailyChallenge).where(DailyChallenge.challenge_date == today)
-    )
-    challenge = result.scalar_one_or_none()
-
-    if not challenge:
-        # Auto-assign today's challenge: pick a random approved scenario
-        sc_result = await db.execute(
-            select(Scenario)
-            .where(Scenario.status == "approved")
-            .order_by(func.random())
-            .limit(1)
-        )
-        scenario = sc_result.scalar_one_or_none()
-        if not scenario:
-            raise HTTPException(status_code=404, detail="No approved scenarios available for today's challenge")
-
-        # Get next challenge number
-        num_result = await db.execute(select(func.count()).select_from(DailyChallenge))
-        count = num_result.scalar() or 0
-
-        challenge = DailyChallenge(
-            id=str(uuid.uuid4()),
-            scenario_id=scenario.id,
-            challenge_date=today,
-            challenge_number=count + 1,
-            created_at=datetime.utcnow(),
-        )
-        db.add(challenge)
-        await db.commit()
-        await db.refresh(challenge)
+    challenge = await _get_or_create_daily_challenge(db)
 
     # Load scenario
     sc_result = await db.execute(select(Scenario).where(Scenario.id == challenge.scenario_id))
@@ -508,3 +628,115 @@ async def get_challenge_history(
         })
 
     return history
+
+
+# ── Action-console mode (Item 4) ────────────────────────────────────────────────
+# New daily challenge generation is wired through here, not through
+# `/scenario/{challenge_id}` + `/attempt` above — the decision-gate path
+# stays intact for any existing client still calling it, per
+# PHASE2_STATE.md's isolation rule, but is no longer how new plays happen.
+
+@router.post("/action-run", response_model=DailyActionRunOut, status_code=status.HTTP_201_CREATED)
+async def create_daily_action_run(
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Start today's Daily Breach in action-console mode. One run per user
+    per daily challenge, enforced at three layers: a live-run lookup below
+    (for a run still in progress), a persisted-row pre-check (fast 409 for
+    a request after that run has already ended), and the DB-level
+    uq_action_run_daily_challenge_user (migration 0030) as the final
+    backstop — the same belt-and-suspenders pattern `/attempt`'s pre-check
+    + uq_daily_attempt_user already uses on the decision-gate path.
+
+    The persisted-row pre-check alone is blind to a run still in progress:
+    `ActionRun` is written exactly once, at run.end, so an in-progress run
+    lives solely in `action_run_store` and has no row yet. Without the
+    live-run lookup, a double-tap/refresh would sail past that pre-check,
+    start a SECOND live run for the same (user, challenge), and that
+    second run's own finalize() would later crash on the DB constraint —
+    losing that player's run.end entirely. A live-run hit instead resumes
+    the existing run_id with 200 + resumed=True (not 201/409) — the
+    client's reconnect flow already resumes any live run_id transparently
+    via `/ws/run/{run_id}` (see action_run_ws_handler), so this just works.
+    """
+    challenge = await _get_or_create_daily_challenge(db)
+
+    live = await action_run_store.find_live_daily_run(current_user.id, challenge.id)
+    if live is not None:
+        response.status_code = status.HTTP_200_OK
+        return DailyActionRunOut(
+            run_id=live.run_id,
+            daily_challenge_id=challenge.id,
+            challenge_number=challenge.challenge_number,
+            scenario_id=live.scenario_id,
+            seed=live.run_state.compiled.seed,
+            mode=live.mode,
+            cap_seconds=live.cap_seconds,
+            resumed=True,
+        )
+
+    existing = await db.execute(
+        select(ActionRun).where(
+            ActionRun.daily_challenge_id == challenge.id,
+            ActionRun.user_id == current_user.id,
+        )
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="You've already played today's Daily Breach")
+
+    sc_result = await db.execute(select(Scenario).where(Scenario.id == challenge.scenario_id))
+    scenario = sc_result.scalar_one()
+
+    seed = _deterministic_daily_seed(challenge.challenge_date, scenario.id)
+    compiled = action_engine.compile_scenario(scenario, seed)
+
+    run_id = str(uuid.uuid4())
+    mode = "daily"
+    await action_run_store.start_run(
+        run_id, current_user.id, scenario.id, mode, compiled,
+        daily_challenge_id=challenge.id,
+    )
+
+    return DailyActionRunOut(
+        run_id=run_id,
+        daily_challenge_id=challenge.id,
+        challenge_number=challenge.challenge_number,
+        scenario_id=scenario.id,
+        seed=seed,
+        mode=mode,
+        cap_seconds=CAP_SECONDS_BY_MODE[mode],
+        resumed=False,
+    )
+
+
+@router.get("/action-leaderboard/{daily_challenge_id}", response_model=list[ActionLeaderboardEntry])
+async def get_daily_action_leaderboard(
+    daily_challenge_id: str,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Top action-mode runs for a given daily challenge, ordered by
+    `action_runs.total_score` — a real indexed integer column, not a
+    JSONB path (see ActionRun.total_score's docstring)."""
+    result = await db.execute(
+        select(ActionRun, User.full_name, User.email)
+        .join(User, ActionRun.user_id == User.id)
+        .where(ActionRun.daily_challenge_id == daily_challenge_id)
+        .order_by(desc(ActionRun.total_score), ActionRun.duration_seconds)
+        .limit(limit)
+    )
+    rows = result.all()
+    return [
+        ActionLeaderboardEntry(
+            rank=i + 1,
+            user_id=run.user_id,
+            display_name=full_name or email.split("@")[0],
+            total_score=run.total_score,
+            outcome=run.outcome,
+            duration_seconds=run.duration_seconds,
+        )
+        for i, (run, full_name, email) in enumerate(rows)
+    ]
