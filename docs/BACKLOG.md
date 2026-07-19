@@ -143,3 +143,24 @@ Not bundled into the `compression_ratio` fix because it's an orthogonal,
 pre-existing latent bug (present before that work and unrelated to it) —
 but it's a real prod-safety gap, not merely test-suite flakiness, since it
 can put synthetic content in front of an actual player.
+
+## `user_streaks` idempotency guard doesn't survive same-day test reruns
+
+Found while re-verifying the full backend suite during Phase 2 close-out.
+`test_daily_action_mode.py`'s streak/rank tests (`test_daily_run_end_carries_over_streak_and_rank_fields`,
+`test_swept_daily_run_broadcasts_run_end_and_carries_over_streak`, and
+others sharing the same fixed literal user ids like `daily-cap-owner-1`)
+write real `UserStreak` rows via `AsyncSessionLocal` (same non-rolled-back
+pattern as the `is_synthetic` finding above). `_update_streak`'s
+idempotency guard (`daily.py`) is keyed on `last_played_date == <real
+today>` — but rerunning the same test twice on the same real calendar day
+(trivially possible during a single active dev session, not a rare edge
+case) does not consistently short-circuit: `current_streak` was observed
+at `2` instead of the expected `1` after a same-day rerun, failing the
+test's own assertion. Worked around during this pass by deleting the
+affected `user_streaks` rows before each clean suite run; not fixed here
+since it's orthogonal to Phase 2's actual close-out work. Worth either a
+session-scoped cleanup fixture for these fixed test user ids (mirroring
+the `is_synthetic` fix's spirit — stop the shared-DB writes from being
+real in the first place) or tightening `_update_streak`'s guard to be
+provably idempotent under a same-day rerun.
