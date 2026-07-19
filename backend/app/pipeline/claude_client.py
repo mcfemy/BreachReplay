@@ -24,6 +24,35 @@ except ImportError:
     _gemini_model = None
     _gemini_flash = None
 
+# ── Nemotron (NVIDIA NIM) extraction-only setup ───────────────────────────────
+# Alternate SCENARIO EXTRACTION backend, gated by settings.EXTRACTION_PROVIDER
+# == "nemotron" (see extract_scenario_from_document below). OpenAI-compatible
+# endpoint — never touches generate_decision_commentary/generate_debrief_report
+# (runtime paths) or any Claude Code/reviewer/Arena path.
+#
+# CANDIDATE-GENERATION ONLY — settings.EXTRACTION_PROVIDER defaults to
+# "claude" and should stay that way for any real ingestion run. Verified
+# against the actual Colonial Pipeline source document (two runs, one
+# schema-enforced): the model invented the same C2 IP in both independent
+# runs, fabricated plausible-but-uncited artifacts (a TOR domain, a specific
+# ORPort, a Registry Run-key persistence mechanism), and in one entry
+# inverted a documented fact (claimed OT/HMI ransomware encryption; the
+# source is explicit that OT was left intact). It also surfaced two real,
+# correctly-sourced findings Claude's extraction had missed. Full writeup,
+# including the two now hand-authored into seed.py's Colonial Pipeline
+# hidden_iocs: docs/NEMOTRON_EXTRACTION_FINDINGS.md. Every identifier
+# Nemotron produces requires manual source verification before it can be
+# used in a real scenario — this backend does not get an autonomous
+# ingestion path.
+try:
+    from openai import OpenAI as _OpenAI, AuthenticationError as _OpenAIAuthError, BadRequestError as _OpenAIBadRequestError
+    _nvidia_client = _OpenAI(base_url="https://integrate.api.nvidia.com/v1", api_key=settings.NVIDIA_API_KEY) if settings.NVIDIA_API_KEY else None
+except ImportError:
+    _OpenAI = None
+    _OpenAIAuthError = None
+    _OpenAIBadRequestError = None
+    _nvidia_client = None
+
 client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
 logger = get_logger(__name__)
 
@@ -38,6 +67,14 @@ def _is_retryable_claude_error(exc: BaseException) -> bool:
     if isinstance(exc, anthropic.BadRequestError):
         return False
     if isinstance(exc, anthropic.AuthenticationError):
+        return False
+    return True
+
+
+def _is_retryable_nemotron_error(exc: BaseException) -> bool:
+    if _OpenAIBadRequestError is not None and isinstance(exc, _OpenAIBadRequestError):
+        return False
+    if _OpenAIAuthError is not None and isinstance(exc, _OpenAIAuthError):
         return False
     return True
 
@@ -310,6 +347,216 @@ def _extract_via_claude(prompt_text: str, _is_retry_attempt: bool = False) -> st
     return message.content[0].text
 
 
+# ── Nemotron structured-output schema ─────────────────────────────────────────
+# Confirmed live against NVIDIA's endpoint (build.nvidia.com's OpenAI-compat
+# API): response_format={"type":"json_schema", ..., "strict": True} is
+# supported and, combined with the text instructions below, produces output
+# that actually matches EXTRACTION_PROMPT's field names — the unconstrained
+# path (no response_format) drifted to different top-level keys entirely
+# (e.g. "scenario_title"/"decision_gates") and omitted "matches_on" from
+# every hidden_ioc. This fixes STRUCTURE, not PROVENANCE — see the
+# candidate-generation-only warning above; schema conformance says nothing
+# about whether a given identifier is real.
+#
+# matches_on is modeled as all four keys present with three null rather than
+# "exactly one of four possible keys", since strict mode requires every
+# declared property to appear in `required` — there is no clean way to
+# express "exactly one of N optional keys" without restructuring the actual
+# data shape callers depend on downstream.
+_NEMOTRON_MATCHES_ON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "ip": {"type": ["string", "null"]},
+        "hostname": {"type": ["string", "null"]},
+        "username": {"type": ["string", "null"]},
+        "process_name": {"type": ["string", "null"]},
+    },
+    "required": ["ip", "hostname", "username", "process_name"],
+    "additionalProperties": False,
+}
+# Enterprise ATT&CK only (T1### / T1###.###) — deliberately excludes ATT&CK
+# for ICS (T0###) even though source documents for ICS incidents often cite
+# ICS IDs natively; this is OUR schema's choice for cross-scenario
+# consistency, not a claim that ICS IDs are wrong for an ICS-native source.
+_NEMOTRON_MITRE_SCHEMA = {"type": "string", "pattern": r"^T1[0-9]{3}(\.[0-9]{3})?$"}
+_NEMOTRON_ALERT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "timestamp": {"type": "string"},
+        "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+        "source_system": {"type": "string"},
+        "rule_id": {"type": "string"},
+        "description": {"type": "string"},
+        "raw_log": {"type": "string"},
+    },
+    "required": ["timestamp", "severity", "source_system", "rule_id", "description", "raw_log"],
+    "additionalProperties": False,
+}
+_NEMOTRON_HIDDEN_IOC_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "matches_on": _NEMOTRON_MATCHES_ON_SCHEMA,
+        "timestamp": {"type": "string"},
+        "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+        "source_system": {"type": "string"},
+        "rule_id": {"type": "string"},
+        "description": {"type": "string"},
+        "raw_log": {"type": "string"},
+        "mitre_technique": _NEMOTRON_MITRE_SCHEMA,
+    },
+    "required": ["matches_on", "timestamp", "severity", "source_system", "rule_id", "description", "raw_log", "mitre_technique"],
+    "additionalProperties": False,
+}
+_NEMOTRON_PRESSURE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "trigger_timestamp": {"type": "string"},
+        "type": {"type": "string", "enum": ["email", "call", "news", "sms", "slack"]},
+        "from": {"type": "string"},
+        "subject": {"type": "string"},
+        "body": {"type": "string"},
+        "countdown_seconds": {"type": "integer"},
+    },
+    "required": ["id", "trigger_timestamp", "type", "from", "subject", "body", "countdown_seconds"],
+    "additionalProperties": False,
+}
+_NEMOTRON_OPTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "text": {"type": "string"},
+        "consequence_if_chosen": {"type": "string"},
+    },
+    "required": ["text", "consequence_if_chosen"],
+    "additionalProperties": False,
+}
+_NEMOTRON_GATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "trigger_timestamp": {"type": "string"},
+        "countdown_seconds": {"type": "integer"},
+        "urgency_level": {"type": "string", "enum": ["low", "medium", "high"]},
+        "gate_difficulty": {"type": "string", "enum": ["awareness", "practitioner", "expert", "critical"]},
+        "context_summary": {"type": "string"},
+        "options": {"type": "array", "items": _NEMOTRON_OPTION_SCHEMA, "minItems": 2, "maxItems": 6},
+        "correct_index": {"type": "integer"},
+        "consequence_if_wrong": {"type": "string"},
+        "consequence_if_correct": {"type": "string"},
+        "rationale": {"type": "string"},
+        "nist_control_ref": {"type": "string"},
+        "mitre_technique": _NEMOTRON_MITRE_SCHEMA,
+    },
+    "required": ["id", "trigger_timestamp", "countdown_seconds", "urgency_level", "gate_difficulty",
+                 "context_summary", "options", "correct_index", "consequence_if_wrong",
+                 "consequence_if_correct", "rationale", "nist_control_ref", "mitre_technique"],
+    "additionalProperties": False,
+}
+_NEMOTRON_EXTRACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "incident_date": {"type": ["string", "null"]},
+        "incident_duration_hours": {"type": ["number", "null"]},
+        "initial_access_vector": {"type": "string", "enum": ["phishing", "credential_theft", "unpatched_cve", "supply_chain", "insider_threat", "social_engineering", "physical", "unknown"]},
+        "industry_vertical": {"type": "string", "enum": ["healthcare", "energy", "finance", "government", "technology", "retail", "education", "other"]},
+        "difficulty": {"type": "string", "enum": ["awareness", "practitioner", "expert"]},
+        "affected_asset_types": {"type": "array", "items": {"type": "string"}},
+        "mitre_techniques": {"type": "array", "items": _NEMOTRON_MITRE_SCHEMA},
+        "nist_controls": {"type": "array", "items": {"type": "string"}},
+        "regulatory_frameworks": {"type": "array", "items": {"type": "string"}},
+        "extraction_confidence": {"type": "number"},
+        "alert_sequence": {"type": "array", "items": _NEMOTRON_ALERT_SCHEMA, "minItems": 20},
+        "hidden_iocs": {"type": "array", "items": _NEMOTRON_HIDDEN_IOC_SCHEMA, "minItems": 4},
+        "pressure_injections": {"type": "array", "items": _NEMOTRON_PRESSURE_SCHEMA, "minItems": 6},
+        "decision_tree": {"type": "array", "items": _NEMOTRON_GATE_SCHEMA, "minItems": 12},
+    },
+    "required": ["title", "incident_date", "incident_duration_hours", "initial_access_vector",
+                 "industry_vertical", "difficulty", "affected_asset_types", "mitre_techniques",
+                 "nist_controls", "regulatory_frameworks", "extraction_confidence",
+                 "alert_sequence", "hidden_iocs", "pressure_injections", "decision_tree"],
+    "additionalProperties": False,
+}
+_NEMOTRON_SCHEMA_ENFORCEMENT_SUFFIX = """
+
+STRICT OUTPUT CONTRACT — this is enforced by a JSON schema, but follow it explicitly too:
+- Use EXACTLY these field names, no synonyms: "title" (not scenario_title), "decision_tree" (not decision_gates),
+  "context_summary" + "options"/"consequence_if_chosen" (not question_text), "hidden_iocs" with "matches_on"/
+  "severity"/"timestamp"/"source_system"/"rule_id"/"description"/"raw_log"/"mitre_technique" on every entry.
+- "matches_on" must have all four keys (ip, hostname, username, process_name) present, with exactly one set to
+  the real string value and the other three set to null.
+- ALL mitre_technique values must be ENTERPRISE ATT&CK technique IDs in the form T1### or T1###.###
+  (e.g. T1078, T1003, T1547.001) — NEVER ATT&CK for ICS IDs (never T0### under any circumstance).
+- Include "pressure_injections" — do not omit it.
+"""
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), retry=retry_if_exception(_is_retryable_nemotron_error))
+def _extract_via_nemotron(prompt_text: str) -> str:
+    """Streams the response so reasoning_content (the model's chain-of-thought,
+    emitted separately from content when thinking is enabled) can be dropped
+    chunk-by-chunk rather than ever landing in the string that
+    _extract_tagged_json parses — a reasoning trace mixed into the JSON
+    payload would break parsing or silently leak into extraction_confidence-
+    adjacent fields. response_format enforces the same field-name contract
+    Claude's path follows by prompt convention alone — see
+    docs/NEMOTRON_EXTRACTION_FINDINGS.md for why this was needed and what it
+    does/doesn't fix (structure, not provenance)."""
+    if _nvidia_client is None:
+        raise RuntimeError("Nemotron extraction requested but NVIDIA_API_KEY is not configured")
+
+    start_time = time.perf_counter()
+    stream = _nvidia_client.chat.completions.create(
+        model=settings.NVIDIA_MODEL,
+        messages=[{"role": "user", "content": prompt_text + _NEMOTRON_SCHEMA_ENFORCEMENT_SUFFIX}],
+        # Reasoning tokens (reasoning_content) count against the same
+        # max_tokens budget as the final content on this endpoint — confirmed
+        # live: an 8192 cap (matched to Claude's, which has no such shared
+        # budget) let "thinking" consume the entire ceiling and return
+        # finish_reason="length" with zero content before ever reaching the
+        # extraction JSON. This extraction prompt's reasoning alone routinely
+        # runs 25-50k+ chars, so the ceiling needs real headroom.
+        max_tokens=32768,
+        stream=True,
+        response_format={"type": "json_schema", "json_schema": {"name": "breach_extraction", "schema": _NEMOTRON_EXTRACTION_SCHEMA, "strict": True}},
+        extra_body={"chat_template_kwargs": {"thinking": True}},
+    )
+    content_parts: list[str] = []
+    reasoning_chars = 0
+    finish_reason = None
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+        reasoning_piece = getattr(delta, "reasoning_content", None)
+        if reasoning_piece:
+            reasoning_chars += len(reasoning_piece)
+            continue
+        content_piece = getattr(delta, "content", None)
+        if content_piece:
+            content_parts.append(content_piece)
+        if chunk.choices[0].finish_reason:
+            finish_reason = chunk.choices[0].finish_reason
+    elapsed_ms = (time.perf_counter() - start_time) * 1000
+    logger.info(
+        "Nemotron extraction completed",
+        extra={
+            "model": settings.NVIDIA_MODEL,
+            "elapsed_ms": elapsed_ms,
+            "reasoning_chars_discarded": reasoning_chars,
+            "finish_reason": finish_reason,
+        },
+    )
+    if finish_reason == "length" and not content_parts:
+        # Thinking consumed the entire max_tokens budget before any content
+        # was emitted — a silent empty-string return here would fail JSON
+        # parsing downstream with a confusing "Expecting value" error that
+        # gives no hint why. Raise with the real cause instead.
+        raise RuntimeError(
+            f"Nemotron hit max_tokens during reasoning ({reasoning_chars} reasoning chars) "
+            "before emitting any content — raise max_tokens further."
+        )
+    return "".join(content_parts)
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), before=_before_claude_retry, retry=retry_if_exception(_is_retryable_claude_error))
 def _debrief_via_claude(prompt_text: str, _is_retry_attempt: bool = False) -> str:
     start_time = time.perf_counter()
@@ -331,6 +578,15 @@ def _debrief_via_claude(prompt_text: str, _is_retry_attempt: bool = False) -> st
 def extract_scenario_from_document(document_text: str) -> dict:
     safe_text = _sanitize_document(document_text)
     prompt_text = EXTRACTION_PROMPT.format(document_text=safe_text)
+
+    if settings.EXTRACTION_PROVIDER == "nemotron":
+        # No Claude/Gemini fallback by design — a failed Nemotron extraction
+        # should surface as a failure so it's obvious which provider produced
+        # (or failed to produce) a given scenario, not silently substitute a
+        # different model's output under the same "nemotron" label.
+        raw = _extract_via_nemotron(prompt_text)
+        logger.info("Scenario extraction used provider=nemotron")
+        return _extract_tagged_json(raw, "extracted")
 
     if settings.AI_PREFER_GEMINI and _gemini_model is not None:
         try:
