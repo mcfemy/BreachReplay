@@ -1,32 +1,63 @@
-# Phase 2 State — Action Console Core Loop
+# Project State
 
-Source of truth: `docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md` section 4 and
-`docs/PHASE2_KICKOFF.md`. **Update this file in every item PR** — it's
-the record of what's done and what's next, read by hand now rather than
-by an automated dispatcher.
+Source of truth for what's shipped and what's next, read by hand — not by
+an automated dispatcher. **Update this file at the end of each phase**
+(not per-item; per-item detail lives in that phase's own commits/PRs) so
+the next phase starts from an accurate picture without anyone having to
+dig through history first.
+
+**Durable convention, so a phase boundary needs no workflow edits:** every
+phase's work happens on its own branch cut from `main`
+(`phase-N-<short-name>`), and merges back into `main` directly once the
+phase's acceptance doc (`<PHASE>_ACCEPTANCE.md` at the repo root — see
+`PHASE2_ACCEPTANCE.md` for the pattern) confirms it's done.
+`.github/workflows/claude.yml`'s `base_branch` always points at `main`,
+never at a specific phase branch — Phase 2 briefly hardcoded it to
+`phase-2-action-console` while that branch was the only place Items 0+
+existed, which meant every dispatched run had to target that one branch
+by name and would have needed a manual workflow edit at every phase
+boundary. Now that each phase merges to `main` promptly instead of
+staying a long-lived integration branch, `main` is always current and
+always the right base — no workflow file should ever again need to
+change just because a phase finished.
 
 **Item kickoff is human-initiated, not automated** — `claude-dispatch.yml`
-(which used to auto-start the next item on PR merge) has been removed.
-It went 0 for 2 (Items 4 and 5 both merged with it silently pushing
-nothing, no error), and both those items needed a real design call
-before any code — exactly what a blind dispatch agent can't safely make.
-See `REVIEW_CRITERIA.md` (l) for the full reasoning. The reviewer
+(which used to auto-start the next item on PR merge) was removed during
+Phase 2. It went 0 for 2 (two items both merged with it silently pushing
+nothing, no error), and both needed a real design call before any code —
+exactly what a blind dispatch agent can't safely make. See
+`REVIEW_CRITERIA.md` (l) for the full reasoning. The reviewer
 (`claude-review.yml`) and the `@claude` auto-fix mention (`claude.yml`)
-are unaffected and still run automatically on every PR/comment.
+are unaffected by this and still run automatically on every PR/comment,
+including on future phases — those two workflows were never phase-specific.
+
+---
+
+## Phase 2 — Action Console Core Loop (complete — merged to `main` via PR #21, `08d0674`)
+
+Everything in this section is historical record from when this phase was
+active — kept for context on how its design decisions were made, not
+current state. Source of truth while it was in flight:
+`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md` section 4 and
+`docs/PHASE2_KICKOFF.md`. Final acceptance verification lives in
+`PHASE2_ACCEPTANCE.md` — all 9 of spec section 4's criteria re-verified
+against the code as merged, 9/9 PASS (criterion 3 rewritten — the
+original wording assumed a real-time clock, incoherent against this
+engine's actual turn-based spend-clock design; see that doc).
 
 Branch: `phase-2-action-console`, off `main` (Phase 1 merged at `ee4a57b`).
-Every item lands on its own branch, PR'd into `phase-2-action-console`.
-**Item PRs branch from `phase-2-action-console`, not `main`** — the
-runner/action's base branch must be set accordingly
-(`.github/workflows/claude.yml`'s `base_branch` input, or the equivalent
-for whatever triggers the work). `main` does not have Items 0–4 yet and
-won't until Phase 2 fully merges — a run cut from `main` has none of the
-foundation Item 5+ builds on and cannot produce a PR that merges cleanly
-into `phase-2-action-console`. (Found the hard way in issue #3: a cold
+Every item landed on its own branch, PR'd into `phase-2-action-console`.
+**Item PRs branched from `phase-2-action-console`, not `main`** while this
+phase was active — `main` didn't have Items 0–4 until Phase 2 fully
+merged, so a run cut from `main` had none of the foundation Item 5+ built
+on and couldn't produce a PR that merged cleanly into
+`phase-2-action-console`. (Found the hard way in issue #3: a cold
 cloud-runner run correctly refused to reimplement Items 0–3 from scratch
 rather than open a divergent PR, and flagged the base branch as the fix.)
+This is exactly the class of per-phase workflow friction the durable
+convention above now avoids for future phases.
 
-## Status: Items 0–5 complete.
+### Status: Items 0–5 complete, phase merged.
 
 ### Completed
 
@@ -103,25 +134,24 @@ Full backend suite: 422 passed, zero regressions, as of `b9d1f72`.
   `_get_or_create_streak`/`_update_streak`, using the same
   rank/current_streak/longest_streak/total_dailies_played field names
   the decision-gate path's response already uses. The old decision-gate
-  quiz path (`/today`, `/scenario/{id}`, `/attempt`, `/leaderboard/{id}`,
-  `/streak`, `/history`) is untouched — new challenge generation just no
-  longer funnels through it, per REVIEW_CRITERIA.md's org-tabletop
-  isolation rule (d).
+  quiz PLAY path (`/scenario/{id}`, `/attempt`) is now confirmed dead,
+  unreachable frontend code — see the "Old decision-gate quiz path" note
+  below.
 
 Full backend suite: 439 passed, zero regressions, as of `d942266`
 (also fixed a pre-existing flaky test in `test_scenarios_recent.py`
 exposed by this item's new AsyncSessionLocal-based tests — see that
 commit).
 
-## Item 5 — Frontend
+### Item 5 — Frontend
 
 The automated dispatch agent that was supposed to build this ran 48 turns
 against a genuinely fresh, correctly-triggered dispatch and produced no
 branch/commit/PR at all — silently incomplete, not crashed, with no error
 in the run logs. Not retried blind; built directly instead. (Separately,
 the same dispatch agent produced nothing at all on a prior trigger too —
-0 for 2. Needs a hard-failure mode, or removal from the loop, before
-Phase 3.)
+0 for 2. This is the incident `claude-dispatch.yml`'s removal, above, is
+about.)
 
 - `frontend/src/lib/useRunSocket.ts` — WS hook for `/ws/run/{run_id}`,
   mirrors `useArenaSocket.ts`'s self-contained-state pattern. Merges every
@@ -142,7 +172,10 @@ Phase 3.)
   input. Host detail drawer shows earned IOCs/forensics/credentials per
   host. Clock UI: `bleed`-colored stage-progress bar. Inline debrief on
   `run.end` (outcome, score breakdown, `XPToast` reuse) — no separate
-  debrief page needed.
+  debrief page needed. A persistent objective line, a map legend (colors
+  sourced from the same `nodeStateColor` map the network map itself
+  renders from), and a sparing idle nudge were added later as onboarding
+  layer 1 — the full guided first-run stays a Phase 5 item.
 - **Routing**: individual/solo scenario launches get a brand-new page +
   route (`frontend/src/pages/ActionConsolePage.tsx` at `/run/:runId`),
   NOT a branch inside `SimulationRoomPage.tsx` — mirrors Arena mode's own
@@ -198,15 +231,70 @@ update by falling into the generic `revealed_iocs` branch first). New
 test asserts live and resync content are identical, not just that
 content exists somewhere.
 
-## After Item 5
+### Close-out — compression, breach head-start, evidence display, is_synthetic, acceptance
 
-Full Phase 2 acceptance-criteria verification against
-`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md` section 4's checklist —
-determinism test, anti-leak test, a do-nothing player losing in ≤8 minutes
-with a coherent narrative, five seeded runs differing meaningfully by
-strategy, phone-with-one-thumb playability, pytest green in CI — before
-declaring Phase 2 done.
+Found and fixed while re-verifying this phase's acceptance criteria
+against the game as it actually played, before closing it out:
 
-## Phase 2.5 (queued after Phase 2)
+- **`compression_ratio` scaling** — Colonial Pipeline's authored gates
+  (+4m to +49m) were used as literal seconds against the 8/10-minute
+  action-console caps, so ~10 of 12 gates fell past every mode's cap and
+  could never fire in a playable session. `action_engine.py` now scales
+  every trigger_timestamp by the scenario's `compression_ratio`
+  (floor, deterministic, never preempts the final stage) before it
+  becomes trigger_seconds.
+- **`BREACH_HEAD_START_SECONDS`** — the compiled world previously started
+  fully clean regardless of narrative premise; a responder walking into
+  an "already in progress" breach saw a pristine network until they burned
+  most of their budget getting there. The compiler now pre-folds a fixed
+  amount of the (compressed) timeline into the starting world, so the
+  first scan shows several hosts already compromised.
+- **Evidence display fix** — querying/blocking against a compromised host
+  previously spent the verb's cost with no visible result; the drawer only
+  opened on a second, separate tap. `ActionConsole.tsx` now reacts to
+  whatever the server just confirmed (`useRunSocket`'s `lastDelta`) and
+  opens the right host's drawer or shows a result toast immediately.
+- **`Scenario.is_synthetic`** (migration `0031`) — the daily-challenge
+  picker could select test/fixture scenarios, because several tests
+  commit real `status="approved"` rows to the shared dev DB. A leaked,
+  un-flagged scenario from exactly this pattern was live-serving as an
+  actual Daily Breach challenge in this environment before the fix. Now a
+  real structural flag, not a title match; 323 pre-existing leaked rows
+  remediated.
+- **Old decision-gate quiz path (Daily Breach) — confirmed dead, not just
+  unused.** No frontend component calls `GET /daily/scenario/{id}` or
+  `POST /daily/attempt` anywhere — grepped the whole frontend tree, zero
+  hits. `ResultsPanel` only displays a previously-recorded legacy
+  `DailyAttempt` result; it has no gate-answering UI. The backend routes
+  and `DailyAttempt` table stay (real historical rows still need to
+  read/display correctly), but the PLAY path is unreachable dead code by
+  design, not an oversight — documented here rather than deleted, since
+  removing the routes/tests is a separate, lower-priority cleanup with no
+  urgency now that nothing can reach them.
+- `PHASE2_ACCEPTANCE.md` — all 9 spec section 4 criteria re-verified
+  against the code above, 9/9 PASS. Criterion 3 rewritten (see that doc
+  for the full reasoning: the original wording assumed a real-time clock,
+  incoherent against this engine's turn-based spend-clock design). Core
+  loop (scan → query → block → win, within the cap) confirmed end-to-end
+  against a real compiled run.
 
-CMMC evidence layer — see `docs/BACKLOG.md`.
+Full backend suite: 467 passed, 0 failed, as of this close-out.
+
+Merged to `main`: PR #21 (`08d0674`). Two small follow-up PRs landed the
+same day: #22 (fixed a `claude-review.yml` bug where a re-review after a
+fix could silently reuse a stale verdict from an older commit — found live
+on PR #21 itself) and #23 (documented REVIEW_CRITERIA.md criterion (p): a
+PR touching `.github/workflows/` structurally can't get a real automated
+verdict — the reviewer's own GitHub App token hits a permission wall on
+such diffs; admin-merge those directly on CI + hand review rather than
+re-diagnosing this each time).
+
+---
+
+## Phase 2.5 — CMMC evidence layer (next)
+
+Not yet scoped — will be spec'd fresh before any code, per plan. See
+`docs/BACKLOG.md`'s Phase 2.5 entry for the starting-point pointers
+(the existing compliance-evidence-export precedent, what Phase 2's
+`ActionRun`/`action_log` already captures) gathered while it was still
+queued.
