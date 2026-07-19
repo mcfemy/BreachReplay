@@ -11,6 +11,27 @@ param(
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path $PSScriptRoot -Parent
 
+# ── Branch guard ─────────────────────────────────────────────────────────────
+# Refuses to deploy anything but a clean checkout of main. This script
+# uploads whatever is sitting in $ROOT\backend and $ROOT\frontend\dist
+# verbatim — it has no concept of "which commit" it's deploying, so an
+# uncommitted local change or a deploy run from a feature branch would ship
+# silently, with nothing in git history to say what actually went to prod.
+Push-Location $ROOT
+$CurrentBranch = (git rev-parse --abbrev-ref HEAD).Trim()
+if ($CurrentBranch -ne "main") {
+    Pop-Location
+    Write-Error "Refusing to deploy: current branch is '$CurrentBranch', not 'main'. Checkout main first."
+    exit 1
+}
+$DirtyFiles = git status --porcelain
+if ($DirtyFiles) {
+    Pop-Location
+    Write-Error "Refusing to deploy: working tree is not clean. Uncommitted changes:`n$DirtyFiles"
+    exit 1
+}
+Pop-Location
+
 # ── Load EC2 IP ───────────────────────────────────────────────────────────────
 $IpFile = Join-Path $PSScriptRoot "ec2_ip.txt"
 if (-not $EC2Host) {
