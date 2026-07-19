@@ -294,6 +294,7 @@ jobs:
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
+            HEAD SHA: ${{ github.event.pull_request.head.sha }}
 
             You are the automated QA reviewer for this PR. Follow this
             procedure exactly, in order.
@@ -353,6 +354,19 @@ jobs:
             with your overall assessment.
 
             ## Step 2 — verdict
+
+            Your top-level comment's FIRST line must be EXACTLY this,
+            verbatim, with nothing else on that line:
+
+            REVIEWED COMMIT: ${{ github.event.pull_request.head.sha }}
+
+            This is not optional and not cosmetic: the gate step below
+            resolves the verdict by matching THIS exact line against the
+            commit it's actually gating, specifically so a re-review after
+            a fix is pushed can never be satisfied by an OLDER verdict
+            left over from a previous commit — every real verdict must be
+            legible as "this is what I found on THIS commit," including on
+            a re-review, not just on the first pass.
 
             End your top-level comment with EXACTLY one of these two lines
             verbatim, with nothing else on that line:
@@ -432,17 +446,37 @@ jobs:
             exit 1
           fi
 
-          # Anchored to a genuine standalone line (^...$), not a bare
-          # substring search — Step 0's own escalation-check text writes
-          # out the literal phrase "VERDICT: CHANGES REQUESTED" as prose
-          # (quoting what it searched PR history for), which a substring
-          # grep matches even on a comment whose REAL final verdict is
-          # APPROVED. Joins every comment's body in order and takes the
-          # LAST matching standalone line across the whole thread, so a
-          # genuine re-review's newer verdict always wins over an older
-          # quoted mention or a prior review cycle's verdict.
-          verdict_line=$(gh pr view "$PR" --json comments \
-            --jq '[.comments[].body] | join("\n") | split("\n") | map(select(test("^VERDICT: (APPROVED|CHANGES REQUESTED)\\s*$"))) | last // empty')
+          # Scoped to a comment matching the CURRENT head SHA — never just
+          # "the last verdict line anywhere in the thread." That flattened-
+          # thread approach silently reused a STALE verdict from an older
+          # commit whenever a re-review (triggered by a new push) reported
+          # step success but posted no new comment at all — observed for
+          # real on PR #21: two consecutive re-review runs after a
+          # requested fix both came back "success" with nothing posted,
+          # and the old flattened-line lookup kept re-resolving to the
+          # FIRST commit's "CHANGES REQUESTED," permanently blocking a PR
+          # whose actual latest commit had never been reviewed at all.
+          #
+          # Every real verdict comment's first line is the literal
+          # "REVIEWED COMMIT: <sha>" (see the prompt's Step 2) — select
+          # comments containing that exact marker for THIS SHA, take the
+          # most recent such comment (chronological array order from the
+          # API), and pull ITS verdict line specifically. A re-review that
+          # silently posts nothing for this SHA now correctly falls through
+          # to the "no verdict" branch below instead of resurrecting an
+          # unrelated commit's stale answer.
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          reviewed_comment=$(gh pr view "$PR" --json comments \
+            --jq --arg marker "REVIEWED COMMIT: $HEAD_SHA" \
+            '[.comments[] | select(.body | startswith($marker))] | last // empty | .body // empty')
+
+          if [ -z "$reviewed_comment" ]; then
+            echo "No review comment found for this exact commit ($HEAD_SHA) — treating as a dead/incomplete review."
+            gh pr comment "$PR" --body "REVIEW ERRORED — no verdict posted for commit $HEAD_SHA, see run logs"
+            exit 1
+          fi
+
+          verdict_line=$(echo "$reviewed_comment" | grep -E '^VERDICT: (APPROVED|CHANGES REQUESTED)\s*$' | tail -1)
 
           if [ -z "$verdict_line" ]; then
             echo "Review step reported success but posted no verdict line — treating as a dead review."
