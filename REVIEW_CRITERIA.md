@@ -252,6 +252,33 @@ exactly the kind of unpinned dependency that can change cost or quality
 out from under this workflow the moment the action's own default changes,
 with no diff in this repo to explain why.
 
+**(p) The reviewer cannot review a PR that touches `.github/workflows/`
+— known limitation, do not re-diagnose from scratch.** A PR whose diff
+includes any workflow-file change gets a real, expensive review attempt
+(confirmed on PR #21 after `phase-2-action-console` picked up a
+`claude-review.yml` fix: `num_turns: 30`, `total_cost_usd: 3.25`,
+`is_error: false` — genuine multi-turn work, not a no-op or crash) that
+nonetheless posts NO comment at all. The tell is
+`permission_denials_count: 1` in the same result: the Claude GitHub App's
+installation token structurally cannot act on a PR that modifies workflow
+files (the same class of restriction referenced on PR #6/#7), so the run
+completes "successfully" from the SDK's own point of view while never
+reaching `gh pr comment`. Reproduced identically three times in a row on
+PR #21 (~$3 each) before recognizing the pattern — do not spend further
+retries rediscovering this. When a PR's diff includes `.github/workflows/`
+changes: don't wait on the `review` check for it, and don't blind-retry
+past two identical `permission_denials_count: 1` results looking for a
+different outcome. Confirm CI (`test`) is green, read the workflow diff
+by hand, and admin-merge directly (branch protection's `enforce_admins:
+false` already permits this for repo owners) — the same evidence standard
+this file already asks a human reviewer to apply, just without an
+automated verdict this specific diff shape can never produce. A genuine
+future fix would mean granting the App's token `workflows: write` (a
+real permission/security decision, not a workflow-file tweak) or routing
+workflow-file PRs through a separate reviewer identity — either is a
+deliberate call for whoever owns the repo's GitHub App installation, not
+something to improvise mid-PR.
+
 Opus was kept deliberately rather than switched to a cheaper model,
 specifically **because** of (n): the review is now rare by design, so
 every review that actually runs already touches a path where leak
