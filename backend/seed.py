@@ -136,6 +136,29 @@ COLONIAL_PIPELINE = {
          "source_system": "IAM", "rule_id": "IAM-018",
          "description": "Account 'svc_backup' — the same service account used at initial VPN compromise — was added to the 'Backup Operators' privileged group",
          "raw_log": "event=4728 group='Backup Operators' member=svc_backup actor=CORP-DC-01.Administrator"},
+        # Root cause of initial access — real, documented finding, not
+        # invented: CISA/CyOTE "Observable 1: Leaked Credentials and
+        # Passwords Found On Internet" (CyOTE-Case-Study_Colonial-Pipeline.pdf,
+        # repo root, lines 193-194/271/587) — svc_backup's VPN password was
+        # found in a public dark-web breach dump and never rotated. Surfaced
+        # by a Nemotron extraction run against that source doc, verified,
+        # and hand-authored here because it was a real gap in this
+        # hand-authored set. See docs/NEMOTRON_EXTRACTION_FINDINGS.md.
+        {"matches_on": {"username": "svc_backup"}, "timestamp": "+0m", "severity": "medium",
+         "source_system": "Threat Intel", "rule_id": "TI-004",
+         "description": "svc_backup's VPN password matches a known public dark-web credential dump; the account was never rotated after that third-party breach",
+         "raw_log": "source=leaked_credential_feed match_type=exact user=svc_backup breach_corpus=public_dump_2019 last_rotated=never"},
+        # Real, documented technique (same PDF, lines 455-457/632/634 —
+        # "Observable 2: Removes Volume Shadow Copies"). The aggregate
+        # EDR-091 alert above already surfaces this at the 26-host summary
+        # level; this is the granular per-host Sysmon process-creation
+        # record a player earns by pivoting on the process name
+        # specifically, not a duplicate of that alert. Same
+        # verification pass as TI-004 above.
+        {"matches_on": {"process_name": "vssadmin.exe"}, "timestamp": "+41m", "severity": "critical",
+         "source_system": "Sysmon", "rule_id": "SYSMON-042",
+         "description": "Sysmon process-creation record: vssadmin.exe executed with 'delete shadows /all /quiet' on this host, under svc_update01's domain-admin context — the same technique EDR-091 later reports in aggregate across 26 hosts",
+         "raw_log": "event=1 image=C:\\Windows\\System32\\vssadmin.exe command_line='vssadmin.exe delete shadows /all /quiet' parent_image=C:\\Windows\\System32\\cmd.exe user=CORP-DC-01\\svc_update01 host=CORP-WKS-08"},
     ],
     "pressure_injections": [
         {"id": "pressure-001", "trigger_timestamp": "+3m", "type": "email", "countdown_seconds": 30,
