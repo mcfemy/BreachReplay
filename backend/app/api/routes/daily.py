@@ -2,7 +2,7 @@
 Daily Breach — the Wordle of cybersecurity.
 One scenario per day, global leaderboard, streaks, share cards.
 
-Two coexisting play paths, per PHASE2_STATE.md's Item 4 isolation rule:
+Two coexisting play paths, per STATE.md's Item 4 isolation rule:
 the original decision-gate quiz (routes below down to `/history`) stays
 intact and unmodified; action-console mode (`/action-run`,
 `/action-leaderboard/{id}`) is the new path new daily challenges are
@@ -278,7 +278,7 @@ async def record_daily_action_run_result(
     scales and are never compared against each other. Field names
     (rank/current_streak/longest_streak/total_dailies_played) match what
     the existing streak/leaderboard chrome already expects, per
-    PHASE2_STATE.md's Item 4 note, rather than inventing new ones."""
+    STATE.md's Item 4 note, rather than inventing new ones."""
     result = await db.execute(select(DailyChallenge).where(DailyChallenge.id == daily_challenge_id))
     challenge = result.scalar_one_or_none()
     if challenge is None:
@@ -634,7 +634,7 @@ async def get_challenge_history(
 # New daily challenge generation is wired through here, not through
 # `/scenario/{challenge_id}` + `/attempt` above — the decision-gate path
 # stays intact for any existing client still calling it, per
-# PHASE2_STATE.md's isolation rule, but is no longer how new plays happen.
+# STATE.md's isolation rule, but is no longer how new plays happen.
 
 @router.post("/action-run", response_model=DailyActionRunOut, status_code=status.HTTP_201_CREATED)
 async def create_daily_action_run(

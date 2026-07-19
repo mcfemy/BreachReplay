@@ -4,14 +4,17 @@ name: Claude Code
 # PR reviews, and freshly-opened/assigned issues containing "@claude". Full
 # write access, unlike the review-only claude-review.yml.
 #
-# base_branch defaults new work to phase-2-action-console, not main: an
-# issue-triggered run has no existing PR/branch context to inherit, and
-# Items 0-3 (everything Item 4+ builds on) live on phase-2-action-console —
-# main won't get them until Phase 2 fully merges. A run cut from main
-# found this out the hard way (issue #3): it correctly refused to
-# reimplement the Item 0-3 foundation from scratch rather than open a
-# divergent, non-merging PR, and flagged the base branch as the fix. See
-# PHASE2_STATE.md's branching note.
+# base_branch is always main — an issue-triggered run has no existing
+# PR/branch context to inherit, so this is what a cold dispatch falls back
+# to. During Phase 2 this was briefly hardcoded to phase-2-action-console
+# instead (Items 0-3, everything Item 4+ built on, lived only on that
+# branch — a run cut from main found this out the hard way in issue #3: it
+# correctly refused to reimplement the Item 0-3 foundation from scratch
+# rather than open a divergent, non-merging PR, and flagged the base branch
+# as the fix). Per STATE.md's durable convention, every phase now merges to
+# main promptly instead of staying a long-lived integration branch, so main
+# is always current and always the right base — this line should never
+# need to change again at a future phase boundary.
 
 on:
   issue_comment:
@@ -48,4 +51,4 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          base_branch: phase-2-action-console
+          base_branch: main

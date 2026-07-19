@@ -23,7 +23,7 @@ import {
  * desktop command-line alternative in this first version — spec calls that
  * "secondary sugar, not the primary path"). Fog of war: before
  * `scan_network`, `run.hosts` is empty and the map is empty — that void IS
- * the fog, not a NetworkMap rendering mode (see PHASE2_STATE.md's note and
+ * the fog, not a NetworkMap rendering mode (see STATE.md's note and
  * docs/BACKLOG.md's Phase 5 tone-pass entry on this).
  */
 

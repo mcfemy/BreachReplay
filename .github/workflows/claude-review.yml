@@ -1,7 +1,7 @@
 name: Claude PR Review
 
 # Automated QA reviewer for Phase 2+ work. Applies REVIEW_CRITERIA.md
-# against PHASE2_STATE.md and docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md and
+# against STATE.md and docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md and
 # posts a verdict, then gates this job's own pass/fail on that verdict so
 # branch protection actually blocks a merge on CHANGES REQUESTED (see the
 # "Gate the check on the posted verdict" step below).
@@ -322,9 +322,9 @@ jobs:
 
             Read REVIEW_CRITERIA.md at the repo root and apply it in full.
             Also read docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md and
-            PHASE2_STATE.md — every finding must be checked against whether
+            STATE.md — every finding must be checked against whether
             this diff conforms to the spec's Phase 2 section (section 4)
-            and to what PHASE2_STATE.md says the current item actually is,
+            and to what STATE.md says the current item actually is,
             not just general code quality.
 
             This review is READ-ONLY. You have no write access to repo

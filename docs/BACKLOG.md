@@ -42,7 +42,7 @@ future change, not bundled into Phase 2 item work.
 
 ## Fog-of-war tone pass (Phase 5)
 
-Found during Item 5 planning. PHASE2_STATE.md's Item 5 line says
+Found during Item 5 planning. STATE.md's Item 5 line says
 "unexamined hosts render dim/unknown" — Item 5 implements this as
 literally as `scan_network` allows: before that verb, the map is empty
 (no host exists to the client at all, not even dimmed), and one tap
@@ -87,10 +87,9 @@ something Item 5 introduced or made worse; `ActionConsole`'s own layout
 (verb chips, map, drawer) is genuinely mobile-first as built, it's
 AppShell's chrome around it that isn't.
 
-This matters beyond a nitpick: PHASE2_STATE.md's "After Item 5" Phase 2
-acceptance checklist explicitly requires "phone-with-one-thumb
-playability" before declaring Phase 2 done — that gate cannot pass while
-AppShell doesn't collapse. Fixing it (a collapsible/hamburger sidebar
+This matters beyond a nitpick: PHASE2_ACCEPTANCE.md's criterion 8 requires
+"phone-with-one-thumb playability" before declaring Phase 2 done — that
+gate cannot pass while AppShell doesn't collapse. Fixing it (a collapsible/hamburger sidebar
 below some breakpoint) touches shared chrome used by every authenticated
 page, not just the new action console, so it's deliberately left out of
 Item 5's own PR rather than rushed in at the end of an already large

@@ -8,7 +8,7 @@ in review and would otherwise have shipped broken.
 ## How to review
 
 1. Read `docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md` (the binding spec) and
-   `PHASE2_STATE.md` (what item this PR is supposed to be, and what's
+   `STATE.md` (what item this PR is supposed to be, and what's
    already landed) before reading the diff. **A PR is reviewed against
    spec conformance, not just code quality.** A change that is
    well-written but implements the wrong thing, skips a required behavior,
@@ -77,7 +77,7 @@ blocking.
 downgrade, verify clean removal, re-upgrade). Prefer amending an
 unmerged/undeployed migration over stacking a new one on top of it, if
 that migration truly hasn't shipped yet — check with the PR author or
-`PHASE2_STATE.md` before assuming either way.
+`STATE.md` before assuming either way.
 
 ## Non-blocking but required
 
@@ -89,7 +89,7 @@ justification in the PR description or a code comment, flag it as
 blocking, not just a nit.
 
 **(a, general) Conformance over style.** Prefer findings that say "this
-doesn't match spec section 4's X" or "this isn't what `PHASE2_STATE.md`
+doesn't match spec section 4's X" or "this isn't what `STATE.md`
 describes for Item N" over generic code-quality nitpicks. Style/structure
 feedback is welcome but must not be the bulk of the review — the spec is
 the standard being enforced here.
