@@ -68,18 +68,28 @@ $REMOTE = "${SSH_TARGET}:/home/ec2-user/breachreplay"
 # whatever happens to be sitting on the local disk verbatim. That's exactly
 # what shipped a developer's local, gitignored backend/.env (with a live
 # NVIDIA API key) straight to the production box. `git archive` can only
-# ever include committed files, so untracked/gitignored content (.env,
-# __pycache__, local scratch files) is structurally impossible to upload
-# this way. The extraction below never deletes the destination first, so
-# the server's own standing backend/.env — which isn't in the archive — is
-# left untouched.
+# ever include committed files, so untracked/gitignored content is
+# structurally impossible to upload this way.
+#
+# A plain extraction on top of the destination is additive-only, though —
+# it adds/overwrites but never removes. That bit us too: a migration file
+# deleted from git 5+ days ago (superseded, on an unmerged branch, by a
+# correctly-chained replacement) was still sitting on the server from some
+# earlier scp-based deploy, and its stale down_revision produced a second
+# Alembic head, breaking `alembic upgrade head` outright. So the archive is
+# extracted to a scratch dir, then rsync --delete mirrors it onto the real
+# backend/ dir — files git no longer tracks get removed, matching prod to
+# HEAD exactly. Two things must never be touched by that mirroring: the
+# server's own standing .env (not git-tracked, holds prod secrets) and
+# app/uploads/ (not git-tracked, holds real user-uploaded documents from
+# the ingestion feature) — both are explicitly excluded.
 $BackendArchive = Join-Path $env:TEMP "breachreplay_backend.tar"
 git archive --format=tar --output=$BackendArchive HEAD -- backend
 if ($LASTEXITCODE -ne 0) { Write-Error "git archive of backend/ failed"; exit 1 }
 scp $SSH_OPTS.Split(" ") $BackendArchive "${SSH_TARGET}:/tmp/breachreplay_backend.tar"
 if ($LASTEXITCODE -ne 0) { Write-Error "Backend archive upload failed"; exit 1 }
-ssh $SSH_OPTS.Split(" ") $SSH_TARGET "tar -xf /tmp/breachreplay_backend.tar -C /home/ec2-user/breachreplay/ && rm /tmp/breachreplay_backend.tar"
-if ($LASTEXITCODE -ne 0) { Write-Error "Backend extraction failed"; exit 1 }
+ssh $SSH_OPTS.Split(" ") $SSH_TARGET "rm -rf /tmp/br_backend_new && mkdir -p /tmp/br_backend_new && tar -xf /tmp/breachreplay_backend.tar -C /tmp/br_backend_new && rsync -a --delete --exclude='.env' --exclude='app/uploads/' /tmp/br_backend_new/backend/ /home/ec2-user/breachreplay/backend/ && rm -rf /tmp/br_backend_new /tmp/breachreplay_backend.tar"
+if ($LASTEXITCODE -ne 0) { Write-Error "Backend sync failed"; exit 1 }
 Remove-Item $BackendArchive -ErrorAction SilentlyContinue
 
 scp $SSH_OPTS.Split(" ") "$ROOT\docker-compose.prod.yml" "${SSH_TARGET}:/home/ec2-user/breachreplay/"
