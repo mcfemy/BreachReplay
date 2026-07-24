@@ -125,11 +125,24 @@ notes.
 ## New decisions this spec adds (surfaced by the harvest data, not in the original scope)
 
 6. **`host_count_range` becomes scenario-aware, not purely archetype-driven.**
-   Proposal: effective host count = `max(rng.randint(*archetype.host_count_range), harvested_count + decoy_padding)`,
-   where `decoy_padding` is a small constant (e.g. 2-3) so a dense scenario
-   like NHS WannaCry (11 harvested) still gets a couple of decoys rather
-   than becoming an all-real, zero-fog map. Needs your sign-off on the
-   padding constant and whether it's global or per-archetype.
+   `effective_host_count = max(rng.randint(*archetype.host_count_range), harvested_count + decoy_count)`,
+   where `decoy_count = ceil(harvested_count * PADDING_RATIO)`.
+
+   **`PADDING_RATIO = 0.2`** (roughly 1 decoy per 5 harvested hosts).
+   Reasoning: the ratio only matters for scenarios where harvested_count
+   already meets or exceeds the archetype's own range — sparse scenarios
+   (MGM: 1, SolarWinds: 3, Colonial Pipeline: 6) are dominated by the
+   `max()`'s archetype-roll term regardless of the ratio, so this is really
+   a decision about the dense end: NHS WannaCry (11) and Log4Shell (9).
+   Too low (e.g. 0.05) leaves almost no fog on exactly the scenarios where
+   fog matters most — 11 harvested + 1 decoy is barely a search problem at
+   all, undermining the investigation mechanic even after deduction is
+   fixed. Too high (e.g. 1.0) balloons the densest scenarios to double
+   size (11 → 22 hosts) for no narrative reason, diluting focus and map
+   navigability. 0.2 keeps exhaustive/blind querying meaningfully costly
+   (NHS WannaCry: 11 + 3 = 14, Log4Shell: 9 + 2 = 11) without bloating the
+   map past what the archetype's own upper bound already establishes as a
+   reasonable size elsewhere.
 7. **The verb-coverage gap (username/process_name-keyed IOCs have no reveal
    path) is a separate bug, not part of this fix.** Logging as its own
    backlog item so it doesn't get silently folded in or silently dropped.
@@ -154,16 +167,31 @@ notes.
   scenario-specific tuning or an explicit authoring convention (e.g.
   authors wrap real hostnames in the source data) rather than pure
   inference — flagging for your call, not guessing.
-- **Segment assignment rule (proposed, not guessed silently).** Keyword
-  match against the hostname string, case-insensitive, in this order:
-  contains `ot`/`scada`/`historian` → `ot` segment (energy archetype only);
-  contains `dmz` → `dmz`; contains `clinical`/`pacs`/`lis`/`imaging` → `clinical`
-  (healthcare archetype only); else → `corp` (default). Simple, explicit,
-  and wrong often enough to need scenario-author review — e.g. `NHS-PACS-01`
-  hits the `pacs` keyword correctly, but nothing in `adfs-01.corp.internal`
-  signals `corp` other than the literal substring "corp", which happens to
-  work but is fragile. Not proposing anything smarter without your steer on
-  how much authoring effort per-scenario segment tagging is worth.
+- **Segment assignment rule (explicit precedence, three tiers).** Only
+  segments valid for that scenario's archetype are ever candidates (energy:
+  `corp`/`dmz`/`ot`; everything else, including the `small_healthcare`
+  default MGM/SolarWinds/Log4Shell fall back to: `corp`/`dmz`/`clinical`).
+  1. **Domain-suffix signal**: if the hostname is FQDN-style (has dots) and
+     any dot-separated label exactly matches (or is a known synonym of) a
+     valid segment name for that archetype — e.g. a hypothetical
+     `foo.dmz.internal` → `dmz` — use it. None of the 5 current flagship
+     scenarios' harvested names happen to carry an explicit zone label this
+     way (their suffixes are `corp.internal`/`prod.internal`/`colpipe.internal`,
+     which tier 2 already handles via the `corp` keyword), but future
+     scenarios may author one, so this tier exists and fires first.
+  2. **Naming-convention keyword**, substring match, case-insensitive,
+     restricted to segments valid for the archetype:
+     `ot`/`scada`/`historian`/`hmi`/`plc` → `ot` (energy only);
+     `dmz` → `dmz`; `pacs`/`lis`/`imaging`/`clinical`/`ward` → `clinical`
+     (healthcare/default only); `corp` → `corp`.
+  3. **Deterministic seeded fallback**: for a hostname tiers 1-2 don't
+     resolve, derive `_derive_rng(seed, f"segment-fallback:{hostname}")`
+     and pick uniformly among the archetype's valid segments. Reproducible
+     across runs of the same (scenario, seed) — same fix's determinism
+     requirement — but distributes across segments instead of defaulting
+     everything unresolved into `corp`, which would otherwise silently
+     skew every scenario's segment balance toward one segment for no
+     narrative reason.
 
 ## Tests required
 
