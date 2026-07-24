@@ -64,8 +64,24 @@ ssh $SSH_OPTS.Split(" ") $SSH_TARGET "sudo chmod -R u+w /home/ec2-user/breachrep
 
 $REMOTE = "${SSH_TARGET}:/home/ec2-user/breachreplay"
 
-scp $SSH_OPTS.Split(" ") -r "$ROOT\backend" "${SSH_TARGET}:/home/ec2-user/breachreplay/"
-if ($LASTEXITCODE -ne 0) { Write-Error "Backend upload failed"; exit 1 }
+# Package only git-tracked files from backend/ — NOT `scp -r`, which uploads
+# whatever happens to be sitting on the local disk verbatim. That's exactly
+# what shipped a developer's local, gitignored backend/.env (with a live
+# NVIDIA API key) straight to the production box. `git archive` can only
+# ever include committed files, so untracked/gitignored content (.env,
+# __pycache__, local scratch files) is structurally impossible to upload
+# this way. The extraction below never deletes the destination first, so
+# the server's own standing backend/.env — which isn't in the archive — is
+# left untouched.
+$BackendArchive = Join-Path $env:TEMP "breachreplay_backend.tar"
+git archive --format=tar --output=$BackendArchive HEAD -- backend
+if ($LASTEXITCODE -ne 0) { Write-Error "git archive of backend/ failed"; exit 1 }
+scp $SSH_OPTS.Split(" ") $BackendArchive "${SSH_TARGET}:/tmp/breachreplay_backend.tar"
+if ($LASTEXITCODE -ne 0) { Write-Error "Backend archive upload failed"; exit 1 }
+ssh $SSH_OPTS.Split(" ") $SSH_TARGET "tar -xf /tmp/breachreplay_backend.tar -C /home/ec2-user/breachreplay/ && rm /tmp/breachreplay_backend.tar"
+if ($LASTEXITCODE -ne 0) { Write-Error "Backend extraction failed"; exit 1 }
+Remove-Item $BackendArchive -ErrorAction SilentlyContinue
+
 scp $SSH_OPTS.Split(" ") "$ROOT\docker-compose.prod.yml" "${SSH_TARGET}:/home/ec2-user/breachreplay/"
 if ($LASTEXITCODE -ne 0) { Write-Error "docker-compose.prod.yml upload failed"; exit 1 }
 
