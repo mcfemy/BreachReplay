@@ -202,3 +202,33 @@ session-scoped cleanup fixture for these fixed test user ids (mirroring
 the `is_synthetic` fix's spirit — stop the shared-DB writes from being
 real in the first place) or tightening `_update_streak`'s guard to be
 provably idempotent under a same-day rerun.
+
+## `username`/`process_name`-keyed hidden IOCs have no reveal mechanism at all
+
+Found while specing the host-namespace-unification fix
+(`docs/HOST_NAMESPACE_UNIFICATION_SPEC.md`) — this is a distinct, more
+severe bug than that spec's own subject, surfaced by the same investigation
+but explicitly out of that spec's scope. `verb_engine.py`'s full verb
+switch has exactly one value-based IOC pivot: `block_ip`, which matches
+`matches_on.get("ip") == target` regardless of which host the IOC physically
+landed on. There is no equivalent for `matches_on["username"]` or
+`matches_on["process_name"]`. `reset_creds` looks like it should be the
+username case — it isn't: it matches against `world.credentials` (a
+different data structure) and disables a credential, but never touches
+`discovered_ioc_keys` or reveals anything.
+
+Confirmed live: MGM Resorts' scenario has 4 hidden IOCs, 3 of them keyed on
+`username` (`CROSSTENANT`) or `process_name` (`RMM`, `BACKUPWIPE`). All 3
+are reachable today only by `query_logs`/`image_disk`-ing the exact
+(procedurally-named, unguessable) host `_place_iocs` happened to bind them
+to — there is no value-based shortcut, unlike the 4th (ip-keyed) IOC, which
+`block_ip` already reveals correctly regardless of host confusion. The
+host-namespace fix doesn't touch this gap: there's no hostname to harvest
+for a username/process_name-keyed entry in the first place.
+
+Not fixed here — needs its own design pass (a `reveal_by_username`-shaped
+verb path, or teaching `reset_creds`/a new verb to also check
+`ioc_placements` by `matches_on["username"]`/`matches_on["process_name"]`,
+mirroring `block_ip`'s pattern). Worth prioritizing: this affects every
+scenario whose hidden IOCs lean on account/process signatures rather than
+host/IP ones, not just MGM.
