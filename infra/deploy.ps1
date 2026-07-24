@@ -85,11 +85,18 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Frontend publish failed"; exit 1 }
 
 # ── Rebuild and restart containers ───────────────────────────────────────────
 Write-Host "==> Restarting services..."
+# NOTE: deliberately no `python seed.py` here. seed.py skips-if-exists by
+# source_reference, so against an already-populated DB it's a silent no-op —
+# worse, its presence in the deploy path creates the false impression that
+# scenario data changes shipped when they didn't. Data changes to existing
+# rows (e.g. backfilling a new column onto rows that already exist) belong in
+# an explicit, reviewable one-off backfill script run deliberately, not in
+# the routine deploy path. seed.py's insert-new-scenarios behavior is still
+# available to run by hand when a genuinely new scenario is added.
 ssh $SSH_OPTS.Split(" ") $SSH_TARGET @"
 cd /home/ec2-user/breachreplay
 docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build --remove-orphans
 docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T backend alembic upgrade head
-docker compose -f docker-compose.prod.yml --env-file .env.prod exec -T backend python seed.py
 "@
 
 if ($LASTEXITCODE -ne 0) { Write-Error "Remote restart failed"; exit 1 }
