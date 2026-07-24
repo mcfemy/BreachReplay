@@ -144,6 +144,44 @@ pre-existing latent bug (present before that work and unrelated to it) —
 but it's a real prod-safety gap, not merely test-suite flakiness, since it
 can put synthetic content in front of an actual player.
 
+## Hidden IOCs have no discoverable correlation to the visible alert feed
+
+Found while manually verifying the `hidden_iocs` backfill deploy against a
+real production Daily Breach run. `_build_stages`
+(`backend/app/services/action_engine.py`) already says this out loud in its
+own docstring: the attack path is "built via a seeded RNG, since the
+scenario's own free-text hostnames (e.g. 'CORP-DC-01') don't correspond to
+synthesized host ids and have no reliable mapping to them." Confirmed live:
+reproduced the exact deterministic placement for a real prod run (SolarWinds,
+seed `1341145589`) — the 3 hidden IOCs landed on `host-6`/`host-5`/`host-2`,
+while the player's visible alert feed (`alert_lines`, delivered verbatim from
+the scenario's authored `alert_sequence`) referenced the original static
+hostnames (`orion-mgmt-01`, `adfs-01.corp.internal`, etc.), which have zero
+relationship to those synthesized map node ids.
+
+`hidden_iocs`' own docstring (`backend/seed.py`) frames the mechanic as
+rewarding a player who "pivots the investigation panel on the right
+field/value" — i.e., notices a value in one alert and follows it up
+elsewhere. That correlation is impossible today: the only visible signal a
+host is worth investigating is `compromise_level` (red/pulsing on the map),
+which just means "some decision-gate stage compromised this host at some
+point," not "this specific host holds evidence." With several hosts
+typically compromised over a run and only a handful of hidden IOCs (3 for
+SolarWinds), a player currently has no better strategy than querying every
+compromised host and hoping — confirmed by an actual live play-through
+during this deploy, where 2 of 5 queried compromised hosts came up empty
+before the 3rd hit.
+
+Not fixed here — this is a design/gameplay question, not a bug with an
+obvious one-line fix. Worth considering, not mutually exclusive: (1) rewrite
+`alert_sequence` entries the same way `_rewrite_raw_log_for_host` already
+rewrites `hidden_iocs`' `raw_log`, so the visible feed's hostname mentions
+genuinely point at real map nodes; (2) a real-time visual cue (a distinct
+highlight/pulse) on the exact host a decision-gate stage compromises at the
+moment it fires, teaching the player by watching rather than reading; (3)
+something else entirely. Revisit alongside Phase 5's broader tone pass (see
+the fog-of-war entry above, which is adjacent).
+
 ## `user_streaks` idempotency guard doesn't survive same-day test reruns
 
 Found while re-verifying the full backend suite during Phase 2 close-out.
