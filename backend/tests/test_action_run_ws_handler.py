@@ -259,16 +259,13 @@ async def test_run_over_triggers_finalize_and_a_run_end_event():
     assert await action_run_store.get(run_id) is None
 
 
-# _place_iocs now binds hidden_iocs to the attack path (hosts a
-# decision_gate stage actually compromises), not any host in the world —
-# with only _FAST_DECISION_TREE's single gate, the attack path is exactly
-# one host, so both entries below would land on the SAME host and this
-# fixture's own "multiple hosts" premise would silently stop holding.
-# This wider tree gives the attack path enough hosts (up to 3, shuffled
-# per seed) for _place_iocs's own rng.choice to actually have room to
-# scatter two IOCs onto different ones — verified empirically for this
-# file's seed=1 by the assertion at the top of each test that uses it,
-# not hand-derived from the RNG.
+# _place_iocs binds hidden_iocs to the attack path (hosts a decision_gate
+# stage actually compromises), not any host in the world — with only
+# _FAST_DECISION_TREE's single gate, the attack path is exactly one host,
+# so both entries below would land on the SAME host and this fixture's own
+# "multiple hosts" premise would silently stop holding. This wider tree
+# gives the attack path enough hosts (up to 3) for two IOCs to land on
+# different ones.
 _MULTI_HOST_DECISION_TREE = [
     {"id": "gate-001", "trigger_timestamp": "+2m", "mitre_technique": "T1078",
      "context_summary": "Suspicious VPN activity.", "options": [], "correct_index": 0,
@@ -281,16 +278,33 @@ _MULTI_HOST_DECISION_TREE = [
      "consequence_if_wrong": "Missed.", "rationale": "Contain spread.", "nist_control_ref": "RS.MI-1"},
 ]
 
-# Two hidden_iocs deliberately bound to different hosts (via
-# action_engine._place_iocs's seeded RNG, over the attack path
-# _MULTI_HOST_DECISION_TREE above provides) — needed so
-# test_resync_after_scan_and_query_returns_exactly_the_earned_subset can
-# assert the OTHER host's IOC never leaks into a resync that only earned
-# the first one.
+# Used by the block_ip-parity test below, which only needs ONE ip-keyed
+# placement to exist (matches_on.get("ip")) — doesn't care which host it
+# lands on, so the pre-existing seeded-random placement is fine here.
 _MULTI_HOST_HIDDEN_IOCS = [
     {"matches_on": {"ip": "185.220.101.34"}, "timestamp": "+1m", "severity": "medium",
      "source_system": "Auth", "rule_id": "AUTH-009", "description": "Same-IP login on legacy portal",
      "raw_log": "auth=success src_ip=185.220.101.34"},
+    {"matches_on": {"hostname": "CORP-DC-01"}, "timestamp": "+7m", "severity": "medium",
+     "source_system": "EDR", "rule_id": "EDR-030", "description": "LOLBin activity before credential dump",
+     "raw_log": "proc=certutil.exe host=CORP-DC-01"},
+]
+
+# Two hidden_iocs bound to two DIFFERENT, explicitly named hosts — needed by
+# test_resync_after_scan_and_query_returns_exactly_the_earned_subset, which
+# specifically asserts the OTHER host's IOC never leaks into a resync that
+# only earned the first one; that requires certainty the two placements
+# land on different hosts, not the empirically-tuned, seed-fragile random
+# placement _MULTI_HOST_HIDDEN_IOCS above relied on before host namespace
+# unification existed. Both entries here are matches_on.hostname-keyed on
+# purpose (see host_harvest.py / docs/HOST_NAMESPACE_UNIFICATION_SPEC.md):
+# a hostname-keyed IOC binds DETERMINISTICALLY to the real host that exact
+# name was harvested into, so two distinct authored hostnames are
+# guaranteed to land on two distinct hosts regardless of seed.
+_MULTI_HOST_HIDDEN_IOCS_TWO_NAMED_HOSTS = [
+    {"matches_on": {"hostname": "FIN-SVR-04"}, "timestamp": "+1m", "severity": "medium",
+     "source_system": "Auth", "rule_id": "AUTH-009", "description": "Same-IP login on legacy portal",
+     "raw_log": "auth=success src_ip=185.220.101.34 host=FIN-SVR-04"},
     {"matches_on": {"hostname": "CORP-DC-01"}, "timestamp": "+7m", "severity": "medium",
      "source_system": "EDR", "rule_id": "EDR-030", "description": "LOLBin activity before credential dump",
      "raw_log": "proc=certutil.exe host=CORP-DC-01"},
@@ -306,7 +320,7 @@ async def test_resync_after_scan_and_query_returns_exactly_the_earned_subset():
     specific host), never another host's still-undiscovered hidden_iocs."""
     from tests.conftest import ensure_test_user_row
     await ensure_test_user_row("action-run-owner-8")
-    scenario = await _make_scenario(decision_tree=_MULTI_HOST_DECISION_TREE, hidden_iocs=_MULTI_HOST_HIDDEN_IOCS)
+    scenario = await _make_scenario(decision_tree=_MULTI_HOST_DECISION_TREE, hidden_iocs=_MULTI_HOST_HIDDEN_IOCS_TWO_NAMED_HOSTS)
     run_id, compiled = await _start_live_run(scenario, "action-run-owner-8")
 
     queried_placement = compiled.ioc_placements[0]

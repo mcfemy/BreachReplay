@@ -261,12 +261,21 @@ _DETECTION_RULE_TEMPLATES: list[dict] = [
 ]
 
 
-def generate_org_state(seed: int, archetype: dict) -> OrgState:
+def generate_org_state(seed: int, archetype: dict, host_plan: Optional[list[dict]] = None) -> OrgState:
     """Deterministically build a small OrgState from an archetype config.
 
     Uses a local `random.Random(seed)` instance exclusively — never the
     global `random` module — so the same (seed, archetype) always produces
     a byte-identical OrgState.
+
+    `host_plan` (see host_harvest.build_host_plan / docs/HOST_NAMESPACE_UNIFICATION_SPEC.md):
+    when given, a list of {"hostname", "segment", "is_harvested"} that
+    replaces the fully-procedural host count/naming/segment-assignment
+    below — one real host per entry, in order, using the plan's own
+    hostname and segment instead of the generated `SEG-ROL-NN` scheme.
+    None (the default) preserves the exact original behavior, unchanged —
+    every caller that doesn't pass a plan (existing tests, Arena matches)
+    is unaffected.
     """
     rng = random.Random(seed)
 
@@ -274,18 +283,32 @@ def generate_org_state(seed: int, archetype: dict) -> OrgState:
     maturity = archetype.get("security_maturity", "medium")
     params = _MATURITY_PARAMS.get(maturity, _MATURITY_PARAMS["medium"])
 
-    host_lo, host_hi = archetype.get("host_count_range", [8, 10])
-    seg_lo, seg_hi = archetype.get("segment_count_range", [2, 2])
+    name_pool = _SEGMENT_NAME_POOLS.get(industry, _SEGMENT_NAME_POOLS["default"])
 
-    host_count = rng.randint(int(host_lo), int(host_hi))
-    segment_count = rng.randint(int(seg_lo), int(seg_hi))
+    if host_plan:
+        host_count = len(host_plan)
+        # Segments must cover every distinct segment name the plan actually
+        # uses (a host_plan entry assigned "clinical" is meaningless if no
+        # "clinical" NetworkSegment gets created) — "corp" is always
+        # included as the universal default even if nothing happens to
+        # need it. Ordered name_pool-first (matches the pre-existing
+        # convention that segments[0] is "corp") then anything else.
+        required = {entry["segment"] for entry in host_plan} | {"corp"}
+        segment_names = [n for n in name_pool if n in required]
+        segment_names += sorted(required - set(segment_names))
+    else:
+        host_lo, host_hi = archetype.get("host_count_range", [8, 10])
+        seg_lo, seg_hi = archetype.get("segment_count_range", [2, 2])
+        host_count = rng.randint(int(host_lo), int(host_hi))
+        segment_count = rng.randint(int(seg_lo), int(seg_hi))
+        segment_names = [name_pool[i] if i < len(name_pool) else f"segment-{i+1}" for i in range(segment_count)]
+
+    segment_count = len(segment_names)
 
     # ── segments ──
-    name_pool = _SEGMENT_NAME_POOLS.get(industry, _SEGMENT_NAME_POOLS["default"])
     segments: list[NetworkSegment] = []
     monitored_count = round(segment_count * params["monitored_frac"])
-    for i in range(segment_count):
-        base_name = name_pool[i] if i < len(name_pool) else f"segment-{i+1}"
+    for i, base_name in enumerate(segment_names):
         seg_id = f"seg-{i+1}"
         # Coarse reachability model: every segment is reachable from every
         # other segment except itself, EXCEPT an "ot"/"scada"-flavored
@@ -299,15 +322,18 @@ def generate_org_state(seed: int, archetype: dict) -> OrgState:
             monitored=(i < monitored_count),
             reachable_from=tuple(f"seg-{j+1}" for j in range(segment_count) if j != i),
         ))
-    if industry in _SCADA_VERTICALS and segment_count >= 2:
-        ot_index = len(segments) - 1
-        corp_seg_id = segments[0].id
+    if "ot" in segment_names and segment_count >= 2:
+        ot_index = segment_names.index("ot")
+        corp_index = segment_names.index("corp") if "corp" in segment_names else 0
+        corp_seg_id = segments[corp_index].id
         segments[ot_index] = NetworkSegment(
             id=segments[ot_index].id,
             name="ot",
             monitored=segments[ot_index].monitored,
             reachable_from=(corp_seg_id,),
         )
+
+    segments_by_name = {s.name: s for s in segments}
 
     # ── hosts ──
     roles: list[HostRole] = list(_NON_SCADA_ROLES)
@@ -317,7 +343,9 @@ def generate_org_state(seed: int, archetype: dict) -> OrgState:
     hosts: list[Host] = []
     dc_placed = False
     for i in range(host_count):
-        seg = segments[i % len(segments)]
+        plan_entry = host_plan[i] if host_plan else None
+        seg = segments_by_name.get(plan_entry["segment"], segments[0]) if plan_entry else segments[i % len(segments)]
+
         if not dc_placed and i == 0:
             role: HostRole = "domain_controller"
             dc_placed = True
@@ -334,7 +362,7 @@ def generate_org_state(seed: int, archetype: dict) -> OrgState:
 
         hosts.append(Host(
             id=f"host-{i+1}",
-            hostname=f"{seg.name.upper()}-{role.upper()[:3]}-{i+1:02d}",
+            hostname=plan_entry["hostname"] if plan_entry else f"{seg.name.upper()}-{role.upper()[:3]}-{i+1:02d}",
             role=role,
             network_segment_id=seg.id,
             unpatched_cves=unpatched,

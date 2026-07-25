@@ -33,10 +33,12 @@ import re
 from dataclasses import dataclass, field, replace
 from typing import Optional, Union
 
+from app.services import host_harvest
 from app.services.org_simulation import (
     ORG_ARCHETYPES,
     Host,
     OrgState,
+    _SEGMENT_NAME_POOLS,
     generate_org_state,
 )
 
@@ -296,19 +298,26 @@ def _build_stages(
     host_ids: list[str],
     seed: int,
     compression_ratio: float = 1.0,
+    preferred_host_ids: tuple[str, ...] = (),
 ) -> tuple[Stage, ...]:
     """Deterministically converts decision_tree + pressure_injections into a
     sorted stage timeline. Each decision_gate stage advances the compromise
     level of a deterministically-chosen host from `host_ids` — an "attack
-    path" built via a seeded RNG, since the scenario's own free-text
-    hostnames (e.g. "CORP-DC-01") don't correspond to synthesized host ids
-    and have no reliable mapping to them. Pressure stages carry no host
-    compromise; they're timeline beats only. The `is_final` (terminal,
-    exfil/encryption/detonation) stage is whichever decision_tree gate has
-    the MAXIMUM trigger_seconds — never assumed from array position, since
-    authored content is not guaranteed to be listed in chronological order
-    (ties broken by earliest array occurrence, so exactly one stage is ever
-    final).
+    path" built via a seeded RNG.
+
+    `preferred_host_ids` (see host_harvest.py / docs/HOST_NAMESPACE_UNIFICATION_SPEC.md):
+    an ordered tuple of host ids the attack path must run through first —
+    every host a hidden_ioc names directly (matches_on.hostname), so that
+    IOC's host is guaranteed to actually be on the attack path (investigating
+    a visibly compromised host must be able to teach you something — see
+    _place_iocs), followed by any other harvested (authored, not decoy)
+    host. Only once every preferred host has appeared at least once does the
+    path start cycling through the shuffled remainder (decoys, or — when
+    nothing was harvested at all — every host, exactly the original
+    behavior). This is what makes "read the alert, find the host on the
+    map, query it" actually work: before host_harvest existed, the
+    scenario's own free-text hostnames (e.g. "CORP-DC-01") had no reliable
+    mapping to synthesized host ids at all.
 
     `compression_ratio` (the scenario's own field, see _compress_seconds)
     scales every authored trigger_timestamp before it ever becomes a
@@ -322,9 +331,11 @@ def _build_stages(
     if gate_trigger_seconds:
         final_gate_index = gate_trigger_seconds.index(max(gate_trigger_seconds))
 
-    path: list[str] = list(host_ids)
-    if path:
-        _derive_rng(seed, "attack-path").shuffle(path)
+    preferred = [h for h in preferred_host_ids if h in host_ids]
+    remaining = [h for h in host_ids if h not in preferred]
+    if remaining:
+        _derive_rng(seed, "attack-path").shuffle(remaining)
+    path: list[str] = preferred + remaining
 
     stages: list[Stage] = []
     for i, gate in enumerate(gates):
@@ -386,20 +397,34 @@ def _rewrite_raw_log_for_host(raw_log: str, matches_on: dict, host: Optional[Hos
 def _place_iocs(
     hidden_iocs: list[dict], world: OrgState, seed: int, stages: tuple[Stage, ...] = (),
 ) -> tuple[IOCPlacement, ...]:
-    """Deterministically assigns each hidden_ioc to a synthesized host that
-    a decision-gate stage actually compromises — the attack path — via a
-    seeded RNG independent of _build_stages's own attack-path draw, and
-    rewrites its raw_log so the revealed evidence never contradicts the
-    network map (see _rewrite_raw_log_for_host).
+    """Assigns each hidden_ioc to a synthesized host and rewrites its
+    raw_log so the revealed evidence never contradicts the network map
+    (see _rewrite_raw_log_for_host).
 
-    Binding to the attack path (rather than any host in the world, the
-    original behavior) is what makes investigating a compromised host
-    actually teach something: before this, a hidden_ioc could land on a
-    host no stage ever touches, so querying the host that's visibly being
-    compromised could legitimately reveal nothing, while an untouched host
-    held the evidence instead — disconnected from what the map is showing.
-    Falls back to any host in the world if the attack path is empty (a
-    scenario with no decision_tree gates has no attack path to bind to)."""
+    A `matches_on.hostname`-keyed IOC binds DETERMINISTICALLY to the real
+    host that authored hostname was harvested into (see host_harvest.py) —
+    looked up by exact hostname match. This is the whole point of host
+    namespace unification: the player who reads the alert naming this host
+    and queries it on the map must find this specific evidence, not a
+    random one. `compile_scenario` guarantees (via `_build_stages`'s
+    `preferred_host_ids`) that a hostname-keyed IOC's host is always on the
+    attack path, so this never violates the "must be on the attack path"
+    invariant below even though it skips the random draw entirely.
+
+    Every other hidden_ioc (matches_on keyed by ip/username/process_name,
+    or a hostname that somehow isn't harvested — never happens for the 5
+    flagship scenarios today, confirmed by harvest_report.py, but handled
+    defensively) falls back to the original behavior: a seeded random
+    choice among hosts a decision-gate stage actually compromises — the
+    attack path — independent of _build_stages's own attack-path draw.
+    Binding to the attack path (rather than any host in the world) is what
+    makes investigating a compromised host actually teach something: a
+    hidden_ioc landing on a host no stage ever touches means querying the
+    host that's visibly being compromised could legitimately reveal
+    nothing, while an untouched host held the evidence instead —
+    disconnected from what the map is showing. Falls back to any host in
+    the world if the attack path is empty (a scenario with no decision_tree
+    gates has no attack path to bind to)."""
     host_ids = [h.id for h in world.hosts]
     if not host_ids:
         return ()
@@ -417,14 +442,16 @@ def _place_iocs(
     if not candidate_ids:
         candidate_ids = host_ids
 
+    hostname_to_id = {h.hostname: h.id for h in world.hosts}
     rng = _derive_rng(seed, "ioc-placement")
     placements: list[IOCPlacement] = []
     for ioc in (hidden_iocs or []):
         if not isinstance(ioc, dict):
             continue
-        host_id = rng.choice(candidate_ids)
-        host = world.get_host(host_id)
         matches_on = ioc.get("matches_on") or {}
+        named_host_id = hostname_to_id.get(matches_on.get("hostname"))
+        host_id = named_host_id if named_host_id is not None else rng.choice(candidate_ids)
+        host = world.get_host(host_id)
         placements.append(IOCPlacement(
             host_id=host_id,
             description=ioc.get("description", ""),
@@ -442,12 +469,33 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
     with the same field names) plus a seed into a CompiledRun. Same
     (scenario content, seed) always produces a byte-identical CompiledRun —
     verified by tests/test_action_engine.py's determinism tests.
+
+    Host namespace unification (docs/HOST_NAMESPACE_UNIFICATION_SPEC.md):
+    hostnames the scenario's own authored content names (alert_sequence,
+    hidden_iocs) are harvested and seeded as real map hosts — via
+    host_harvest.build_host_plan — instead of the network map generating a
+    disconnected namespace of its own with no reliable mapping back to
+    what the player actually read.
     """
     scenario_id = str(_field(scenario, "id", ""))
     archetype_key = _archetype_key_for_scenario(_field(scenario, "industry_vertical"))
     archetype = ORG_ARCHETYPES[archetype_key]
 
-    world = generate_org_state(seed, archetype)
+    # The archetype-side term of host_harvest's elastic host-count formula
+    # (max(archetype_roll, harvested+decoys)) needs its own seeded roll,
+    # independent of generate_org_state's internal rng stream — which,
+    # once a host_plan exists, never rolls host_count itself at all (see
+    # generate_org_state's host_plan branch).
+    archetype_host_lo, archetype_host_hi = archetype.get("host_count_range", [8, 10])
+    archetype_host_roll = _derive_rng(seed, "archetype-host-roll").randint(
+        int(archetype_host_lo), int(archetype_host_hi)
+    )
+    valid_segments = tuple(_SEGMENT_NAME_POOLS.get(
+        archetype.get("industry_vertical", "default"), _SEGMENT_NAME_POOLS["default"]
+    ))
+    host_plan = host_harvest.build_host_plan(scenario, valid_segments, archetype_host_roll, seed)
+
+    world = generate_org_state(seed, archetype, host_plan=host_plan)
     host_ids = [h.id for h in world.hosts]
     edges = _build_edges(world)
 
@@ -460,7 +508,24 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
     # doesn't carry the field at all, e.g. plain-dict test fixtures.
     compression_ratio = _field(scenario, "compression_ratio", 1.0)
 
-    stages = _build_stages(decision_tree, pressure_injections, host_ids, seed, compression_ratio)
+    # Attack-path preference, in priority order: every host a hidden_ioc
+    # names directly (guarantees that IOC's host lands on the attack path —
+    # see _place_iocs), then any other harvested (authored, non-decoy) host.
+    # Empty when host_plan is None (nothing harvested — e.g. a bare test
+    # fixture), which reduces _build_stages back to its original
+    # fully-shuffled behavior exactly.
+    hostname_to_id = {h.hostname: h.id for h in world.hosts}
+    ioc_hostnames = sorted(host_harvest.hostnames_referenced_by_hidden_iocs(scenario))
+    required_ids = tuple(hostname_to_id[n] for n in ioc_hostnames if n in hostname_to_id)
+    harvested_ids = tuple(
+        hid for hid in (
+            hostname_to_id.get(entry["hostname"]) for entry in (host_plan or []) if entry["is_harvested"]
+        )
+        if hid is not None and hid not in required_ids
+    )
+    preferred_host_ids = required_ids + harvested_ids
+
+    stages = _build_stages(decision_tree, pressure_injections, host_ids, seed, compression_ratio, preferred_host_ids)
     ioc_placements = _place_iocs(hidden_iocs, world, seed, stages)
 
     alert_lines = tuple(

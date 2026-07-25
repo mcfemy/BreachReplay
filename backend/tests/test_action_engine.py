@@ -197,8 +197,15 @@ def test_final_stage_is_chosen_by_max_trigger_seconds_not_array_position():
 
 
 def test_ioc_raw_log_is_rewritten_to_match_the_bound_synthesized_host():
-    """QA fix: revealed evidence text must never reference a real-world
-    hostname/IP absent from the synthesized network map."""
+    """QA fix (superseded by host namespace unification — see
+    docs/HOST_NAMESPACE_UNIFICATION_SPEC.md): revealed evidence text must
+    never reference a real-world hostname/IP absent from the synthesized
+    network map. Before host_harvest existed, that was enforced by
+    REWRITING the authored hostname to whatever random host it landed on
+    (so "CORP-DC-01" never appeared in raw_log at all). Now it's enforced
+    the other way: "CORP-DC-01" is harvested into a REAL host with that
+    exact hostname, so the authored name in raw_log is correct AS-IS — the
+    whole point of the fix is that it's no longer a contradiction."""
     compiled = action_engine.compile_scenario(_SCENARIO, seed=42)
 
     hostname_ioc = _SCENARIO["hidden_iocs"][1]  # matches_on: {"hostname": "CORP-DC-01"}
@@ -207,8 +214,8 @@ def test_ioc_raw_log_is_rewritten_to_match_the_bound_synthesized_host():
     bound_host = compiled.world.get_host(placement.host_id)
 
     assert bound_host is not None
+    assert bound_host.hostname == hostname_ioc["matches_on"]["hostname"]
     assert bound_host.hostname in placement.raw_log
-    assert hostname_ioc["matches_on"]["hostname"] not in placement.raw_log
 
 
 def test_missing_compression_ratio_defaults_to_no_scaling():
@@ -343,3 +350,105 @@ def test_compile_scenario_accepts_a_missing_or_empty_content_gracefully():
     assert compiled.alert_lines == ()
     assert compiled.final_stage_id is None
     assert len(compiled.world.hosts) > 0
+
+
+# ── Host namespace unification (docs/HOST_NAMESPACE_UNIFICATION_SPEC.md) ─────
+
+_HOST_UNIFICATION_SCENARIO = {
+    "id": "test-scenario-host-unification",
+    "industry_vertical": "energy",
+    "alert_sequence": [
+        {"timestamp": "+0m", "severity": "medium", "source_system": "VPN Gateway", "rule_id": "VPN-001",
+         "description": "Suspicious login on the finance server", "raw_log": "auth=success host=FIN-SVR-04"},
+        {"timestamp": "+5m", "severity": "high", "source_system": "EDR", "rule_id": "EDR-045",
+         "description": "Process anomaly on the OT historian", "raw_log": "proc=lsass.exe host=OT-HISTORIAN-01"},
+    ],
+    "decision_tree": [
+        {"id": "gate-001", "trigger_timestamp": "+2m", "mitre_technique": "T1078",
+         "context_summary": "Suspicious activity.", "options": [], "correct_index": 0,
+         "consequence_if_wrong": "Missed.", "rationale": "Correlate.", "nist_control_ref": "DE.AE-2"},
+        {"id": "gate-002", "trigger_timestamp": "+6m", "mitre_technique": "T1003",
+         "context_summary": "Anomaly detected.", "options": [], "correct_index": 1,
+         "consequence_if_wrong": "Missed.", "rationale": "Preserve evidence.", "nist_control_ref": "RS.AN-3"},
+    ],
+    "pressure_injections": [],
+    "hidden_iocs": [
+        {"matches_on": {"hostname": "FIN-SVR-04"}, "timestamp": "+1m", "severity": "high",
+         "source_system": "EDR", "rule_id": "EVIDENCE-01", "description": "Evidence on the finance server",
+         "raw_log": "proc=certutil.exe host=FIN-SVR-04"},
+        {"matches_on": {"hostname": "OT-HISTORIAN-01"}, "timestamp": "+4m", "severity": "critical",
+         "source_system": "Sysmon", "rule_id": "EVIDENCE-02", "description": "Evidence on the OT historian",
+         "raw_log": "proc=vssadmin.exe host=OT-HISTORIAN-01"},
+        {"matches_on": {"ip": "185.220.101.34"}, "timestamp": "+3m", "severity": "medium",
+         "source_system": "Auth", "rule_id": "EVIDENCE-03", "description": "IP-keyed evidence, no hostname",
+         "raw_log": "src_ip=185.220.101.34"},
+    ],
+}
+
+
+def test_every_alert_sequence_hostname_resolves_to_a_real_map_host():
+    """The core promise of the fix: a hostname a player reads in the alert
+    feed must exist as an actual, clickable host on the map — not a
+    disconnected namespace."""
+    compiled = action_engine.compile_scenario(_HOST_UNIFICATION_SCENARIO, seed=17)
+    map_hostnames = {h.hostname for h in compiled.world.hosts}
+    assert "FIN-SVR-04" in map_hostnames
+    assert "OT-HISTORIAN-01" in map_hostnames
+
+
+def test_every_hidden_ioc_hostname_resolves_to_its_exact_named_host():
+    """A hostname-keyed hidden_ioc must bind to the REAL host with that
+    exact name — not a random host that merely happens to be on the attack
+    path (the pre-fix behavior). This is what makes "read the alert, find
+    the host, query it" work: querying the named host must reveal THIS
+    specific evidence, deterministically."""
+    compiled = action_engine.compile_scenario(_HOST_UNIFICATION_SCENARIO, seed=17)
+    hostname_to_id = {h.hostname: h.id for h in compiled.world.hosts}
+
+    fin_placement = next(p for p in compiled.ioc_placements if p.rule_id == "EVIDENCE-01")
+    ot_placement = next(p for p in compiled.ioc_placements if p.rule_id == "EVIDENCE-02")
+    assert fin_placement.host_id == hostname_to_id["FIN-SVR-04"]
+    assert ot_placement.host_id == hostname_to_id["OT-HISTORIAN-01"]
+
+    # Both named hosts must actually be on the attack path — the point of
+    # `preferred_host_ids` — so investigating a visibly compromised host
+    # can always teach the player something (not violated by the exact
+    # binding above).
+    attack_path_host_ids = {hid for s in compiled.stages for hid in s.compromises_host_ids}
+    assert hostname_to_id["FIN-SVR-04"] in attack_path_host_ids
+    assert hostname_to_id["OT-HISTORIAN-01"] in attack_path_host_ids
+
+    # The ip-keyed IOC is unaffected by any of this — still placed on an
+    # attack-path host via the pre-existing random-choice fallback (the
+    # verb-coverage gap for non-hostname matches_on types is a separate,
+    # explicitly out-of-scope backlog item, not something this fix touches).
+    ip_placement = next(p for p in compiled.ioc_placements if p.rule_id == "EVIDENCE-03")
+    assert ip_placement.host_id in attack_path_host_ids
+
+
+def test_host_namespace_unification_stays_deterministic():
+    """Same (scenario, seed) must still compile byte-identical, including
+    the new harvested-host/decoy machinery — Phase 4 ghost racing depends
+    on this exactly as much as it did before host_harvest existed."""
+    run_a = action_engine.compile_scenario(_HOST_UNIFICATION_SCENARIO, seed=99)
+    run_b = action_engine.compile_scenario(_HOST_UNIFICATION_SCENARIO, seed=99)
+    assert run_a.world.to_dict() == run_b.world.to_dict()
+    assert [p.to_dict() for p in run_a.ioc_placements] == [p.to_dict() for p in run_b.ioc_placements]
+    assert [s.to_dict() for s in run_a.stages] == [s.to_dict() for s in run_b.stages]
+
+    run_c = action_engine.compile_scenario(_HOST_UNIFICATION_SCENARIO, seed=100)
+    assert run_a.world.to_dict() != run_c.world.to_dict()
+
+
+def test_harvested_hosts_never_leak_matches_on_or_unfired_stage_data():
+    """Leak-safety criterion (b) from the spec, re-verified against the new
+    compile path: matches_on and mitre_technique must never appear in what
+    a client-facing IOCPlacement.to_dict() would actually send."""
+    compiled = action_engine.compile_scenario(_HOST_UNIFICATION_SCENARIO, seed=17)
+    for placement in compiled.ioc_placements:
+        d = placement.to_dict()
+        assert "matches_on" not in d
+        assert "mitre_technique" not in d
+        # The authored matching hint's raw value must never appear verbatim
+        # in what gets sent either (only the rewritten raw_log does).
+        assert set(d.keys()) == {"host_id", "description", "severity", "source_system", "rule_id", "raw_log"}
