@@ -203,32 +203,42 @@ the `is_synthetic` fix's spirit — stop the shared-DB writes from being
 real in the first place) or tightening `_update_streak`'s guard to be
 provably idempotent under a same-day rerun.
 
-## `username`/`process_name`-keyed hidden IOCs have no reveal mechanism at all
+## `process_name`-keyed hidden IOCs have no reveal mechanism (username half fixed 2026-07-25)
 
 Found while specing the host-namespace-unification fix
-(`docs/HOST_NAMESPACE_UNIFICATION_SPEC.md`) — this is a distinct, more
-severe bug than that spec's own subject, surfaced by the same investigation
-but explicitly out of that spec's scope. `verb_engine.py`'s full verb
-switch has exactly one value-based IOC pivot: `block_ip`, which matches
-`matches_on.get("ip") == target` regardless of which host the IOC physically
-landed on. There is no equivalent for `matches_on["username"]` or
-`matches_on["process_name"]`. `reset_creds` looks like it should be the
-username case — it isn't: it matches against `world.credentials` (a
-different data structure) and disables a credential, but never touches
-`discovered_ioc_keys` or reveals anything.
+(`docs/HOST_NAMESPACE_UNIFICATION_SPEC.md`) — a distinct, more severe bug
+than that spec's own subject, surfaced by the same investigation but
+explicitly out of that spec's scope. `verb_engine.py`'s full verb switch
+had exactly one value-based IOC pivot: `block_ip`, matching
+`matches_on.get("ip") == target` regardless of which host the IOC
+physically landed on. There was no equivalent for `matches_on["username"]`
+or `matches_on["process_name"]` — `reset_creds` looked like it should be
+the username case; it wasn't, it matched against `world.credentials` (a
+different data structure) and disabled a credential without ever touching
+`discovered_ioc_keys`.
 
-Confirmed live: MGM Resorts' scenario has 4 hidden IOCs, 3 of them keyed on
-`username` (`CROSSTENANT`) or `process_name` (`RMM`, `BACKUPWIPE`). All 3
-are reachable today only by `query_logs`/`image_disk`-ing the exact
-(procedurally-named, unguessable) host `_place_iocs` happened to bind them
-to — there is no value-based shortcut, unlike the 4th (ip-keyed) IOC, which
-`block_ip` already reveals correctly regardless of host confusion. The
-host-namespace fix doesn't touch this gap: there's no hostname to harvest
-for a username/process_name-keyed entry in the first place.
+**2026-07-25: the username half is fixed.** `reset_creds` now also checks
+`ioc_placements` for a `matches_on["username"]` match and reveals it,
+mirroring `block_ip`'s pattern exactly — the two effects (credential
+disable, IOC reveal) are independent and can both fire from one call. See
+`docs/HOST_NAMESPACE_UNIFICATION_SPEC.md`'s 2026-07-25 update, which also
+declares "containment verbs double as value-pivots" a deliberate
+convention for any future verb, not a one-off. Covered by
+`test_reset_creds_reveals_a_username_keyed_ioc_by_value_alongside_the_credential`,
+`test_reset_creds_reveals_a_username_keyed_ioc_with_no_matching_credential`,
+`test_reset_creds_username_answer_is_discoverable_through_legitimate_play`,
+and `test_reset_creds_wrong_guess_penalty_matches_block_ip_exactly` (all in
+`test_verb_engine.py`), plus a playability regression guard
+(`test_scenario_content_playability.py`) asserting every username/ip-keyed
+IOC's value is actually readable in the visible alert feed across all 5
+flagship scenarios — both already passed without content changes.
 
-Not fixed here — needs its own design pass (a `reveal_by_username`-shaped
-verb path, or teaching `reset_creds`/a new verb to also check
-`ioc_placements` by `matches_on["username"]`/`matches_on["process_name"]`,
-mirroring `block_ip`'s pattern). Worth prioritizing: this affects every
-scenario whose hidden IOCs lean on account/process signatures rather than
-host/IP ones, not just MGM.
+**`process_name` remains the open half.** MGM Resorts' scenario has 2 IOCs
+keyed on it (`RMM`, `BACKUPWIPE`) still reachable only by
+`query_logs`/`image_disk`-ing the exact (procedurally-named, unguessable)
+host they landed on — no value-based shortcut exists for this
+`matches_on` type yet. Needs its own verb (or a generalized target) per
+the now-declared convention above; deliberately not done alongside the
+username fix since only 2 IOCs across all 5 flagship scenarios currently
+need it — worth adding once a second scenario actually leans on
+process-name signatures, not preemptively.

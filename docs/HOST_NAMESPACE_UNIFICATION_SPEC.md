@@ -252,3 +252,44 @@ UI changes, CMMC, anything touching org tabletop or `simulation_ws_handler`.
   matches_on.hostname (structured):    4  ['NHS-DESKTOP-014', 'NHS-DOMAIN-CTRL-01', 'NHS-PTDB-01', 'WKS-ONCO-04']
   TOTAL unique harvested hosts:         11
 ```
+
+## Update (2026-07-25): username-keyed IOCs now pivotable — a declared convention, not a one-off
+
+The MGM verb-coverage gap this spec logged as a separate backlog item
+(above) was partially closed: `reset_creds` now reveals a
+`matches_on.username`-keyed hidden_ioc by value, mirroring `block_ip`'s
+existing `matches_on.ip` handling exactly. `process_name`-keyed IOCs remain
+the documented, un-closed half — see `docs/BACKLOG.md`.
+
+**"Containment verbs double as value-pivots" is now a deliberate design
+convention for this codebase, not something `block_ip` happened to do
+once.** Any future verb that takes a value as its target (a username, an
+IP, a process name, a file hash, whatever a scenario's `matches_on` might
+key on) should check `run.compiled.ioc_placements` for a matching entry
+and reveal it by value — independent of, and in addition to, whatever
+containment side effect that verb's "normal" job already does (disabling a
+credential, blocking an IP, isolating a host). The two effects are
+independent: a submitted value can match a real world object (credential,
+etc.), a hidden_ioc, both, or neither — `reset_creds`'s implementation is
+the second worked example of this pattern (`block_ip` was the first) and
+should be the template for a third.
+
+**Two requirements locked in by test, not just by convention:**
+1. A wrong guess against a value-pivot verb must cost the same
+   `PRECISION_PENALTY` as every other value-pivot verb's wrong guess —
+   `test_reset_creds_wrong_guess_penalty_matches_block_ip_exactly` asserts
+   this directly, not just "both use the same constant" by inspection. A
+   future verb with a cheaper wrong-guess cost makes brute-forcing the
+   input cheaper than reading the alert feed, and the whole deduction
+   premise (this spec's actual goal) collapses.
+2. Every value a hidden_ioc expects the player to submit must be readable
+   in the visible `alert_sequence` feed before it's needed —
+   `test_scenario_content_playability.py` asserts this for every
+   username- and ip-keyed IOC across all 5 flagship scenarios (both
+   already passed without content changes; this is a regression guard
+   for future scenario authoring, not a fix). A value-pivot verb with
+   nothing in visible content to pivot from is exactly the same
+   "structurally impossible to deduce" failure mode this spec's host
+   namespace unification was written to fix, just for a value instead of
+   a hostname — a future verb (or scenario) violating this should fail
+   loudly here, not ship silently.

@@ -327,20 +327,53 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
             delta = {"correct": False}
 
     elif verb == "reset_creds":
-        matched = next(
+        # Containment verbs double as value-pivots — a deliberate convention
+        # (docs/HOST_NAMESPACE_UNIFICATION_SPEC.md), not an accident:
+        # block_ip already reveals an ip-keyed hidden_ioc by value regardless
+        # of which host it's bound to; this mirrors the identical pattern
+        # for username-keyed ones. The two matches below are independent —
+        # `target` can be a real Credential.username (containment: disables
+        # it), match a hidden_ioc's matches_on.username (investigation:
+        # reveals it), both, or neither. Authored scenario usernames
+        # (hidden_iocs) and procedurally-generated Credential usernames
+        # (org_simulation.py's own pool) are two different namespaces that
+        # happen to not overlap in the 5 flagship scenarios today, so in
+        # practice submitting an authored username hits only the reveal
+        # path — that's fine, it's still "correct".
+        cred_matched = next(
             (c for c in world.credentials if c.username == target and not c.disabled),
             None,
         )
-        if matched is not None:
+        ioc_matched = next(
+            (p for p in run.compiled.ioc_placements if p.matches_on.get("username") == target),
+            None,
+        )
+        if cred_matched is not None:
             new_creds = tuple(
-                (replace(c, disabled=True) if c.id == matched.id else c) for c in world.credentials
+                (replace(c, disabled=True) if c.id == cred_matched.id else c) for c in world.credentials
             )
             world = OrgState(
                 hosts=world.hosts, segments=world.segments, credentials=new_creds,
                 detection_rules=world.detection_rules, global_flags=world.global_flags,
             )
-            delta = {"correct": True, "credential_id": matched.id}
+        if ioc_matched is not None:
+            discovered_ioc_keys = discovered_ioc_keys | {(ioc_matched.host_id, ioc_matched.rule_id)}
+
+        if cred_matched is not None or ioc_matched is not None:
+            delta = {"correct": True}
+            if cred_matched is not None:
+                delta["credential_id"] = cred_matched.id
+            if ioc_matched is not None:
+                # Same immediate-reveal reasoning as block_ip's own comment
+                # above: earned the moment the correct username is
+                # submitted, not just recorded for a later resync.
+                delta["revealed_iocs"] = [ioc_matched.to_dict()]
         else:
+            # Same PRECISION_PENALTY as block_ip's wrong-guess case — a
+            # username guess with neither a real credential nor a hidden_ioc
+            # match must cost the same as a wrong IP, or brute-forcing input
+            # is cheaper than reading the alert feed and the whole
+            # deduction premise collapses.
             penalties = penalties + ({"type": "wrong_reset_creds", "account": target, "amount": PRECISION_PENALTY},)
             delta = {"correct": False}
 

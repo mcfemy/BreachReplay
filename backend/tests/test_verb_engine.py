@@ -252,7 +252,83 @@ def test_reset_creds_unknown_account_records_a_penalty():
     run = verb_engine.new_run(compiled)
     result = verb_engine.apply_verb(run, "reset_creds", "not-a-real-account")
     assert result.delta == {"correct": False}
-    assert any(p["type"] == "wrong_reset_creds" for p in result.run.penalties)
+
+
+def test_reset_creds_wrong_guess_penalty_matches_block_ip_exactly():
+    """Containment verbs double as value-pivots (docs/HOST_NAMESPACE_UNIFICATION_SPEC.md)
+    — a wrong username guess must cost exactly what a wrong IP guess costs,
+    or brute-forcing input is cheaper than reading the alert feed and the
+    deduction premise collapses. Locks the two penalty amounts together
+    explicitly so they can't silently drift apart."""
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+
+    creds_result = verb_engine.apply_verb(run, "reset_creds", "not-a-real-account")
+    ip_result = verb_engine.apply_verb(run, "block_ip", "9.9.9.9")
+
+    creds_penalty = next(p for p in creds_result.run.penalties if p["type"] == "wrong_reset_creds")
+    ip_penalty = next(p for p in ip_result.run.penalties if p["type"] == "wrong_block_ip")
+    assert creds_penalty["amount"] == ip_penalty["amount"] == verb_engine.PRECISION_PENALTY
+
+
+def test_reset_creds_reveals_a_username_keyed_ioc_by_value_alongside_the_credential():
+    """_SCENARIO's username-keyed IOC ("svc_backup") happens to also be a
+    real procedurally-generated Credential.username for this archetype/seed
+    — deliberately exercises the "both match simultaneously" case: the
+    credential still gets disabled (existing containment behavior,
+    unaffected) AND the IOC is revealed by value in the same call."""
+    compiled = _compiled()
+    username_ioc = next(p for p in compiled.ioc_placements if p.matches_on.get("username"))
+    cred = next(c for c in compiled.world.credentials if c.username == username_ioc.matches_on["username"])
+    run = verb_engine.new_run(compiled)
+
+    result = verb_engine.apply_verb(run, "reset_creds", username_ioc.matches_on["username"])
+    assert result.delta["correct"] is True
+    assert result.delta["credential_id"] == cred.id
+    assert result.delta["revealed_iocs"] == [username_ioc.to_dict()]
+    assert result.run.world.get_credential(cred.id).disabled is True
+
+
+def test_reset_creds_reveals_a_username_keyed_ioc_with_no_matching_credential():
+    """Mirrors real content (MGM's CROSSTENANT IOC: matches_on.username =
+    "d.park@mgmresorts.com", which is never a procedurally-generated
+    Credential.username — a different namespace entirely). Submitting it
+    must still count as correct and reveal the IOC, with no credential_id
+    in the delta since nothing was actually disabled."""
+    scenario = dict(_SCENARIO, hidden_iocs=[
+        {"matches_on": {"username": "d.park@mgmresorts.com"}, "timestamp": "+5m", "severity": "critical",
+         "source_system": "Okta", "rule_id": "MGM-CROSSTENANT-01", "description": "Cross-tenant impersonation",
+         "raw_log": "actor=d.park@mgmresorts.com outcome=SUCCESS"},
+    ])
+    compiled = action_engine.compile_scenario(scenario, seed=7)
+    ioc = compiled.ioc_placements[0]
+    assert not any(c.username == "d.park@mgmresorts.com" for c in compiled.world.credentials)
+    run = verb_engine.new_run(compiled)
+
+    result = verb_engine.apply_verb(run, "reset_creds", "d.park@mgmresorts.com")
+    assert result.delta == {"correct": True, "revealed_iocs": [ioc.to_dict()]}
+
+
+def test_reset_creds_username_answer_is_discoverable_through_legitimate_play():
+    """Closes the loop end to end, mirroring
+    test_block_ip_answer_is_discoverable_through_legitimate_play: the
+    username reset_creds expects must be reachable by actually playing
+    (query_logs -> read the revealed raw_log -> extract the username ->
+    reset_creds), not just known server-side via IOCPlacement.matches_on."""
+    compiled = _compiled()
+    username_ioc = next(p for p in compiled.ioc_placements if p.matches_on.get("username"))
+    run = verb_engine.new_run(compiled)
+
+    reveal = verb_engine.apply_verb(run, "query_logs", username_ioc.host_id)
+    revealed = next(ioc for ioc in reveal.delta["revealed_iocs"] if ioc["rule_id"] == username_ioc.rule_id)
+
+    assert username_ioc.matches_on["username"] in revealed["raw_log"], (
+        "the username must be discoverable in the revealed raw_log text"
+    )
+
+    result = verb_engine.apply_verb(reveal.run, "reset_creds", username_ioc.matches_on["username"])
+    assert result.delta["correct"] is True
+    assert result.delta["revealed_iocs"] == [username_ioc.to_dict()]
 
 
 def test_unknown_verb_and_missing_target_are_rejected_without_spending_clock():
