@@ -1,5 +1,66 @@
 import os
+import sys
 import uuid
+
+# ── Test database safety guard (docs/TEST_DATABASE_SAFETY_SPEC.md) ──────────
+# Runs BEFORE the setdefault calls below — the whole point is checking
+# whatever was ALREADY set in the environment (e.g. docker-compose's
+# env_file injecting the real DATABASE_URL inside a deployed container,
+# before Python even starts) before this file's own sqlite default would
+# apply. Two production incidents in one evening (2026-07-24/25) came from
+# exactly this: running pytest manually inside a deployed container
+# inherits the real DATABASE_URL, and 9 test files (not just one) write
+# real, non-rolled-back rows via AsyncSessionLocal directly whenever it
+# resolves to something real. CI is unaffected (.github/workflows/ci.yml
+# sets no DATABASE_URL at all — always hits the sqlite default below).
+_PROD_DATABASE_NAMES = {"breachreplay"}  # exact, hardcoded — never derived
+# from config that could itself be wrong the same way DATABASE_URL was
+# wrong tonight. A defense-in-depth backstop, checked in ADDITION to the
+# naming-convention check below, not instead of it.
+_TEST_DATABASE_SUFFIX = "_test"
+
+
+def _unsafe_database_url_reason(url: str) -> str | None:
+    """Pure classifier, no I/O/exit — returns None if `url` is safe for
+    tests to point at (empty/unset, sqlite, or a Postgres database name
+    ending in `_TEST_DATABASE_SUFFIX`), else a human-readable reason it was
+    refused. Split out from the exit-on-failure wrapper below specifically
+    so it's directly unit-testable (see test_conftest_database_guard.py)
+    without subprocess gymnastics around conftest.py's own import-time
+    side effects."""
+    if not url or "sqlite" in url:
+        return None
+    dbname = url.split("?", 1)[0].rsplit("/", 1)[-1]
+    if dbname in _PROD_DATABASE_NAMES:
+        return f"resolves to {dbname!r}, the real production database name"
+    if not dbname.endswith(_TEST_DATABASE_SUFFIX):
+        return (
+            f"resolves to database {dbname!r}, which doesn't look like an "
+            f"isolated test database (expected a name ending in "
+            f"{_TEST_DATABASE_SUFFIX!r}, sqlite, or unset)"
+        )
+    return None
+
+
+def _refuse_unsafe_database_urls() -> None:
+    for var in ("DATABASE_URL", "SYNC_DATABASE_URL"):
+        reason = _unsafe_database_url_reason(os.environ.get(var, ""))
+        if reason is not None:
+            sys.stderr.write(
+                f"\nREFUSING TO RUN TESTS: {var} {reason}.\n"
+                f"Tests write real, non-rolled-back rows via AsyncSessionLocal "
+                f"directly in 9 files (action_run_store.finalize and 8 test "
+                f"files that bypass the rolled-back db fixture on purpose) — "
+                f"running against this database would corrupt real data. See "
+                f"docs/TEST_DATABASE_SAFETY_SPEC.md.\n"
+                f"Unset {var} to use the sqlite default, or point it at an "
+                f"isolated database whose name ends in "
+                f"{_TEST_DATABASE_SUFFIX!r}.\n\n"
+            )
+            sys.exit(1)
+
+
+_refuse_unsafe_database_urls()
 
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test.db")
 os.environ.setdefault("SYNC_DATABASE_URL", "sqlite:///./test.db")
