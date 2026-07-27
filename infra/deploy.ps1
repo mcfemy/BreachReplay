@@ -95,6 +95,17 @@ Remove-Item $BackendArchive -ErrorAction SilentlyContinue
 scp $SSH_OPTS.Split(" ") "$ROOT\docker-compose.prod.yml" "${SSH_TARGET}:/home/ec2-user/breachreplay/"
 if ($LASTEXITCODE -ne 0) { Write-Error "docker-compose.prod.yml upload failed"; exit 1 }
 
+# nginx config was previously only ever installed once by ec2_setup.sh and
+# never touched again by this script — meaning a change committed here
+# (like the /health proxy fix) would silently NOT be live until someone
+# remembered to apply it by hand. Same drift pattern as the deploy.ps1 fix
+# above; sync it on every deploy so the repo is the actual source of truth.
+Write-Host "==> Syncing nginx config..."
+scp $SSH_OPTS.Split(" ") "$ROOT\nginx\breachreplay.conf" "${SSH_TARGET}:/tmp/breachreplay.conf"
+if ($LASTEXITCODE -ne 0) { Write-Error "nginx config upload failed"; exit 1 }
+ssh $SSH_OPTS.Split(" ") $SSH_TARGET "sudo cp /tmp/breachreplay.conf /etc/nginx/conf.d/breachreplay.conf && rm -f /tmp/breachreplay.conf && sudo nginx -t && sudo systemctl reload nginx"
+if ($LASTEXITCODE -ne 0) { Write-Error "nginx config apply failed — check 'sudo nginx -t' output above"; exit 1 }
+
 Write-Host "==> Uploading frontend build..."
 # Stage to a temp dir first (avoids nginx ownership issues on /var/www).
 # NOTE: upload the whole "dist" folder, not "dist\*" — PowerShell does not
