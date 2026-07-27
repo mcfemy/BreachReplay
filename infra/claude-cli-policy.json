@@ -1,0 +1,40 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EC2ReadOnly",
+      "Effect": "Allow",
+      "Action": ["ec2:DescribeInstances", "ec2:DescribeInstanceStatus"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "EC2LifecycleThisInstanceOnly",
+      "Effect": "Allow",
+      "Action": ["ec2:StartInstances", "ec2:StopInstances", "ec2:RebootInstances"],
+      "Resource": "arn:aws:ec2:us-east-1:469320018919:instance/i-0b33d84fe18ea2c77"
+    },
+    {
+      "Sid": "CloudWatchAlarmRead",
+      "Effect": "Allow",
+      "Action": ["cloudwatch:DescribeAlarms", "cloudwatch:DescribeAlarmHistory"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "LogsReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "LambdaDiscoveryReadOnly",
+      "Effect": "Allow",
+      "Action": ["lambda:ListFunctions", "lambda:GetFunction", "lambda:GetFunctionUrlConfig", "lambda:GetPolicy"],
+      "Resource": "*"
+    }
+  ]
+}

@@ -103,10 +103,20 @@ Write-Host "==> Uploading frontend build..."
 # the remote temp dir empty. rsync --delete against an empty source would
 # then wipe the live site. Uploading the folder itself avoids the glob
 # entirely; the remote rsync source path is adjusted to match.
-ssh $SSH_OPTS.Split(" ") $SSH_TARGET "rm -rf /tmp/br_dist_upload && mkdir -p /tmp/br_dist_upload"
+# sudo, not plain rm: scp -r has been observed creating the destination
+# "dist" directory with a mode that denies write back to its own owner
+# (ec2-user) — root can still remove it, ec2-user's own rm cannot, even
+# though ec2-user owns it. Confirmed reproducible (hit on consecutive
+# deploys) 2026-07-27 deploying the guided-first-run feature: the SAME
+# scp -r invocation, unmodified, produced a "dist" dir the owning user
+# couldn't delete either before OR after that run's publish. Root cause
+# not fully diagnosed (likely an OpenSSH/scp quirk translating the local
+# Windows source directory's ACLs), but sudo on both removals sidesteps
+# it either way.
+ssh $SSH_OPTS.Split(" ") $SSH_TARGET "sudo rm -rf /tmp/br_dist_upload && mkdir -p /tmp/br_dist_upload"
 scp $SSH_OPTS.Split(" ") -r "$ROOT\frontend\dist" "${SSH_TARGET}:/tmp/br_dist_upload/"
 if ($LASTEXITCODE -ne 0) { Write-Error "Frontend upload failed"; exit 1 }
-ssh $SSH_OPTS.Split(" ") $SSH_TARGET "sudo mkdir -p /var/www/breachreplay && sudo rsync -a --delete /tmp/br_dist_upload/dist/ /var/www/breachreplay/ && sudo chown -R nginx:nginx /var/www/breachreplay && rm -rf /tmp/br_dist_upload"
+ssh $SSH_OPTS.Split(" ") $SSH_TARGET "sudo mkdir -p /var/www/breachreplay && sudo rsync -a --delete /tmp/br_dist_upload/dist/ /var/www/breachreplay/ && sudo chown -R nginx:nginx /var/www/breachreplay && sudo rm -rf /tmp/br_dist_upload"
 if ($LASTEXITCODE -ne 0) { Write-Error "Frontend publish failed"; exit 1 }
 
 # ── Rebuild and restart containers ───────────────────────────────────────────
