@@ -47,5 +47,10 @@ class User(Base):
     public_display_handle: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, unique=True, index=True)
     arena_profile_public: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
+    # Guided first-run (Action Console pre-brief + in-run beats) — set True
+    # the moment a player dismisses the pre-brief, so it plays at most once
+    # per account. Reset to False from Settings to replay it for testing.
+    has_seen_console_intro: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+
     organization: Mapped["Organization"] = relationship("Organization", back_populates="users")
     session_participants: Mapped[list["SessionParticipant"]] = relationship("SessionParticipant", back_populates="user")

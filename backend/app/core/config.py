@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = None
     GEMINI_MODEL: str = "gemini-2.5-flash"
 
+    # NVIDIA NIM (integrate.api.nvidia.com) — OpenAI-compatible endpoint,
+    # alternate SCENARIO EXTRACTION backend only (see EXTRACTION_PROVIDER
+    # below). Never used by generate_decision_commentary/
+    # generate_debrief_report — those are runtime paths, untouched.
+    NVIDIA_API_KEY: Optional[str] = None
+    NVIDIA_MODEL: str = "nvidia/nemotron-3-super-120b-a12b"
+
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
@@ -69,6 +76,21 @@ class Settings(BaseSettings):
     MFA_ENCRYPTION_KEY: Optional[str] = None
 
     AI_PREFER_GEMINI: bool = False
+    # Scenario-extraction provider override (extract_scenario_from_document
+    # only). "claude" (default) preserves the existing AI_PREFER_GEMINI
+    # claude<->gemini fallback behavior untouched; "nemotron" routes
+    # extraction through NVIDIA NIM instead, no fallback to Claude/Gemini —
+    # a failed Nemotron extraction should surface as a failure, not
+    # silently substitute a different model's output.
+    #
+    # KEEP THIS "claude" FOR REAL INGESTION. Verified against the actual
+    # Colonial Pipeline source doc: Nemotron fabricated a recurring C2 IP
+    # and other plausible-but-uncited artifacts across two independent runs,
+    # and inverted one documented fact outright. "nemotron" is
+    # candidate-generation only — every identifier it produces needs manual
+    # source verification before use. Full findings:
+    # docs/NEMOTRON_EXTRACTION_FINDINGS.md.
+    EXTRACTION_PROVIDER: str = "claude"
 
     STRIPE_SECRET_KEY: Optional[str] = None
     STRIPE_WEBHOOK_SECRET: Optional[str] = None

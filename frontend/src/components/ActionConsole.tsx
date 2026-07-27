@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import NetworkMap, { type NetworkMapNode } from "./NetworkMap";
 import { colors, nodeStateColor, type NodeState } from "../theme/tokens";
 import XPToast from "./XPToast";
+import ConsolePreBrief from "./ConsolePreBrief";
+import { useAuthStore } from "../store/auth";
+import { axiosInstance } from "../lib/api";
 import {
   useRunSocket,
   VERB_COSTS,
@@ -45,6 +48,17 @@ const TEXT_TARGET_PROMPT: Record<string, string> = {
   reset_creds: "Username from a revealed credential",
 };
 
+// Guided first-run beats — each fires at most once, only during a player's
+// genuine first run (gated by User.has_seen_console_intro, see the
+// isGuidedRunRef logic below). Teaches a control, never an answer: no host,
+// IP, or direction is ever named, matching the OBJECTIVE line's philosophy.
+const GUIDED_BEAT_TEXT = {
+  scan: "Red hosts are already compromised. Query one — see how they got in.",
+  query: "That log's got the attacker's address in it. Block it.",
+  block: "That host's contained. They're still moving through the rest.",
+} as const;
+type GuidedBeat = keyof typeof GUIDED_BEAT_TEXT;
+
 // Client-side layout only — the backend gives topology (edges) but no
 // coordinates (NetworkSegment has no x/y, only reachable_from adjacency).
 // One column per segment, hosts stacked within it.
@@ -85,6 +99,8 @@ interface ActionConsoleProps {
 
 export default function ActionConsole({ runId, onComplete }: ActionConsoleProps) {
   const run = useRunSocket(runId);
+  const user = useAuthStore((s) => s.user);
+  const updateUser = useAuthStore((s) => s.updateUser);
   const [targetVerb, setTargetVerb] = useState<Verb | null>(null);
   const [textInput, setTextInput] = useState("");
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
@@ -93,6 +109,28 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   const [idleNudgeVisible, setIdleNudgeVisible] = useState(false);
   const lastActionAtRef = useRef(0);
   const idleNudgedThisStretchRef = useRef(false);
+
+  // Guided first-run — pre-brief shows only when this account has never
+  // seen it. isGuidedRunRef is captured once at mount so the three in-run
+  // beats keep firing for the rest of THIS run even after handleDismissPreBrief
+  // flips the server-side flag (which would otherwise make a later re-read
+  // of `user.has_seen_console_intro` say "no, not guided" mid-run).
+  const [showPreBrief, setShowPreBrief] = useState(() => user ? !user.has_seen_console_intro : false);
+  const isGuidedRunRef = useRef(showPreBrief);
+  const [guidedBeatShown, setGuidedBeatShown] = useState<Record<GuidedBeat, boolean>>({
+    scan: false, query: false, block: false,
+  });
+  const [guidedBeatText, setGuidedBeatText] = useState<string | null>(null);
+
+  function handleDismissPreBrief() {
+    setShowPreBrief(false);
+    axiosInstance
+      .patch("/auth/me", { has_seen_console_intro: true })
+      .then(({ data }) => updateUser({ has_seen_console_intro: data.has_seen_console_intro }))
+      .catch(() => {
+        // Best-effort — worst case the pre-brief shows again next run, not harmful.
+      });
+  }
 
   // Run-start baseline for the idle clock — set here (not in the ref
   // initializer above) so Date.now() is never called during render.
@@ -142,6 +180,49 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     return () => clearTimeout(t);
   }, [resultToast]);
 
+  // Guided first-run beats — shape-sniffed off the same run.lastDelta every
+  // other reaction here uses (see useRunSocket.ts's own shape-sniffing for
+  // why: the wire format doesn't tag which verb produced a delta). Each
+  // fires at most once, only for isGuidedRunRef.current runs.
+  useEffect(() => {
+    if (!isGuidedRunRef.current) return;
+    const delta = run.lastDelta;
+    if (!delta) return;
+
+    if (!guidedBeatShown.scan && Array.isArray(delta.nodes)) {
+      setGuidedBeatShown((s) => ({ ...s, scan: true }));
+      setGuidedBeatText(GUIDED_BEAT_TEXT.scan);
+    } else if (
+      !guidedBeatShown.block &&
+      delta.correct === true &&
+      typeof delta.host_id === "string"
+    ) {
+      // Correct block_ip — checked before the query branch below since a
+      // correct block_ip's delta ALSO carries revealed_iocs (see
+      // useRunSocket.ts), which would otherwise false-match as a query beat.
+      setGuidedBeatShown((s) => ({ ...s, block: true }));
+      setGuidedBeatText(GUIDED_BEAT_TEXT.block);
+    } else if (
+      !guidedBeatShown.query &&
+      Array.isArray(delta.revealed_iocs) &&
+      delta.revealed_iocs.length > 0 &&
+      !delta.forensics &&
+      typeof delta.correct !== "boolean"
+    ) {
+      // query_logs only — excludes image_disk (carries `forensics`) and
+      // block_ip/reset_creds (carry `correct`).
+      setGuidedBeatShown((s) => ({ ...s, query: true }));
+      setGuidedBeatText(GUIDED_BEAT_TEXT.query);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.lastDelta]);
+
+  useEffect(() => {
+    if (!guidedBeatText) return;
+    const t = setTimeout(() => setGuidedBeatText(null), 6000);
+    return () => clearTimeout(t);
+  }, [guidedBeatText]);
+
   // Idle nudge (onboarding layer 1 — see BREACHREPLAY_GAME_OVERHAUL_SPEC.md
   // Phase 5 for the full guided first-run this is a small slice of). A
   // push to act, never a hint about WHAT to do: no host/IP/direction is
@@ -161,13 +242,14 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     if (run.runEnd) return;
     const poll = setInterval(() => {
       if (idleNudgedThisStretchRef.current) return;
+      if (guidedBeatText) return; // don't stack the generic nudge on top of a guided beat
       if (Date.now() - lastActionAtRef.current >= IDLE_NUDGE_THRESHOLD_MS) {
         idleNudgedThisStretchRef.current = true;
         setIdleNudgeVisible(true);
       }
     }, 2000);
     return () => clearInterval(poll);
-  }, [run.runEnd]);
+  }, [run.runEnd, guidedBeatText]);
 
   useEffect(() => {
     if (!idleNudgeVisible) return;
@@ -210,6 +292,10 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     run.submitVerb(targetVerb, textInput.trim());
     setTargetVerb(null);
     setTextInput("");
+  }
+
+  if (showPreBrief) {
+    return <ConsolePreBrief onDismiss={handleDismissPreBrief} />;
   }
 
   if (run.runEnd) {
@@ -386,6 +472,14 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
       {idleNudgeVisible && (
         <div className="fixed bottom-40 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-full text-sm font-bold shadow-lg bg-phosphor text-void">
           The attacker is still active — every second counts.
+        </div>
+      )}
+
+      {/* Guided first-run beats — same toast system as the idle nudge above,
+          each fires at most once, only during a player's genuine first run. */}
+      {guidedBeatText && (
+        <div className="fixed bottom-40 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-full text-sm font-bold shadow-lg bg-phosphor text-void max-w-[90vw] text-center">
+          {guidedBeatText}
         </div>
       )}
     </div>

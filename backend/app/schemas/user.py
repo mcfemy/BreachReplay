@@ -52,6 +52,7 @@ class UserOut(BaseModel):
     is_active: bool
     organization_id: Optional[str]
     mfa_enabled: bool = False
+    has_seen_console_intro: bool = False
     created_at: datetime
 
 
@@ -96,6 +97,7 @@ class ResetPasswordRequest(BaseModel):
 class UserUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     full_name: Optional[str] = Field(default=None, max_length=100)
+    has_seen_console_intro: Optional[bool] = None
 
 
 class MessageResponse(BaseModel):

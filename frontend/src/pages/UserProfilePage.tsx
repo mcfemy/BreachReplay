@@ -675,6 +675,46 @@ function PublicProfileSection() {
   );
 }
 
+// Replays the guided first-run (ActionConsole.tsx's ConsolePreBrief + the
+// three in-run beats) — normally a once-ever-per-account thing gated by
+// User.has_seen_console_intro, this is the escape hatch for QA/testing and
+// for anyone who wants to see it again.
+function ConsoleTutorialSection() {
+  const updateUser = useAuthStore((s) => s.updateUser);
+  const [feedback, setFeedback] = useState<string | null>(null);
+
+  const replayMutation = useMutation({
+    mutationFn: () =>
+      axiosInstance.patch("/auth/me", { has_seen_console_intro: false }).then((r) => r.data),
+    onSuccess: (data) => {
+      updateUser({ has_seen_console_intro: data.has_seen_console_intro });
+      setFeedback("Done — it'll show on your next run.");
+    },
+    onError: () => setFeedback("Failed to reset. Try again."),
+  });
+
+  return (
+    <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
+      <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-1">Console Tutorial</h2>
+      <p className="text-[9px] text-gray-600 mb-4">
+        Replay the guided first-run (handover briefing + in-run tips) the next time you start a simulation.
+      </p>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => { setFeedback(null); replayMutation.mutate(); }}
+          disabled={replayMutation.isPending}
+          className="text-xs px-3 py-1.5 rounded border border-breach-border text-breach-muted hover:text-breach-text hover:border-green-500/40 transition-colors disabled:opacity-50"
+        >
+          {replayMutation.isPending ? "Resetting…" : "Replay on next run"}
+        </button>
+        {feedback && (
+          <p className={`text-xs ${replayMutation.isError ? "text-breach-accent" : "text-green-400"}`}>{feedback}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function UserProfilePage() {
   const { user: authUser } = useAuthStore();
   const queryClient = useQueryClient();
@@ -918,6 +958,9 @@ export default function UserProfilePage() {
 
         {/* Public Arena replay sharing opt-in */}
         <PublicProfileSection />
+
+        {/* Guided first-run replay (QA/testing escape hatch) */}
+        <ConsoleTutorialSection />
 
       </div>
     </div>

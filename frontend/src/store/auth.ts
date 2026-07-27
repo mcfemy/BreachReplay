@@ -8,6 +8,7 @@ interface User {
   full_name: string | null;
   role: string;
   organization_id: string | null;
+  has_seen_console_intro: boolean;
 }
 
 interface AuthState {
@@ -17,6 +18,7 @@ interface AuthState {
   setAuth: (token: string, refreshToken: string, user: User) => void;
   setToken: (token: string, refreshToken: string) => void;
   setTokens: (accessToken: string, refreshToken: string) => void;
+  updateUser: (patch: Partial<User>) => void;
   logout: () => Promise<void>;
 }
 
@@ -51,6 +53,14 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     localStorage.setItem("br_token", accessToken);
     localStorage.setItem("br_refresh_token", refreshToken);
     set({ token: accessToken, refreshToken });
+  },
+
+  updateUser: (patch) => {
+    const current = get().user;
+    if (!current) return;
+    const next = { ...current, ...patch };
+    localStorage.setItem("br_user", JSON.stringify(next));
+    set({ user: next });
   },
 
   logout: async () => {
