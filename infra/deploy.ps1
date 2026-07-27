@@ -104,7 +104,7 @@ Write-Host "==> Syncing nginx config..."
 scp $SSH_OPTS.Split(" ") "$ROOT\nginx\breachreplay.conf" "${SSH_TARGET}:/tmp/breachreplay.conf"
 if ($LASTEXITCODE -ne 0) { Write-Error "nginx config upload failed"; exit 1 }
 ssh $SSH_OPTS.Split(" ") $SSH_TARGET "sudo cp /tmp/breachreplay.conf /etc/nginx/conf.d/breachreplay.conf && rm -f /tmp/breachreplay.conf && sudo nginx -t && sudo systemctl reload nginx"
-if ($LASTEXITCODE -ne 0) { Write-Error "nginx config apply failed — check 'sudo nginx -t' output above"; exit 1 }
+if ($LASTEXITCODE -ne 0) { Write-Error "nginx config apply failed, check 'sudo nginx -t' output above"; exit 1 }
 
 Write-Host "==> Uploading frontend build..."
 # Stage to a temp dir first (avoids nginx ownership issues on /var/www).
