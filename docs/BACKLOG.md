@@ -72,6 +72,11 @@ being reviewed blind.
 
 ## AppShell's sidebar doesn't collapse on mobile — blocks phone playability
 
+**Fixed — `b17404c`.** Sidebar now collapses below the `md:` breakpoint
+instead of eating the viewport. `PHASE2_ACCEPTANCE.md` criterion 8 (phone,
+one thumb) is marked PASS. Left the write-up below as-is for context on
+how it was found.
+
 Found while verifying Item 5's mobile-first requirement in a real 390px
 viewport (Playwright, iPhone-sized). `frontend/src/components/AppShell.tsx`
 — the shared layout wrapper every authenticated page renders inside,
@@ -112,6 +117,14 @@ Fixing it means teaching `/daily/today` to also check `ActionRun` for
 today's challenge; deferred out of Item 5's frontend-rework scope.
 
 ## Daily-challenge picker can select synthetic/test-titled scenarios — prod-safety, not just test hygiene
+
+**Fixed — migration `0031_scenario_is_synthetic`.** `Scenario.is_synthetic`
+is now a real structural flag, not a title match (fix #1 below); the
+picker filters on it (`daily.py:233`). 323 pre-existing leaked rows
+remediated. Fix #2 (isolated test DB instead of the shared dev DB) landed
+separately — see `docs/TEST_DATABASE_SAFETY_SPEC.md` and
+`backend/tests/conftest.py`'s `_refuse_unsafe_database_urls()`. Left the
+write-up below as-is for context on how it was found.
 
 Found while chasing an unrelated `compression_ratio` bug (action_engine.py
 gate-timing fix): `_get_or_create_daily_challenge`

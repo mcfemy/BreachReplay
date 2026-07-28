@@ -1,6 +1,12 @@
 # Test database safety — spec
 
-Status: **specced, not implemented.**
+Status: **Option A implemented** (`8d4bf5b`) — `backend/tests/conftest.py`'s
+`_refuse_unsafe_database_urls()`, evaluated at import time, refuses to run
+unless `DATABASE_URL`/`SYNC_DATABASE_URL` is unset, sqlite, or a Postgres
+name ending in `_test`, with a hardcoded denylist on the real prod name as
+a backstop. Option B (below) is still open — logged as a separate,
+lower-priority test-quality item, not required for the safety guarantee
+Option A already delivers.
 
 ## Problem
 
