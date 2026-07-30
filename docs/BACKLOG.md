@@ -335,3 +335,39 @@ paper over — filed separately. Worked around for now by keying
 scenario's actual `harvest_hostnames()` set; procedural hosts (including,
 for these three scenarios, the final target itself) get the flat default
 weight rather than a fabricated citation.
+
+## NHS WannaCry's final-stage trigger makes OVERREACTED effectively unreachable
+
+Found during Proportionate Response's post-deploy browser verification
+(390px click-through of the OVERREACTED/CONTAINED debrief states). NHS's
+final stage fires at `trigger_seconds=210`, and `BREACH_HEAD_START_SECONDS`
+(90) is already baked into the attacker clock at t=0 — leaving only ~120s
+of real elapsed time before the final stage fires regardless of seed
+(trigger timing comes from the authored decision_tree/pressure_injection
+timestamps + `compression_ratio`, both scenario-level constants, not
+seed-dependent). One `scan_network` (45s) plus the mandatory final-target
+`isolate` (20s) already spends over half that window, leaving room for at
+most 2-3 more isolates. NHS's decoy pool is 8 hosts — reaching the 60%
+coverage threshold (`OVERREACTED_COVERAGE_THRESHOLD`,
+`verb_engine.determine_outcome`) needs 5+. The math doesn't fit: a player
+would have to isolate 5 of 8 decoys in roughly 55-75s of remaining budget,
+which isn't achievable through the UI's tap-to-target flow.
+
+Practical effect: NHS can still land on `contained`, `contained_at_cost`,
+`breached`, or `breached_spread_limited` normally, but `overreacted`
+specifically — stopping the target while isolating most of the map — is
+not reachable in practice for this scenario. Confirmed by direct
+demonstration: an isolate-everything attempt against NHS landed on
+`contained_at_cost` (2 of 8 decoys isolated before the run ended), not
+`overreacted`; the equivalent attempt against Colonial Pipeline (367s
+trigger, only 2 decoys) reached `overreacted` cleanly.
+
+Not necessarily wrong on its own terms — WannaCry was a genuinely
+fast-moving worm, and a tight response window is arguably in-fiction
+correct for this specific incident. But it means one of the five states
+Proportionate Response added is partially inert for this scenario: the
+grading logic is fine, there just isn't enough real time inside NHS's
+authored pacing to ever land there. Worth a look in the Phase 3 tuning
+pass — either NHS's pacing is intentionally this tight and that's fine as
+is, or the compression/head-start interaction deserves a per-scenario
+adjustment. Not a bug to fix now, a design question to revisit deliberately.
