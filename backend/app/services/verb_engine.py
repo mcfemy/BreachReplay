@@ -128,6 +128,78 @@ def _attack_path_host_ids(compiled: CompiledRun) -> frozenset:
     return frozenset(ids)
 
 
+# ── Proportionate Response: collateral + grace ───────────────────────────────
+#
+# A host the player isolated that the attacker never touched at all — real
+# incident-response collateral (Colonial's own precautionary pipeline
+# shutdown is the concrete example this whole mechanic is modeled on), not
+# the same thing as "isolated a host slightly off the critical path". Every
+# procedurally-generated host (seed-random per playthrough — scenario mode
+# uses secrets.randbelow) intentionally has no authored citation behind it;
+# DEFAULT_COLLATERAL_WEIGHT is the flat, low, uncited severity it falls back
+# to. See Scenario.collateral_weights' docstring and docs/BACKLOG.md's
+# "final-stage target is unbound from real content" entry for why this is
+# keyed by hostname rather than host_id.
+DEFAULT_COLLATERAL_WEIGHT = 10
+
+
+def _collateral_hosts(run: "RunState") -> list[tuple[str, str, int]]:
+    """(host_id, hostname, weight) for every host the player isolated that
+    the attacker's stage timeline never once targets — the collateral set.
+    Weight comes from the scenario's authored `collateral_weights` dict
+    (keyed by hostname), falling back to DEFAULT_COLLATERAL_WEIGHT for
+    every host not in it (i.e. every procedural/padding host, whichever
+    seed happened to generate it)."""
+    compiled = run.compiled
+    on_path = _attack_path_host_ids(compiled)
+    weights = compiled.collateral_weights
+    return [
+        (h.id, h.hostname, weights.get(h.hostname, DEFAULT_COLLATERAL_WEIGHT))
+        for h in run.world.hosts
+        if h.isolated and h.id not in on_path
+    ]
+
+
+# Hybrid grace formula (Proportionate Response Part A — stress-tested
+# against all 5 flagship scenarios' real decoy-pool sizes, not just the
+# 5-host paths the spec named, before locking these two constants):
+#
+#   - Absolute grace floor: the first wrong isolation is always free,
+#     regardless of ratio. Without this, Colonial Pipeline and SolarWinds
+#     (whose decoy pools are just 2 hosts each — almost their entire map is
+#     legitimately on the real attack path) would treat a single honest
+#     mistake as a 50% coverage ratio, the same severity as isolating half
+#     the map in a scenario like NHS. This "short ladder" — Colonial/
+#     SolarWinds effectively having only ONE grace step before the ratio
+#     check takes over — is intentional, not a bug: it's a direct
+#     consequence of those two scenarios having almost no decoy pool to be
+#     forgiving about, not an authoring inconsistency.
+#   - Egregious ceiling: coverage ratio (decoys isolated / decoys
+#     available) is the only one of the two candidate formulas that reads
+#     100% for "isolate every revealed host" in EVERY scenario regardless
+#     of decoy-pool size (a "precision" formula tuned to catch MGM/Log4Shell/
+#     NHS would let Colonial/SolarWinds' isolate-everything run through as
+#     merely CONTAINED AT COST — exactly the exploit this whole spec exists
+#     to close).
+GRACE_FLOOR_WRONG_ISOLATIONS = 1
+OVERREACTED_COVERAGE_THRESHOLD = 0.6
+
+
+def _grace_check(run: "RunState") -> tuple[bool, float]:
+    """(within_grace, coverage_ratio). `within_grace` is True whenever the
+    number of collateral (wrongly isolated) hosts is at or below the
+    absolute grace floor, independent of the ratio. `coverage_ratio` is
+    collateral hosts isolated / decoys actually available in this
+    scenario — 0.0 (not 1.0) when there are no decoys at all, since there
+    is nothing to have covered."""
+    collateral = _collateral_hosts(run)
+    wrong_isolated = len(collateral)
+    decoy_pool = len(run.world.hosts) - len(_attack_path_host_ids(run.compiled))
+    coverage_ratio = (wrong_isolated / decoy_pool) if decoy_pool else 0.0
+    within_grace = wrong_isolated <= GRACE_FLOOR_WRONG_ISOLATIONS
+    return within_grace, coverage_ratio
+
+
 def _set_host_isolated(world: OrgState, host_id: str) -> OrgState:
     if world.get_host(host_id) is None:
         return world
@@ -432,7 +504,25 @@ _PARTIAL_CONTAINMENT_THRESHOLD = 0.5
 
 # Provisional, like ESCALATE_PENALTY/PRECISION_PENALTY above — a real
 # balancing pass is a later item, not this one.
-SCORE_OUTCOME_BASE = {"win": 1000, "partial": 400, "loss": 0}
+#
+# `overreacted` (200) deliberately scores BELOW `breached_spread_limited`
+# (400), even though `overreacted` means the final target WAS stopped and
+# `breached_spread_limited` means it wasn't. This is not an ordering
+# accident — it's the point of the whole spec: stopping the final target is
+# necessary but not sufficient for a good score. A responder who isolates
+# most of the network to be safe hasn't demonstrated more skill than one
+# who reasoned carefully and contained most of the spread with targeted
+# action. Colonial Pipeline's real 2021 precautionary shutdown is the
+# concrete example this mirrors — the decision to shut the pipeline down
+# cost more than the ransomware's actual, unconfirmed OT impact would have.
+# Proportionality is scored independently of raw success.
+SCORE_OUTCOME_BASE = {
+    "contained": 1000,
+    "contained_at_cost": 600,
+    "overreacted": 200,
+    "breached_spread_limited": 400,
+    "breached": 0,
+}
 EVIDENCE_POINTS_PER_IOC = 100
 SPEED_BONUS_PER_SECOND_SAVED = 2
 
@@ -465,22 +555,35 @@ def is_run_over(run: RunState, cap_seconds: Optional[int]) -> bool:
 
 
 def determine_outcome(run: RunState) -> str:
-    """"win" | "partial" | "loss", per spec section 4: "contain the attack
-    path before the final-stage event (exfil/encryption) fires. Partial
-    containment scores partially."
+    """"contained" | "contained_at_cost" | "overreacted" |
+    "breached_spread_limited" | "breached" — Proportionate Response's
+    5-state outcome, graded on two independent axes: was the final target
+    stopped, and how much collateral (hosts isolated that the attacker
+    never touched — see `_collateral_hosts`) did it cost.
 
-    WIN: the final (is_final) stage either hasn't fired yet on the
-    attacker clock, or every host it would have compromised is isolated
-    (contained before/at the moment it mattered).
-    LOSS/PARTIAL: the final stage fired and compromised at least one
-    un-isolated host — PARTIAL if at least half of every OTHER stage's
-    target hosts were isolated (meaningful containment elsewhere), else
-    LOSS. A scenario with no final stage at all (malformed/empty content)
-    has nothing to lose — treated as a WIN."""
+    Axis 1 — was the final target stopped: the final (is_final) stage
+    either hasn't fired yet on the attacker clock, or every host it would
+    have compromised is isolated (contained before/at the moment it
+    mattered). A scenario with no final stage at all (malformed/empty
+    content) has nothing to lose — treated as contained.
+
+    If the final target was NOT stopped, collateral is moot — the outcome
+    is graded exactly like the old win/partial/loss split (renamed, same
+    _PARTIAL_CONTAINMENT_THRESHOLD, same "preserve today's partial-credit
+    concept" requirement): `breached_spread_limited` if at least half of
+    every OTHER stage's target hosts were isolated, else `breached`.
+
+    If the final target WAS stopped, axis 2 (collateral, via
+    `_grace_check`'s hybrid grace-floor + coverage-ratio formula — see that
+    function's docstring for the full rationale) decides between the three
+    "final target stopped" states: `contained` (within the grace floor),
+    `contained_at_cost` (some avoidable collateral but under the egregious
+    threshold), or `overreacted` (coverage ratio over
+    OVERREACTED_COVERAGE_THRESHOLD — isolated most of the map to be safe)."""
     compiled = run.compiled
     final_stage = next((s for s in compiled.stages if s.is_final), None)
     if final_stage is None:
-        return "win"
+        return "contained"
 
     clock = attacker_clock_seconds(run)
     final_fired = clock >= final_stage.trigger_seconds
@@ -490,45 +593,65 @@ def determine_outcome(run: RunState) -> str:
     ) if final_stage.compromises_host_ids else True
 
     if not final_fired or final_contained:
-        return "win"
+        within_grace, coverage_ratio = _grace_check(run)
+        if within_grace:
+            return "contained"
+        if coverage_ratio > OVERREACTED_COVERAGE_THRESHOLD:
+            return "overreacted"
+        return "contained_at_cost"
 
     other_target_ids = {
         hid for s in compiled.stages if not s.is_final for hid in s.compromises_host_ids
     }
     if not other_target_ids:
-        return "loss"
+        return "breached"
     contained_count = sum(
         1 for hid in other_target_ids
         if (host := run.world.get_host(hid)) is not None and host.isolated
     )
     containment_ratio = contained_count / len(other_target_ids)
-    return "partial" if containment_ratio >= _PARTIAL_CONTAINMENT_THRESHOLD else "loss"
+    return "breached_spread_limited" if containment_ratio >= _PARTIAL_CONTAINMENT_THRESHOLD else "breached"
 
 
 def compute_score(run: RunState, outcome: str, cap_seconds: Optional[int]) -> dict:
     """A score_breakdown dict (JSONB-storable as-is) containing both the
     leaderboard-sortable `total_score` integer and a `score_pct` (0-100)
     used to drive xp_service.check_scenario_achievements's perfect_analyst
-    check (score_pct >= 100 — only reachable on a WIN with every
-    discoverable IOC found and zero penalties: a genuinely flawless run)."""
+    check (score_pct >= 100 — only reachable on a `contained` run with
+    every discoverable IOC found, zero penalties, and zero collateral: a
+    genuinely flawless run).
+
+    `collateral` is the post-run debrief's collateral breakdown (see
+    `_collateral_hosts`) — leak-safe by construction: this dict is only
+    ever built once, at run.end (action_run_store.finalize), and only ever
+    reaches the client via that single post-run summary event, never a
+    mid-run delta. `collateral_penalty` (the sum of those hosts' weights)
+    is deducted from score the same way `penalty_total` already is."""
     evidence_found = len(run.discovered_ioc_keys)
     evidence_total = len(run.compiled.ioc_placements)
     evidence_points = evidence_found * EVIDENCE_POINTS_PER_IOC
     penalty_total = sum(p["amount"] for p in run.penalties)
 
+    collateral = _collateral_hosts(run)
+    collateral_penalty = sum(weight for _hid, _hostname, weight in collateral)
+
     speed_bonus = 0
-    if outcome == "win" and cap_seconds:
+    if outcome == "contained" and cap_seconds:
         speed_bonus = max(0, cap_seconds - run.elapsed_seconds) * SPEED_BONUS_PER_SECOND_SAVED
 
     outcome_base = SCORE_OUTCOME_BASE.get(outcome, 0)
-    total_score = max(0, outcome_base + evidence_points + speed_bonus - penalty_total)
+    total_score = max(0, outcome_base + evidence_points + speed_bonus - penalty_total - collateral_penalty)
 
     evidence_ratio = (evidence_found / evidence_total) if evidence_total else 1.0
-    if outcome == "win" and not run.penalties and evidence_ratio >= 1.0:
+    if outcome == "contained" and not run.penalties and not collateral and evidence_ratio >= 1.0:
         score_pct = 100.0
     else:
-        ceiling = 100.0 if outcome == "win" else 50.0 if outcome == "partial" else 0.0
-        score_pct = max(0.0, min(100.0, round(evidence_ratio * ceiling - len(run.penalties) * 10, 2)))
+        ceiling = {
+            "contained": 100.0, "contained_at_cost": 75.0, "overreacted": 25.0,
+            "breached_spread_limited": 50.0, "breached": 0.0,
+        }.get(outcome, 0.0)
+        deduction = len(run.penalties) * 10 + len(collateral) * 5
+        score_pct = max(0.0, min(100.0, round(evidence_ratio * ceiling - deduction, 2)))
 
     return {
         "outcome": outcome,
@@ -539,6 +662,11 @@ def compute_score(run: RunState, outcome: str, cap_seconds: Optional[int]) -> di
         "speed_bonus": speed_bonus,
         "penalty_total": penalty_total,
         "penalties": list(run.penalties),
+        "collateral": [
+            {"host_id": hid, "hostname": hostname, "weight": weight}
+            for hid, hostname, weight in collateral
+        ],
+        "collateral_penalty": collateral_penalty,
         "total_score": total_score,
         "score_pct": score_pct,
     }

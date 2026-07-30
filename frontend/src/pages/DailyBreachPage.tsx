@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { axiosInstance } from "../lib/api";
 import XPToast from "../components/XPToast";
 import ActionConsole from "../components/ActionConsole";
-import type { RunEndSummary } from "../lib/useRunSocket";
+import { OUTCOME_LABELS, type RunEndSummary } from "../lib/useRunSocket";
 
 // ── Daily Drill (spaced repetition on weak techniques) ──────────────────────
 interface KnowledgeCheckQuestion {
@@ -347,9 +347,16 @@ function ActionResultsPanel({
   leaderboard: ActionLeaderboardEntry[];
   onShare: () => void;
 }) {
+  // Proportionate Response's 5-state outcome — `overreacted` deliberately
+  // reads red, not yellow: it earns zero XP and no achievements (see
+  // action_run_store.finalize's gating comment), so it should read as a
+  // failure of proportionality, not a near-miss, even though the final
+  // target was technically stopped.
   const outcomeColor =
-    summary.outcome === "win" ? "text-green-400" :
-    summary.outcome === "partial" ? "text-yellow-400" : "text-red-400";
+    summary.outcome === "contained" ? "text-green-400" :
+    summary.outcome === "contained_at_cost" || summary.outcome === "breached_spread_limited" ? "text-yellow-400" :
+    "text-red-400";
+  const collateral = summary.score_breakdown.collateral ?? [];
 
   const streak: StreakData = {
     current_streak: summary.current_streak ?? 0,
@@ -367,7 +374,12 @@ function ActionResultsPanel({
       <div className="text-center py-8 border border-gray-800 rounded-xl bg-gray-900/50">
         <div className="text-xs text-gray-500 uppercase tracking-widest mb-2">Daily #{challenge.challenge_number} Result</div>
         <div className="text-7xl font-black text-white mb-1">{sb.total_score.toLocaleString()}</div>
-        <div className={`text-xl font-bold uppercase tracking-widest ${outcomeColor}`}>{summary.outcome}</div>
+        <div className={`text-xl font-bold uppercase tracking-widest ${outcomeColor}`}>{OUTCOME_LABELS[summary.outcome]}</div>
+        {collateral.length > 0 && (
+          <div className="mt-3 text-xs text-gray-500">
+            Taken offline unnecessarily: <span className="text-gray-300">{collateral.map((h) => h.hostname).join(", ")}</span>
+          </div>
+        )}
         {summary.rank !== undefined && (
           <div className="mt-4 text-gray-400 text-sm">
             You ranked <span className="text-white font-bold">#{summary.rank}</span> today
@@ -411,7 +423,9 @@ function ActionResultsPanel({
               </div>
               <div className="flex-1 text-sm text-gray-300">{entry.display_name}</div>
               <div className="text-sm font-bold text-white">{entry.total_score.toLocaleString()}</div>
-              <div className="text-xs text-gray-600 uppercase">{entry.outcome}</div>
+              <div className="text-xs text-gray-600 uppercase">
+                {OUTCOME_LABELS[entry.outcome as RunEndSummary["outcome"]] ?? entry.outcome}
+              </div>
             </div>
           ))}
         </div>
@@ -425,7 +439,7 @@ function buildActionModeShareCard(challenge: DailyChallenge, summary: RunEndSumm
   return [
     `🔐 BreachReplay Daily #${challenge.challenge_number}`,
     challenge.scenario_title,
-    `Score: ${summary.score_breakdown.total_score.toLocaleString()} — ${summary.outcome.toUpperCase()}`,
+    `Score: ${summary.score_breakdown.total_score.toLocaleString()} — ${OUTCOME_LABELS[summary.outcome].toUpperCase()}`,
     streakTxt,
     "breachreplay.com/daily",
   ].filter(Boolean).join("\n");

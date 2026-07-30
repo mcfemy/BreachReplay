@@ -37,6 +37,30 @@ COLONIAL_PIPELINE = {
     "regulatory_frameworks": ["NERC CIP", "NIST CSF"],
     "status": "approved",
     "is_private": False,
+    # Proportionate Response collateral weights — kept in sync BY HAND with
+    # migrations/versions/0034_proportionate_response.py, which is what
+    # actually lands these on the scenario row already seeded in every real
+    # environment (seed()'s skip-if-exists guard never updates existing
+    # rows). Keyed by hostname, not host_id — see that migration's
+    # docstring for why. Real incident: DarkSide compromised Colonial's
+    # IT/business network via a leaked VPN password (svc_backup, never
+    # rotated — see the TI-004 hidden_ioc below); OT/pipeline control was
+    # never confirmed compromised, but Colonial shut the pipeline down
+    # anyway, partly over inability to verify billing systems — a real
+    # historical "contained via overreaction". CORP-DC-01/vpn-gw-01/
+    # OT-HISTORIAN-01 High (sourced), FIN-SVR-04 Moderate-high (sourced —
+    # Colonial's own stated reason for the shutdown), patch-mgmt-01
+    # Moderate (authored judgment), CORP-WKS-22 Low-moderate. Procedural
+    # decoy hosts (seed-random every playthrough) intentionally carry no
+    # entry — they fall back to verb_engine.DEFAULT_COLLATERAL_WEIGHT.
+    "collateral_weights": {
+        "CORP-DC-01": 80,
+        "vpn-gw-01.colpipe.internal": 80,
+        "OT-HISTORIAN-01": 80,
+        "FIN-SVR-04": 60,
+        "patch-mgmt-01": 40,
+        "CORP-WKS-22": 25,
+    },
     "alert_sequence": [
         {"timestamp": "+0m", "severity": "medium", "source_system": "VPN Gateway", "rule_id": "VPN-001",
          "description": "Successful VPN login from unusual geolocation (Eastern Europe) using service account 'svc_backup'",
@@ -370,6 +394,24 @@ SOLARWINDS = {
     "regulatory_frameworks": ["NIST CSF", "FedRAMP", "CMMC"],
     "status": "approved",
     "is_private": False,
+    # Proportionate Response collateral weights — see COLONIAL_PIPELINE's
+    # comment above for the sync-with-migration note. Real incident: APT29
+    # backdoored SolarWinds Orion; documented use of forged SAML tokens
+    # against ADFS ("Golden SAML") was a specific, widely-reported
+    # technique in this campaign. adfs-01/orion-mgmt-01(.corp.internal)
+    # High (sourced — ADFS is the documented Golden SAML target, Orion
+    # management IS the compromised software's own infrastructure);
+    # eu-west-1 Low-moderate (authored judgment, generic cloud infra).
+    # Only 4 of this scenario's hostnames are genuinely harvested/stable
+    # (host_harvest.harvest_hostnames()) — every other "orion-mgmt-*"/
+    # "eu-west-*"/"adfs-*" variant is procedural padding, seed-random, and
+    # deliberately has no entry here.
+    "collateral_weights": {
+        "adfs-01.corp.internal": 80,
+        "orion-mgmt-01": 80,
+        "orion-mgmt-01.corp.internal": 80,
+        "eu-west-1": 25,
+    },
     "alert_sequence": [
         {"timestamp": "+0m", "severity": "low", "source_system": "SIEM", "rule_id": "FILE-001",
          "description": "SolarWinds Orion platform updated to build 2019.4.5200.9083 via automatic update — 847 network management hosts now running new version",
@@ -605,6 +647,19 @@ MGM_GRAND = {
     "regulatory_frameworks": ["PCI-DSS", "NIST CSF"],
     "status": "approved",
     "is_private": False,
+    # Proportionate Response: NO collateral_weights authored here — content
+    # blocker, not an oversight. All 10 of this scenario's hosts share one
+    # undifferentiated naming pattern (BACKUP-VEEAM-{NN}), with no
+    # hostname-level signal distinguishing "reservation system" from
+    # "random backup target". Authoring weights against that would mean
+    # inventing distinctions the content doesn't support — exactly the
+    # fabrication the provenance rule (same discipline as hidden_iocs)
+    # forbids. See docs/BACKLOG.md's "MGM Resorts needs real hostnames"
+    # entry: a hostname content pass (property-management-system,
+    # slot-network, key-card-server, etc. — the real incident's
+    # well-documented casino-floor/reservation/loyalty system impact)
+    # unblocks this. Every host here falls back to
+    # verb_engine.DEFAULT_COLLATERAL_WEIGHT until then.
     "alert_sequence": [
         {"timestamp": "+0m", "severity": "low", "source_system": "Help Desk", "rule_id": "HD-001",
          "description": "Inbound call to IT help desk: caller claims to be David Park, Senior Cloud Engineer — requesting password reset for Okta account after 'phone upgrade'",
@@ -784,6 +839,29 @@ LOG4SHELL = {
     "regulatory_frameworks": ["NIST CSF", "SOC 2"],
     "status": "approved",
     "is_private": False,
+    # Proportionate Response collateral weights — see COLONIAL_PIPELINE's
+    # comment above for the sync-with-migration note. Not a single-company
+    # incident (CVE-2021-44228 mass exploitation); this scenario's own IOC
+    # (LOG4J-COBALTSTRIKE-01) matches real, widely-reported Log4Shell ->
+    # Cobalt Strike deployment chains. vCenter Very high (sourced — a
+    # well-documented "crown jewel" virtualization-management-plane class,
+    # capable of taking down many dependent VMs/services at once);
+    # api-gateway High (name-inferred, customer-facing outage); es-prod-01
+    # Moderate-high (context-plausible — log4j's exposure through Java
+    # logging/ELK stacks was a commonly-reported path class); app servers
+    # Moderate (authored judgment). This scenario's content was already
+    # well-authored — 9 of its 11 hostnames are genuinely harvested/stable;
+    # only es-prod-40/es-prod-54 are procedural and deliberately absent.
+    "collateral_weights": {
+        "vcenter-01.prod.internal": 100,
+        "api-gateway.prod.internal": 80,
+        "es-prod-01": 60,
+        "app-svr-03": 40,
+        "app-svr-12": 40,
+        "app-svr-14": 40,
+        "app-svr-19": 40,
+        "app-svr-22": 40,
+    },
     "alert_sequence": [
         {"timestamp": "+0m", "severity": "critical", "source_system": "SIEM", "rule_id": "THREAT-001",
          "description": "CISA advisory released: CVE-2021-44228 Log4Shell — critical RCE in Log4j 2.x via JNDI lookup. CVSS 10.0. Active exploitation in the wild.",
@@ -966,6 +1044,37 @@ NHS_WANNACRY = {
     "regulatory_frameworks": ["NHS DSP Toolkit", "ICO DPA 2018", "HIPAA equivalent (UK)"],
     "status": "approved",
     "is_private": False,
+    # Proportionate Response collateral weights — see COLONIAL_PIPELINE's
+    # comment above for the sync-with-migration note. Real incident,
+    # extensively documented: WannaCry (May 2017) forced ambulance
+    # diversions and ~19,000 cancelled appointments/surgeries across NHS
+    # trusts; PACS (imaging) and legacy/unpatched Windows (notably XP)
+    # were specifically and repeatedly cited as the disrupted systems.
+    # PACS/imaging control Very high (sourced — the exact real disrupted
+    # system class); oncology + domain controller High; patient DB
+    # Moderate-high (lower-confidence name inference); department
+    # workstations Low-moderate. NHS-LEGACY-XP-03/NHS-SERVER-LEGACY-08 are
+    # held at 20 (temporary — see docs/BACKLOG.md's "NHS WannaCry:
+    # legacy/unpatched hosts are decoys, but that's backwards"): they're
+    # the real WannaCry root-cause vulnerability class but currently sit in
+    # the compiled decoy pool rather than the attack path, so weighting
+    # them at the tier their real-world significance would otherwise merit
+    # (60+) would penalize a player who reasons correctly from the actual
+    # incident. Raise these only alongside that placement fix, not before.
+    # This scenario needed the least correction of the four — 11 of its 14
+    # hostnames, including the final target, are genuinely harvested/stable.
+    "collateral_weights": {
+        "NHS-PACS-01": 100,
+        "NHS-IMAGING-CTRL-02": 100,
+        "WKS-ONCO-04": 80,
+        "NHS-DOMAIN-CTRL-01": 80,
+        "NHS-PTDB-01": 60,
+        "NHS-LEGACY-XP-03": 20,
+        "NHS-SERVER-LEGACY-08": 20,
+        "NHS-DESKTOP-014": 25,
+        "WKS-ORTHO-11": 25,
+        "WKS-ORTHO-12": 25,
+    },
     "alert_sequence": [
         {"timestamp": "+0m", "severity": "low", "source_system": "IT Helpdesk", "rule_id": "HD-001",
          "description": "Three nurses on Ward 7 reporting PC lockscreen showing ransomware demand — 'Your files have been encrypted by WannaCry'",

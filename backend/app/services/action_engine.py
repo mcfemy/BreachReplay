@@ -252,6 +252,14 @@ class CompiledRun:
     ioc_placements: tuple[IOCPlacement, ...]
     alert_lines: tuple[dict, ...]  # scenario alert_sequence w/ parsed trigger_seconds; ambient feed, not hidden
     final_stage_id: Optional[str]
+    # Proportionate Response: the scenario's authored {hostname: weight}
+    # collateral table (Scenario.collateral_weights), carried through
+    # compilation the same way scenario_id already is, so verb_engine's
+    # pure functions (_collateral_hosts/compute_score) never need their own
+    # DB access — they read it off the CompiledRun like everything else.
+    # `{}` for scenarios with none authored (MGM) or bare test-dict
+    # fixtures without the field at all.
+    collateral_weights: dict = field(default_factory=dict)
     # How many (already-compressed) attacker-clock seconds are pre-folded
     # into `world` above — see BREACH_HEAD_START_SECONDS. `world_state_at`
     # and verb_engine.new_run both need this exact value (not just the
@@ -562,6 +570,8 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
     breach_head_start_seconds = candidate_head_start if any_stage_pre_fires else 0
     world = _apply_stages_up_to(world, stages, breach_head_start_seconds)
 
+    collateral_weights = _field(scenario, "collateral_weights") or {}
+
     return CompiledRun(
         scenario_id=scenario_id,
         seed=seed,
@@ -571,6 +581,7 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
         ioc_placements=ioc_placements,
         alert_lines=alert_lines,
         final_stage_id=final_stage_id,
+        collateral_weights=collateral_weights,
         breach_head_start_seconds=breach_head_start_seconds,
     )
 

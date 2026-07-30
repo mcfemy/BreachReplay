@@ -18,6 +18,7 @@ mirrors test_arena_ai_attacker.py's/test_arena_spectator.py's documented
 pattern exactly, including reusing conftest.ensure_test_user_row for the
 user row.
 """
+import json
 import uuid
 
 import pytest
@@ -251,11 +252,87 @@ async def test_run_over_triggers_finalize_and_a_run_end_event():
 
     run_end_events = [m for m in ws.sent if m["type"] == "run.end"]
     assert len(run_end_events) == 1
-    assert run_end_events[0]["outcome"] == "win"
+    assert run_end_events[0]["outcome"] == "contained"
     assert "score_breakdown" in run_end_events[0]
 
     # finalize() evicts on completion — the handler must not leave a
     # stale entry behind for a run that has already ended.
+    assert await action_run_store.get(run_id) is None
+
+
+async def test_collateral_never_leaks_before_the_post_run_summary():
+    """Proportionate Response leak-safety constraint: which hosts count as
+    collateral is only knowable server-side, and must only ever reach the
+    client in the single post-run run.end summary — never in run.resync,
+    state.delta, or clock.tick along the way (a live player must not be
+    able to infer, mid-run, which unrevealed hosts would be scored as
+    collateral if isolated).
+
+    Uses its own scenario/decision_tree rather than the shared
+    _FAST_DECISION_TREE fixture: that one's +2m (compressed to well under
+    30s by the default compression_ratio=8.0 combined with
+    BREACH_HEAD_START_SECONDS eating most of the runway) leaves no room to
+    isolate 13 hosts before the final stage fires — at most 1-2 isolates
+    would ever land. +8m uncompressed (compression_ratio=1.0, confirmed by
+    direct inspection: trigger_seconds=480, breach_head_start_seconds=0 —
+    the head-start pre-fire window only applies to gates inside it, and
+    480s is well outside) gives enough real budget to isolate every host
+    (13*20s=260s) and still burn clock up to the 480s trigger, comfortably
+    inside the 600s scenario-mode cap."""
+    from tests.conftest import ensure_test_user_row
+    from app.db.session import AsyncSessionLocal
+    from app.models.scenario import Scenario
+
+    await ensure_test_user_row("action-run-owner-collateral")
+    async with AsyncSessionLocal() as db:
+        scenario = Scenario(
+            id=str(uuid.uuid4()),
+            title="WS Handler Test Scenario",
+            source_type="manual",
+            source_reference=f"TEST-WS-COLLATERAL-{uuid.uuid4().hex[:8]}",
+            difficulty="practitioner",
+            industry_vertical="energy",
+            status="approved",
+            is_synthetic=True,
+            compression_ratio=1.0,
+            decision_tree=[
+                {"id": "gate-001", "trigger_timestamp": "+8m", "mitre_technique": "T1078",
+                 "context_summary": "Suspicious VPN activity.", "options": [], "correct_index": 0,
+                 "consequence_if_wrong": "Missed.", "rationale": "Correlate anomalies.", "nist_control_ref": "DE.AE-2"},
+            ],
+            alert_sequence=[],
+            hidden_iocs=[],
+        )
+        db.add(scenario)
+        await db.commit()
+        await db.refresh(scenario)
+
+    run_id, compiled = await _start_live_run(scenario, "action-run-owner-collateral")
+
+    is_over = False
+    for host in compiled.world.hosts:
+        _result, is_over = await action_run_store.apply_verb(run_id, "isolate", host.id)
+        assert _result.error is None
+    while not is_over:
+        _result, is_over = await action_run_store.apply_verb(run_id, "scan_network", None)
+        assert _result.error is None
+
+    ws = FakeWebSocket(incoming=['{"type": "action.submit", "verb": "scan_network"}'])
+    await action_run_ws_handler(ws, run_id, "action-run-owner-collateral")
+
+    pre_end_messages = [m for m in ws.sent if m["type"] != "run.end"]
+    assert pre_end_messages, "test must actually exercise some non-terminal messages"
+    for msg in pre_end_messages:
+        payload = json.dumps(msg)
+        assert "collateral" not in payload
+
+    run_end_events = [m for m in ws.sent if m["type"] == "run.end"]
+    assert len(run_end_events) == 1
+    assert run_end_events[0]["outcome"] == "overreacted"
+    assert run_end_events[0]["score_breakdown"]["collateral"], (
+        "fixture must actually produce non-empty collateral or this test proves nothing"
+    )
+
     assert await action_run_store.get(run_id) is None
 
 

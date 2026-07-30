@@ -69,8 +69,42 @@ export interface RunEdge {
   target: string;
 }
 
+// Proportionate Response's 5-state outcome (verb_engine.determine_outcome),
+// graded on two axes: was the final target stopped, and how much collateral
+// did it cost. Replaces the old "win" | "loss" | "partial" — see
+// backend/app/services/verb_engine.py's determine_outcome docstring.
+export type RunOutcome =
+  | "contained"
+  | "contained_at_cost"
+  | "overreacted"
+  | "breached_spread_limited"
+  | "breached";
+
+// Shared display text for the 5 states — headline copy, not a buried
+// percentage (spec section 5). Every surface that shows a run's outcome
+// (ActionConsole's RunDebrief, DailyBreachPage's ActionResultsPanel/
+// leaderboard/share card) reads from this one map rather than each
+// inventing its own formatting of the raw enum string.
+export const OUTCOME_LABELS: Record<RunOutcome, string> = {
+  contained: "Contained",
+  contained_at_cost: "Contained at Cost",
+  overreacted: "Overreacted",
+  breached_spread_limited: "Breached — Spread Limited",
+  breached: "Breached",
+};
+
+// One unnecessarily-isolated host in the post-run collateral breakdown
+// (verb_engine._collateral_hosts / compute_score's "collateral" key).
+// Deliberately absent from every mid-run message — only ever present in
+// run.end, per the leak-safety constraint (see RunEndSummary below).
+export interface CollateralHost {
+  host_id: string;
+  hostname: string;
+  weight: number;
+}
+
 export interface ScoreBreakdown {
-  outcome: string;
+  outcome: RunOutcome;
   outcome_base: number;
   evidence_points: number;
   evidence_found: number;
@@ -78,15 +112,22 @@ export interface ScoreBreakdown {
   speed_bonus: number;
   penalty_total: number;
   penalties: { type: string; [key: string]: unknown }[];
+  collateral: CollateralHost[];
+  collateral_penalty: number;
   total_score: number;
   score_pct: number;
 }
 
 // build_run_end_event's summary — finalize()'s dict, plus (mode="daily"
 // only) record_daily_action_run_result's carry-over fields merged in.
+// `outcome`/`score_breakdown.collateral` only ever appear here, in the
+// single post-run summary — never in run.resync/state.delta/stage.advance,
+// which is what makes collateral leak-safe (see verb_engine.compute_score's
+// docstring): a live player can't infer which unrevealed hosts are
+// collateral before the run ends.
 export interface RunEndSummary {
   action_run_id: string;
-  outcome: "win" | "loss" | "partial";
+  outcome: RunOutcome;
   score_breakdown: ScoreBreakdown;
   xp_awarded: number;
   new_achievements: string[];

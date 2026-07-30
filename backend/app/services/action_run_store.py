@@ -163,7 +163,7 @@ class ActionRunStore:
     ) -> Optional[dict]:
         """Persist the ActionRun row exactly once, award XP, check
         achievements, and evict the run from the live store. `forced_outcome`
-        is set by `sweep_expired` for abandoned runs ("...as outcome=loss");
+        is set by `sweep_expired` for abandoned runs ("...as outcome=breached");
         a normal end (the player played it out, or the cap fired mid-loop)
         determines its own outcome via verb_engine.determine_outcome.
         Returns a summary dict for the caller to build the run.end broadcast
@@ -195,8 +195,24 @@ class ActionRunStore:
 
         xp_awarded = 0
         new_achievements: list[str] = []
-        if live.user_id:
+        # Proportionate Response XP/achievement gate, keyed on the named
+        # outcome rather than raw score. Deliberate, not derivable from the
+        # score alone: `contained` earns full credit, `contained_at_cost`
+        # earns half (still stopped the attacker, but not cleanly), and
+        # every other state — `overreacted` included — earns NOTHING, no
+        # achievements. The XP cliff sits between imprecise and reckless,
+        # not between perfect and imperfect: a `contained_at_cost` run
+        # still earns credit for stopping the attacker, while `overreacted`
+        # did not act like an incident responder (isolated most of the
+        # network to be safe) and earns nothing for it, even though the
+        # final target was technically stopped. This is what actually
+        # closes the "isolate everything" exploit the whole spec exists to
+        # fix — a raw-score-only gate would still let a big, imprecise
+        # score buy XP.
+        if live.user_id and outcome in ("contained", "contained_at_cost"):
             xp_amount = max(0, score_breakdown["total_score"] // XP_PER_SCORE_POINT_DIVISOR)
+            if outcome == "contained_at_cost":
+                xp_amount //= 2
             if xp_amount > 0:
                 xp_result = await award_xp(
                     db, live.user_id, xp_amount, "action_run",
@@ -210,6 +226,9 @@ class ActionRunStore:
             # check_scenario_achievements (app.services.xp_service) has no
             # other caller anywhere in the backend today (confirmed by
             # repo-wide search) — this is genuinely its first real caller.
+            # Only called for contained/contained_at_cost — an overreacted
+            # or breached run has nothing worth checking achievements
+            # against per the gate above.
             new_achievements = await check_scenario_achievements(
                 db, live.user_id,
                 scenario_title=await self._scenario_title(db, live.scenario_id),
@@ -230,7 +249,7 @@ class ActionRunStore:
 
     async def sweep_expired(self, db: AsyncSession) -> list[tuple[str, dict]]:
         """Force-finalizes every run whose REAL elapsed time has passed its
-        mode's cap plus SWEEP_GRACE_SECONDS, as outcome="loss" — abandoned
+        mode's cap plus SWEEP_GRACE_SECONDS, as outcome="breached" — abandoned
         runs (the player closed the tab and never sent another
         action.submit) must still produce an ActionRun row, both for
         funnel data and so a ghost exists for Phase 4.
@@ -262,7 +281,7 @@ class ActionRunStore:
         finalized: list[tuple[str, dict]] = []
         for run_id, live in expired:
             try:
-                summary = await self.finalize(db, run_id, forced_outcome="loss")
+                summary = await self.finalize(db, run_id, forced_outcome="breached")
                 if summary is None:
                     continue
                 if live.mode == "daily" and live.daily_challenge_id and live.user_id:

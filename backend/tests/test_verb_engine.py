@@ -5,6 +5,8 @@ application layer). Pure, synchronous tests — apply_verb does no I/O.
 import json
 import re
 
+import pytest
+
 from app.services import action_engine, verb_engine
 
 _SCENARIO = {
@@ -451,31 +453,31 @@ def _final_stage(compiled):
     return next(s for s in compiled.stages if s.is_final)
 
 
-def test_outcome_is_win_before_the_final_stage_has_fired():
+def test_outcome_is_contained_before_the_final_stage_has_fired():
     compiled = _compiled()
     run = verb_engine.new_run(compiled)
-    assert verb_engine.determine_outcome(run) == "win"
+    assert verb_engine.determine_outcome(run) == "contained"
 
 
-def test_outcome_is_win_when_final_stage_target_is_isolated_before_it_fires():
+def test_outcome_is_contained_when_final_stage_target_is_isolated_before_it_fires():
     compiled = _compiled()
     final = _final_stage(compiled)
     run = verb_engine.new_run(compiled)
     for host_id in final.compromises_host_ids:
         run = verb_engine.apply_verb(run, "isolate", host_id).run
     run = _run_clock_past(run, final.trigger_seconds)
-    assert verb_engine.determine_outcome(run) == "win"
+    assert verb_engine.determine_outcome(run) == "contained"
 
 
-def test_outcome_is_loss_when_final_stage_fires_completely_uncontained():
+def test_outcome_is_breached_when_final_stage_fires_completely_uncontained():
     compiled = _compiled()
     final = _final_stage(compiled)
     run = verb_engine.new_run(compiled)
     run = _run_clock_past(run, final.trigger_seconds)
-    assert verb_engine.determine_outcome(run) == "loss"
+    assert verb_engine.determine_outcome(run) == "breached"
 
 
-def test_outcome_is_partial_when_final_fires_but_most_of_the_rest_is_contained():
+def test_outcome_is_breached_spread_limited_when_final_fires_but_most_of_the_rest_is_contained():
     compiled = _compiled()
     final = _final_stage(compiled)
     other_target_ids = sorted({
@@ -488,7 +490,74 @@ def test_outcome_is_partial_when_final_fires_but_most_of_the_rest_is_contained()
         run = verb_engine.apply_verb(run, "isolate", host_id).run
     # Deliberately do NOT isolate the final stage's own target(s).
     run = _run_clock_past(run, final.trigger_seconds)
-    assert verb_engine.determine_outcome(run) == "partial"
+    assert verb_engine.determine_outcome(run) == "breached_spread_limited"
+
+
+# ── Proportionate Response: collateral + grace (spec section 7's required
+# cases) ─────────────────────────────────────────────────────────────────
+#
+# _compiled(seed=7)'s real geometry (confirmed by direct inspection, not
+# assumed): 13 hosts total, on-attack-path (incl. final) = 3, decoy pool =
+# 10 — big enough to exercise all 3 "final target stopped" states
+# (contained / contained_at_cost / overreacted) distinctly against the
+# hybrid grace formula (GRACE_FLOOR_WRONG_ISOLATIONS=1,
+# OVERREACTED_COVERAGE_THRESHOLD=0.6).
+
+def test_outcome_is_contained_with_one_wrong_isolation_within_the_grace_floor():
+    compiled = _compiled()
+    final = _final_stage(compiled)
+    on_path = verb_engine._attack_path_host_ids(compiled)
+    decoy = next(h.id for h in compiled.world.hosts if h.id not in on_path)
+
+    run = verb_engine.new_run(compiled)
+    for host_id in final.compromises_host_ids:
+        run = verb_engine.apply_verb(run, "isolate", host_id).run
+    run = verb_engine.apply_verb(run, "isolate", decoy).run  # one honest mistake
+    run = _run_clock_past(run, final.trigger_seconds)
+    assert verb_engine.determine_outcome(run) == "contained"
+
+
+def test_outcome_is_contained_at_cost_with_moderate_collateral_under_the_egregious_threshold():
+    compiled = _compiled()
+    final = _final_stage(compiled)
+    on_path = verb_engine._attack_path_host_ids(compiled)
+    decoys = [h.id for h in compiled.world.hosts if h.id not in on_path]
+    assert len(decoys) >= 4, "fixture must have enough decoys to test the middle band"
+
+    run = verb_engine.new_run(compiled)
+    for host_id in final.compromises_host_ids:
+        run = verb_engine.apply_verb(run, "isolate", host_id).run
+    # 4 of 10 decoys = 40% coverage: past the 1-mistake grace floor, under
+    # the 60% egregious threshold.
+    for decoy in decoys[:4]:
+        run = verb_engine.apply_verb(run, "isolate", decoy).run
+    run = _run_clock_past(run, final.trigger_seconds)
+    assert verb_engine.determine_outcome(run) == "contained_at_cost"
+
+
+def test_outcome_is_overreacted_when_isolating_every_revealed_host():
+    """The exploit this whole spec exists to close: 'scan once, isolate
+    every revealed host' must no longer read as a clean win."""
+    compiled = _compiled()
+    final = _final_stage(compiled)
+    run = verb_engine.new_run(compiled)
+    for host in compiled.world.hosts:
+        run = verb_engine.apply_verb(run, "isolate", host.id).run
+    run = _run_clock_past(run, final.trigger_seconds)
+    assert verb_engine.determine_outcome(run) == "overreacted"
+
+
+def test_grace_check_coverage_ratio_matches_wrong_isolated_over_decoy_pool():
+    compiled = _compiled()
+    on_path = verb_engine._attack_path_host_ids(compiled)
+    decoys = [h.id for h in compiled.world.hosts if h.id not in on_path]
+
+    run = verb_engine.new_run(compiled)
+    for decoy in decoys[:3]:
+        run = verb_engine.apply_verb(run, "isolate", decoy).run
+    within_grace, coverage_ratio = verb_engine._grace_check(run)
+    assert within_grace is False  # 3 wrong isolations > the 1-mistake grace floor
+    assert coverage_ratio == pytest.approx(3 / len(decoys))
 
 
 def test_compute_score_perfect_run_hits_100_score_pct():
@@ -496,9 +565,11 @@ def test_compute_score_perfect_run_hits_100_score_pct():
     run = verb_engine.new_run(compiled)
     for placement in compiled.ioc_placements:
         run = verb_engine.apply_verb(run, "query_logs", placement.host_id).run
-    breakdown = verb_engine.compute_score(run, "win", cap_seconds=480)
+    breakdown = verb_engine.compute_score(run, "contained", cap_seconds=480)
     assert breakdown["score_pct"] == 100.0
     assert breakdown["penalty_total"] == 0
+    assert breakdown["collateral"] == []
+    assert breakdown["collateral_penalty"] == 0
     assert breakdown["evidence_found"] == breakdown["evidence_total"]
     assert breakdown["total_score"] > 0
 
@@ -517,22 +588,28 @@ def test_compute_score_penalty_lowers_score_pct_and_total_score():
     penalized_run = verb_engine.apply_verb(verb_engine.new_run(compiled), "query_logs", some_ioc_host_id).run
     penalized_run = verb_engine.apply_verb(penalized_run, "isolate", off_path_host.id).run  # wrong_isolation penalty
 
-    clean_breakdown = verb_engine.compute_score(clean_run, "win", cap_seconds=480)
-    penalized_breakdown = verb_engine.compute_score(penalized_run, "win", cap_seconds=480)
+    clean_breakdown = verb_engine.compute_score(clean_run, "contained", cap_seconds=480)
+    penalized_breakdown = verb_engine.compute_score(penalized_run, "contained", cap_seconds=480)
 
     assert clean_breakdown["evidence_found"] == penalized_breakdown["evidence_found"]
     assert penalized_breakdown["penalty_total"] == verb_engine.PRECISION_PENALTY
+    # Isolating off_path_host is also collateral (never on the attack
+    # path) — this penalized run pays both the wrong_isolation penalty AND
+    # the collateral deduction for the same single action, by design (two
+    # different things: penalty = "you guessed wrong", collateral = "a
+    # real system went offline for no reason" — see verb_engine.compute_score).
+    assert penalized_breakdown["collateral_penalty"] == verb_engine.DEFAULT_COLLATERAL_WEIGHT
     assert penalized_breakdown["score_pct"] < clean_breakdown["score_pct"]
     assert penalized_breakdown["total_score"] < clean_breakdown["total_score"]
 
 
-def test_compute_score_loss_awards_no_speed_bonus():
+def test_compute_score_breached_awards_no_speed_bonus():
     compiled = _compiled()
     final = _final_stage(compiled)
     run = verb_engine.new_run(compiled)
     run = _run_clock_past(run, final.trigger_seconds)
-    assert verb_engine.determine_outcome(run) == "loss"
-    breakdown = verb_engine.compute_score(run, "loss", cap_seconds=480)
+    assert verb_engine.determine_outcome(run) == "breached"
+    breakdown = verb_engine.compute_score(run, "breached", cap_seconds=480)
     assert breakdown["speed_bonus"] == 0
     assert breakdown["outcome_base"] == 0
 
@@ -591,15 +668,16 @@ def test_core_loop_scan_query_block_and_win_are_all_reachable_within_the_cap():
 
     # 4. the win condition is reachable within the cap: isolate the final
     # stage's real target before it fires, let the clock pass it, and
-    # confirm both "win" and that it happened inside the DAILY cap (the
-    # tighter of the two real caps — scenario mode's 600s is even looser).
+    # confirm both "contained" and that it happened inside the DAILY cap
+    # (the tighter of the two real caps — scenario mode's 600s is even
+    # looser).
     final = next(s for s in compiled.stages if s.is_final)
     for host_id in final.compromises_host_ids:
         run = verb_engine.apply_verb(run, "isolate", host_id).run
     while verb_engine.attacker_clock_seconds(run) <= final.trigger_seconds:
         run = verb_engine.apply_verb(run, "scan_network").run
 
-    assert verb_engine.determine_outcome(run) == "win"
+    assert verb_engine.determine_outcome(run) == "contained"
     assert run.elapsed_seconds <= 480
 
 
@@ -639,14 +717,14 @@ def test_five_seeded_runs_win_or_lose_by_strategy_not_luck():
         for host_id in final.compromises_host_ids:
             skilled = verb_engine.apply_verb(skilled, "isolate", host_id).run
         skilled = _run_clock_past(skilled, final.trigger_seconds)
-        assert verb_engine.determine_outcome(skilled) == "win", f"seed {seed}: isolating the real target must win"
+        assert verb_engine.determine_outcome(skilled) == "contained", f"seed {seed}: isolating the real target must win"
 
         attack_path = verb_engine._attack_path_host_ids(compiled)
         off_path_host = next(h for h in compiled.world.hosts if h.id not in attack_path)
         sloppy = verb_engine.new_run(compiled)
         sloppy = verb_engine.apply_verb(sloppy, "isolate", off_path_host.id).run
         sloppy = _run_clock_past(sloppy, final.trigger_seconds)
-        assert verb_engine.determine_outcome(sloppy) != "win", f"seed {seed}: isolating the wrong host must not win"
+        assert verb_engine.determine_outcome(sloppy) != "contained", f"seed {seed}: isolating the wrong host must not win"
 
 
 def test_spending_the_full_cap_without_containment_loses_with_a_coherent_narrative():
@@ -682,9 +760,40 @@ def test_spending_the_full_cap_without_containment_loses_with_a_coherent_narrati
     assert verb_engine.attacker_clock_seconds(run) >= final.trigger_seconds, "the final stage must actually have fired"
 
     outcome = verb_engine.determine_outcome(run)
-    assert outcome in ("loss", "partial")
+    assert outcome in ("breached", "breached_spread_limited")
 
     final_hosts = [run.world.get_host(hid) for hid in final.compromises_host_ids]
     assert all(h.compromise_level != "none" and not h.isolated for h in final_hosts), (
         "coherent narrative: the final stage's real target must be left compromised and un-isolated"
     )
+
+
+# ── Proportionate Response: determinism (spec section 7) ─────────────────────
+#
+# action_engine.compile_scenario's own determinism is already covered by
+# test_action_engine.py's test_host_namespace_unification_stays_deterministic
+# — this extends the same "same seed -> byte-identical" guarantee through
+# verb_engine's outcome/score layer specifically, since Phase 4 ghost racing
+# depends on same-seed replays producing the same OUTCOME and SCORE, not
+# just the same compiled world.
+
+def test_same_scenario_and_seed_produce_identical_outcome_and_score_across_independent_compiles():
+    def _play(seed):
+        compiled = action_engine.compile_scenario(_COMPRESSED_SCENARIO, seed=seed)
+        final = _final_stage(compiled)
+        run = verb_engine.new_run(compiled)
+        # A fixed, mildly imprecise sequence (not just the "skilled" path) —
+        # determinism must hold regardless of how clean the play is.
+        for host in compiled.world.hosts[:2]:
+            run = verb_engine.apply_verb(run, "isolate", host.id).run
+        for host_id in final.compromises_host_ids:
+            run = verb_engine.apply_verb(run, "isolate", host_id).run
+        run = _run_clock_past(run, final.trigger_seconds)
+        outcome = verb_engine.determine_outcome(run)
+        score = verb_engine.compute_score(run, outcome, cap_seconds=480)
+        return outcome, score
+
+    outcome_a, score_a = _play(_CORE_LOOP_SEED)
+    outcome_b, score_b = _play(_CORE_LOOP_SEED)
+    assert outcome_a == outcome_b
+    assert score_a == score_b

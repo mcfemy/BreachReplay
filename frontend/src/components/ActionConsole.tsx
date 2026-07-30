@@ -11,6 +11,7 @@ import {
   UNTARGETED_VERBS,
   HOST_TARGETED_VERBS,
   TEXT_TARGETED_VERBS,
+  OUTCOME_LABELS,
   type Verb,
   type HostSummary,
   type RunEndSummary,
@@ -539,6 +540,21 @@ function HostDetailDrawer({
   );
 }
 
+// Proportionate Response debrief color per named outcome (label text comes
+// from useRunSocket's shared OUTCOME_LABELS). Only 3 semantic colors exist
+// in theme/tokens.ts (contain/phosphor/bleed), so `overreacted`
+// deliberately reads as `bleed` (red) rather than amber: it technically
+// stopped the final target but earns zero XP and no achievements (see
+// action_run_store.finalize's gating comment) — the debrief should read as
+// a failure of proportionality, not a near-miss.
+const OUTCOME_COLOR: Record<RunEndSummary["outcome"], string> = {
+  contained: colors.contain,
+  contained_at_cost: colors.phosphor,
+  overreacted: colors.bleed,
+  breached_spread_limited: colors.phosphor,
+  breached: colors.bleed,
+};
+
 function RunDebrief({
   summary, xpVisible, onXpDone,
 }: {
@@ -546,15 +562,33 @@ function RunDebrief({
   xpVisible: boolean;
   onXpDone: () => void;
 }) {
-  const outcomeColor = summary.outcome === "win" ? colors.contain : summary.outcome === "partial" ? colors.phosphor : colors.bleed;
+  const outcomeLabel = OUTCOME_LABELS[summary.outcome].toUpperCase();
+  const outcomeColor = OUTCOME_COLOR[summary.outcome];
+  const collateral = summary.score_breakdown.collateral ?? [];
   return (
     <div className="flex flex-col h-full bg-void text-white items-center justify-center px-6 text-center">
       <p className="font-term text-xs uppercase tracking-[0.3em] text-dim mb-2">Run Complete</p>
       <p className="font-display text-3xl font-black mb-4" style={{ color: outcomeColor }}>
-        {summary.outcome.toUpperCase()}
+        {outcomeLabel}
       </p>
       <p className="text-4xl font-black mb-1">{summary.score_breakdown.total_score.toLocaleString()}</p>
       <p className="text-dim text-sm mb-6">points — {summary.score_breakdown.score_pct.toFixed(0)}% score</p>
+
+      {/* Collateral line — named, not a buried percentage: the specific
+          systems taken offline unnecessarily, per spec section 5. Silent
+          (renders nothing) on a clean run rather than announcing "0
+          unnecessary systems", matching how the rank block below only
+          renders when there's something to say. */}
+      {collateral.length > 0 && (
+        <div className="mb-6 max-w-sm">
+          <p className="font-term text-xs uppercase tracking-[0.2em] text-dim mb-1">
+            Taken Offline Unnecessarily
+          </p>
+          <p className="text-sm text-white">
+            {collateral.map((h) => h.hostname).join(", ")}
+          </p>
+        </div>
+      )}
 
       {summary.rank !== undefined && (
         <div className="mb-6 space-y-1">

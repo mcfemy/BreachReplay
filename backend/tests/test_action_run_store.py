@@ -111,7 +111,9 @@ async def test_finalize_persists_action_run_and_evicts_from_store(db, store, fas
 
     summary = await store.finalize(db, run_id)
     assert summary is not None
-    assert summary["outcome"] in ("win", "partial", "loss")
+    assert summary["outcome"] in (
+        "contained", "contained_at_cost", "overreacted", "breached_spread_limited", "breached",
+    )
 
     assert await store.get(run_id) is None  # evicted
 
@@ -178,7 +180,7 @@ async def test_finalize_unlocks_perfect_analyst_and_speed_demon_on_a_realistic_f
     assert live.run_state.elapsed_seconds <= 300, "test scenario must stay realistic/fast — under the speed_demon threshold"
 
     summary = await store.finalize(db, run_id)
-    assert summary["outcome"] == "win"
+    assert summary["outcome"] == "contained"
     assert summary["score_breakdown"]["score_pct"] == 100.0
     assert "perfect_analyst" in summary["new_achievements"]
     assert "speed_demon" in summary["new_achievements"]
@@ -188,7 +190,7 @@ async def test_finalize_unlocks_perfect_analyst_and_speed_demon_on_a_realistic_f
     assert test_user["user"].xp_total > 0
 
 
-async def test_sweep_expired_force_finalizes_abandoned_runs_as_loss(db, store, fast_scenario, test_user):
+async def test_sweep_expired_force_finalizes_abandoned_runs_as_breached(db, store, fast_scenario, test_user):
     compiled = action_engine.compile_scenario(fast_scenario, seed=1)
     run_id = _new_run_id()
     live = await store.start_run(run_id, test_user["user"].id, fast_scenario.id, "scenario", compiled)
@@ -206,10 +208,10 @@ async def test_sweep_expired_force_finalizes_abandoned_runs_as_loss(db, store, f
 
     result = await db.execute(select(ActionRun).where(ActionRun.user_id == test_user["user"].id))
     row = result.scalar_one()
-    assert row.outcome == "loss"  # forced, regardless of what determine_outcome would've said
+    assert row.outcome == "breached"  # forced, regardless of what determine_outcome would've said
 
     summary = dict(finalized)[run_id]
-    assert summary["outcome"] == "loss"
+    assert summary["outcome"] == "breached"
     assert summary["action_run_id"] == row.id
 
 
@@ -222,3 +224,39 @@ async def test_sweep_expired_leaves_fresh_runs_alone(db, store, fast_scenario, t
     finalized_ids = [run_id for run_id, _summary in finalized]
     assert run_id not in finalized_ids
     assert await store.get(run_id) is not None
+
+
+async def test_finalize_awards_zero_xp_and_no_achievements_for_an_overreacted_run(db, store, fast_scenario, test_user):
+    """Proportionate Response's core acceptance case, at the store/finalize
+    layer where XP is actually gated (not just verb_engine.determine_outcome
+    in isolation): a player who isolates the real final target AND every
+    other revealed host — the "scan once, isolate everything" exploit —
+    must land on `overreacted` and get ZERO XP, zero achievements, even
+    though the final target genuinely was stopped. seed=1 against
+    fast_scenario compiles 13 hosts with only the final stage's target
+    (host-9) on the attack path (confirmed by direct inspection), so
+    isolating all 13 hosts isolates 12 of 12 available decoys — 100%
+    coverage, well past the 60% egregious threshold."""
+    compiled = action_engine.compile_scenario(fast_scenario, seed=1)
+    run_id = _new_run_id()
+    await store.start_run(run_id, test_user["user"].id, fast_scenario.id, "scenario", compiled)
+
+    is_over = False
+    for host in compiled.world.hosts:
+        result, is_over = await store.apply_verb(run_id, "isolate", host.id)
+        assert result.error is None
+
+    # Isolating every host doesn't by itself guarantee crossing the final
+    # stage's trigger — burn clock time with clean verbs until it fires,
+    # same pattern as the realistic-fast-win test above.
+    while not is_over:
+        result, is_over = await store.apply_verb(run_id, "scan_network", None)
+        assert result.error is None
+
+    summary = await store.finalize(db, run_id)
+    assert summary["outcome"] == "overreacted"
+    assert summary["xp_awarded"] == 0
+    assert summary["new_achievements"] == []
+
+    await db.refresh(test_user["user"])
+    assert test_user["user"].xp_total == 0

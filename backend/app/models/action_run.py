@@ -52,8 +52,23 @@ class ActionRun(Base):
     # indexed integer, not a JSONB path.
     total_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0", index=True)
     duration_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Proportionate Response (migration 0034): replaces the old
+    # win/loss/partial 3-state grading with 5 named states graded on two
+    # axes — was the final target isolated, and how much collateral did it
+    # cost (see app/services/verb_engine.py's determine_outcome). Deliberately
+    # `native_enum=False` (VARCHAR + CHECK, not a Postgres native enum type):
+    # a native enum's `ALTER TYPE ... ADD VALUE` can't be used in the same
+    # transaction it's added in, which made the original 3->5 state migration
+    # impossible to write as a single, safe migration — and native enums can
+    # never cleanly drop old values either, so the historical "win"/"loss"/
+    # "partial" strings would have stayed defined-but-dead forever. A CHECK
+    # constraint has neither problem and can just be redefined later.
     outcome: Mapped[str] = mapped_column(
-        SAEnum("win", "loss", "partial", name="action_run_outcome"),
+        SAEnum(
+            "contained", "contained_at_cost", "overreacted",
+            "breached_spread_limited", "breached",
+            name="action_run_outcome", native_enum=False,
+        ),
         nullable=False,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)

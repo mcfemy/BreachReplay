@@ -125,7 +125,13 @@ class ScenarioDetail(ScenarioOut):
     alert_sequence: Optional[Any]
     decision_tree: Optional[Any]
     pressure_injections: Optional[Any]
-    debrief_skeleton: Optional[Any]
+    # Proportionate Response (migration 0034): replaces the retired
+    # debrief_skeleton (dead column, zero references anywhere in service
+    # logic — dropped, not just renamed). collateral_weights is the
+    # authored per-hostname severity table verb_engine.compute_score reads
+    # to score an isolated-but-never-attacked host; see Scenario model's
+    # own docstring for the full rationale.
+    collateral_weights: Optional[Any]
     compression_ratio: float
 
 

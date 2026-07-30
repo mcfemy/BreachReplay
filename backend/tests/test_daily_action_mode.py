@@ -225,7 +225,7 @@ async def test_create_daily_action_run_conflicts_for_a_second_attempt_the_same_d
         score_breakdown={},
         total_score=100,
         duration_seconds=60,
-        outcome="win",
+        outcome="contained",
     ))
     await db.flush()
 
@@ -319,8 +319,8 @@ async def test_daily_mode_cap_force_ends_the_run_mid_loop_not_via_final_stage():
     assert len(run_end_events) == 1
     assert run_end_events[0]["daily_challenge_id"] == challenge.id
     # Final stage never fired — determine_outcome treats an unfired final
-    # stage as a win, regardless of the cap having ended the run.
-    assert run_end_events[0]["outcome"] == "win"
+    # stage as contained, regardless of the cap having ended the run.
+    assert run_end_events[0]["outcome"] == "contained"
 
     tick_events = [m for m in ws.sent if m["type"] == "clock.tick"]
     assert tick_events[-1]["elapsed_seconds"] == 495
@@ -424,7 +424,7 @@ async def test_swept_daily_run_broadcasts_run_end_and_carries_over_streak():
         run_end_events = [m for m in ws.sent if m["type"] == "run.end"]
         assert len(run_end_events) == 1
         summary = run_end_events[0]
-        assert summary["outcome"] == "loss"  # forced, not the natural determine_outcome
+        assert summary["outcome"] == "breached"  # forced, not the natural determine_outcome
         assert summary["daily_challenge_id"] == challenge.id
         assert summary["challenge_number"] == challenge.challenge_number
         assert summary["rank"] == 1  # only run on this challenge
@@ -452,7 +452,7 @@ async def test_swept_daily_run_broadcasts_run_end_and_carries_over_streak():
 
         assert refreshed_challenge.total_attempts == 1
         assert streak.current_streak == 1
-        assert action_run.outcome == "loss"
+        assert action_run.outcome == "breached"
     finally:
         manager.disconnect(run_id, ws)
 
@@ -487,7 +487,7 @@ async def test_swept_non_daily_run_also_broadcasts_run_end_to_a_live_socket():
 
         run_end_events = [m for m in ws.sent if m["type"] == "run.end"]
         assert len(run_end_events) == 1
-        assert run_end_events[0]["outcome"] == "loss"
+        assert run_end_events[0]["outcome"] == "breached"
         assert "daily_challenge_id" not in run_end_events[0]
 
         assert await action_run_store.get(run_id) is None
@@ -511,12 +511,12 @@ async def test_record_daily_action_run_result_ranks_by_total_score_descending():
         db.add(ActionRun(
             user_id="daily-rank-a", scenario_id=scenario.id, daily_challenge_id=challenge.id,
             seed=1, mode="daily", action_log=[], score_breakdown={}, total_score=500,
-            duration_seconds=200, outcome="win",
+            duration_seconds=200, outcome="contained",
         ))
         db.add(ActionRun(
             user_id="daily-rank-b", scenario_id=scenario.id, daily_challenge_id=challenge.id,
             seed=1, mode="daily", action_log=[], score_breakdown={}, total_score=200,
-            duration_seconds=300, outcome="partial",
+            duration_seconds=300, outcome="breached_spread_limited",
         ))
         await db.commit()
 
@@ -545,12 +545,12 @@ async def test_action_leaderboard_orders_by_total_score(client, db, test_user, a
     db.add(ActionRun(
         user_id=test_user["user"].id, scenario_id=approved_scenario.id, daily_challenge_id=challenge.id,
         seed=1, mode="daily", action_log=[], score_breakdown={}, total_score=300,
-        duration_seconds=200, outcome="win",
+        duration_seconds=200, outcome="contained",
     ))
     db.add(ActionRun(
         user_id=admin_user["user"].id, scenario_id=approved_scenario.id, daily_challenge_id=challenge.id,
         seed=1, mode="daily", action_log=[], score_breakdown={}, total_score=700,
-        duration_seconds=200, outcome="win",
+        duration_seconds=200, outcome="contained",
     ))
     await db.flush()
 

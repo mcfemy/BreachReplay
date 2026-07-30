@@ -37,8 +37,23 @@ class Scenario(Base):
     alert_sequence: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
     decision_tree: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
     pressure_injections: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
-    debrief_skeleton: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
     hidden_iocs: Mapped[list] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=True)
+    # Proportionate Response (migration 0034): authored per-hostname
+    # collateral severity, {hostname: weight 0-100} — same provenance
+    # discipline as hidden_iocs (see backend/seed.py's per-scenario dicts
+    # for citations). Keyed by hostname, not host_id: scenario-mode seeds
+    # are genuinely random per playthrough (secrets.randbelow), and only a
+    # scenario's own host_harvest.harvest_hostnames() set is stable across
+    # seeds — see docs/BACKLOG.md's "final-stage target is unbound from
+    # real content" entry for the bug this sidesteps. Hosts not present in
+    # this dict (i.e. every procedurally-generated one) fall back to
+    # verb_engine.DEFAULT_COLLATERAL_WEIGHT. `debrief_skeleton` (dead,
+    # zero references anywhere) is retired in the same migration rather
+    # than left ambiguous a third time — the new debrief narrative is
+    # computed dynamically from outcome + collateral, not stored here.
+    collateral_weights: Mapped[dict] = mapped_column(
+        JSONB().with_variant(JSON, "sqlite"), nullable=False, default=dict, server_default="{}",
+    )
 
     status: Mapped[str] = mapped_column(SAEnum("draft", "review", "approved", "rejected", "archived", name="scenario_status"), default="draft")
     # Structural guard against the daily-challenge picker (and anything else
