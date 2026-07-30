@@ -311,8 +311,8 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
       {/* Clock / stage-progress bar — redacted (no stage names/targets), just length + time */}
       <div className="shrink-0 px-4 pt-3 pb-2 border-b border-dim/20">
         <div className="flex items-center justify-between text-xs font-term text-dim mb-1">
-          <span>ATTACKER CLOCK</span>
-          <span className={capRemaining <= 60 ? "text-bleed" : "text-dim"}>{formatClock(capRemaining)} remaining</span>
+          <span>RESPONSE BUDGET</span>
+          <span className={capRemaining <= 60 ? "text-bleed" : "text-dim"}>{formatClock(capRemaining)} left to spend</span>
         </div>
         <div className="h-2 rounded-full bg-panel overflow-hidden">
           <div
