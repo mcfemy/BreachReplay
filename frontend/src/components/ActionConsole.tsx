@@ -107,6 +107,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
   const [xpVisible, setXpVisible] = useState(false);
   const [resultToast, setResultToast] = useState<{ text: string; good: boolean } | null>(null);
+  const [toolOutputExpanded, setToolOutputExpanded] = useState(false);
   const [idleNudgeVisible, setIdleNudgeVisible] = useState(false);
   const lastActionAtRef = useRef(0);
   const idleNudgedThisStretchRef = useRef(false);
@@ -434,6 +435,36 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
             {VERB_LABELS[targetVerb]} — tap a host on the map
           </p>
           <button onClick={() => setTargetVerb(null)} className="text-dim text-xs active:scale-95">Cancel</button>
+        </div>
+      )}
+
+      {/* Diegetic tool output — feedback from a security-professional
+          tester: the console taught judgment but hid the tooling (tap
+          Scan Network, time spent, a map appears, nothing says what ran).
+          Shows the real command (where the verb has one) and realistic
+          output in that tool's real format, entirely server-rendered
+          (backend/app/services/tool_output.py) — never templated here.
+          Collapsed by default (one-line summary); a shrink-0 sibling of
+          the map, same as the chip bar below, so it never pushes either
+          off screen at 390px — only the map's own flex-1 area shrinks to
+          make room. */}
+      {run.lastDelta?.tool_output && (
+        <div className="shrink-0 border-t border-dim/20 bg-panel">
+          <button
+            onClick={() => setToolOutputExpanded((v) => !v)}
+            className="w-full flex items-center justify-between px-4 py-1.5 text-left active:opacity-70"
+          >
+            <span className="text-[10px] font-term uppercase tracking-widest text-phosphor truncate">
+              {run.lastDelta.tool_output.tool}
+              {run.lastDelta.tool_output.command ? ` — ${run.lastDelta.tool_output.command}` : ""}
+            </span>
+            <span className="text-dim text-xs shrink-0 ml-2">{toolOutputExpanded ? "▲" : "▼"}</span>
+          </button>
+          {toolOutputExpanded && (
+            <pre className="max-h-32 overflow-y-auto px-4 pb-2 text-[10px] font-mono text-white/80 whitespace-pre-wrap break-words">
+              {run.lastDelta.tool_output.output}
+            </pre>
+          )}
         </div>
       )}
 

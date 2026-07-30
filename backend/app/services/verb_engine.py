@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from app.services.action_engine import CompiledRun, Host, IOCPlacement, OrgState
+from app.services import tool_output
 
 # ── Verb vocabulary ──────────────────────────────────────────────────────────
 #
@@ -274,16 +275,19 @@ def _advance_stages(compiled: CompiledRun, world: OrgState, from_clock: int, to_
 
 def _reveal_iocs_for_host(
     compiled: CompiledRun, discovered_ioc_keys: frozenset, host_id: str,
-) -> tuple[list[dict], frozenset]:
+) -> tuple[list[IOCPlacement], list[dict], frozenset]:
     """Every IOCPlacement bound to host_id that hasn't already been
-    discovered — returns (client-safe dicts to include in the delta, the
-    updated discovered_ioc_keys set). Shared by query_logs and image_disk."""
+    discovered — returns (the raw placements, client-safe dicts to include
+    in the delta, the updated discovered_ioc_keys set). Shared by
+    query_logs and image_disk. The raw placements are ALSO what
+    tool_output.render_query_logs/render_image_disk take — the exact same
+    already-filtered set the delta itself sends, not a re-derivation."""
     newly: list[IOCPlacement] = [
         p for p in compiled.ioc_placements
         if p.host_id == host_id and (p.host_id, p.rule_id) not in discovered_ioc_keys
     ]
     updated_keys = discovered_ioc_keys | {(p.host_id, p.rule_id) for p in newly}
-    return [p.to_dict() for p in newly], updated_keys
+    return newly, [p.to_dict() for p in newly], updated_keys
 
 
 def _log_entry(sequence_number: int, verb: str, target: Optional[str], elapsed_seconds: int, cost: int) -> dict:
@@ -313,6 +317,7 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
     if verb == "escalate":
         if run.escalate_used:
             return VerbResult(run=run, delta={}, error="escalate already used this run")
+        sequence_number = len(run.action_log)
         new_run = replace(
             run,
             escalate_used=True,
@@ -325,7 +330,10 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
                 len(new_run.action_log), "escalate", None, new_run.elapsed_seconds, 0,
             ),),
         )
-        return VerbResult(run=new_run, delta={"escalate_used": True, "frozen_seconds": ESCALATE_FREEZE_SECONDS})
+        escalate_output = tool_output.render_escalate(run.compiled.seed, sequence_number)
+        return VerbResult(run=new_run, delta={
+            "escalate_used": True, "frozen_seconds": ESCALATE_FREEZE_SECONDS, "tool_output": escalate_output,
+        })
 
     world = run.world
     revealed_host_ids = run.revealed_host_ids
@@ -340,16 +348,21 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
 
     if verb == "query_logs":
         revealed_host_ids = revealed_host_ids | {target}
-        revealed_iocs, discovered_ioc_keys = _reveal_iocs_for_host(
+        revealed_placements, revealed_iocs, discovered_ioc_keys = _reveal_iocs_for_host(
             run.compiled, discovered_ioc_keys, target,
         )
-        delta = {"host_id": target, "revealed_iocs": revealed_iocs}
+        delta = {
+            "host_id": target,
+            "revealed_iocs": revealed_iocs,
+            "tool_output": tool_output.render_query_logs(run.compiled.seed, host, revealed_placements, run.elapsed_seconds),
+        }
 
     elif verb == "scan_network":
         revealed_host_ids = frozenset(h.id for h in world.hosts)
         delta = {
             "nodes": [_host_summary(h) for h in world.hosts],
             "edges": _revealed_edges(run.compiled, revealed_host_ids),
+            "tool_output": tool_output.render_scan_network(run.compiled.seed, list(world.hosts), run.elapsed_seconds),
         }
 
     elif verb == "isolate":
@@ -358,24 +371,33 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
         on_path = target in _attack_path_host_ids(run.compiled)
         if not on_path:
             penalties = penalties + ({"type": "wrong_isolation", "host_id": target, "amount": PRECISION_PENALTY},)
-        delta = {"host_id": target, "isolated": True, "on_attack_path": on_path}
+        delta = {
+            "host_id": target, "isolated": True, "on_attack_path": on_path,
+            "tool_output": tool_output.render_isolate(host),
+        }
 
     elif verb == "image_disk":
         revealed_host_ids = revealed_host_ids | {target}
-        revealed_iocs, discovered_ioc_keys = _reveal_iocs_for_host(
+        revealed_placements, revealed_iocs, discovered_ioc_keys = _reveal_iocs_for_host(
             run.compiled, discovered_ioc_keys, target,
         )
         delta = {
             "host_id": target,
             "revealed_iocs": revealed_iocs,
             "forensics": {"unpatched_cves": list(host.unpatched_cves), "edr_installed": host.edr_installed},
+            "tool_output": tool_output.render_image_disk(
+                run.compiled.seed, host, revealed_placements,
+                list(host.unpatched_cves), host.edr_installed, run.elapsed_seconds,
+            ),
         }
 
     elif verb == "interview_user":
         creds = [c for c in world.credentials if target in c.valid_on_host_ids]
+        cred_dicts = [{"credential_id": c.id, "username": c.username, "privilege": c.privilege} for c in creds]
         delta = {
             "host_id": target,
-            "credentials": [{"credential_id": c.id, "username": c.username, "privilege": c.privilege} for c in creds],
+            "credentials": cred_dicts,
+            "tool_output": tool_output.render_interview_user(host, cred_dicts),
         }
 
     elif verb == "block_ip":
@@ -393,10 +415,13 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
             # same content immediately instead of only learning it on a
             # later reconnect. The key is genuinely earned the moment the
             # correct IP is blocked, not just recorded for scoring.
-            delta = {"correct": True, "host_id": matched.host_id, "revealed_iocs": [matched.to_dict()]}
+            delta = {
+                "correct": True, "host_id": matched.host_id, "revealed_iocs": [matched.to_dict()],
+                "tool_output": tool_output.render_block_ip(target),
+            }
         else:
             penalties = penalties + ({"type": "wrong_block_ip", "addr": target, "amount": PRECISION_PENALTY},)
-            delta = {"correct": False}
+            delta = {"correct": False, "tool_output": tool_output.render_block_ip(target)}
 
     elif verb == "reset_creds":
         # Containment verbs double as value-pivots — a deliberate convention
@@ -431,7 +456,8 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
         if ioc_matched is not None:
             discovered_ioc_keys = discovered_ioc_keys | {(ioc_matched.host_id, ioc_matched.rule_id)}
 
-        if cred_matched is not None or ioc_matched is not None:
+        matched = cred_matched is not None or ioc_matched is not None
+        if matched:
             delta = {"correct": True}
             if cred_matched is not None:
                 delta["credential_id"] = cred_matched.id
@@ -448,6 +474,7 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
             # deduction premise collapses.
             penalties = penalties + ({"type": "wrong_reset_creds", "account": target, "amount": PRECISION_PENALTY},)
             delta = {"correct": False}
+        delta["tool_output"] = tool_output.render_reset_creds(target, matched)
 
     cost = VERB_COSTS[verb]
     old_clock = attacker_clock_seconds(run)

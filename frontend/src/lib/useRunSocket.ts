@@ -69,6 +69,19 @@ export interface RunEdge {
   target: string;
 }
 
+// Diegetic tool output (verb_engine.py's tool_output module) — attached to
+// almost every verb's delta as `delta.tool_output` (escalate/isolate/
+// block_ip/reset_creds have `command: null`, since those are action-log
+// entries or a real console action, not something typed into a shell).
+// Server-rendered only: leak-safety and real-syntax discipline both live
+// in backend/app/services/tool_output.py, never re-derived or templated
+// here — this interface exists purely to type what's already in the delta.
+export interface ToolOutput {
+  tool: string;
+  command: string | null;
+  output: string;
+}
+
 // Proportionate Response's 5-state outcome (verb_engine.determine_outcome),
 // graded on two axes: was the final target stopped, and how much collateral
 // did it cost. Replaces the old "win" | "loss" | "partial" — see
@@ -148,8 +161,11 @@ export interface RunEndSummary {
 // that host's drawer (query_logs/isolate/image_disk/interview_user, and
 // block_ip's correct-guess case), and any delta carrying a boolean
 // `correct` is a free-text verb's (block_ip/reset_creds) guess result,
-// whether or not it also carries a host_id.
-type LastDelta = Record<string, unknown> | null;
+// whether or not it also carries a host_id. `tool_output` is present on
+// every one of the 8 verbs' deltas — typed separately here since it's the
+// one field every branch shares, unlike the rest of this intentionally
+// loosely-typed bag.
+type LastDelta = (Record<string, unknown> & { tool_output?: ToolOutput }) | null;
 
 interface RunSocketState {
   connected: boolean;

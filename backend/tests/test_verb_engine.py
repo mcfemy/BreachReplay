@@ -221,19 +221,25 @@ def test_block_ip_answer_is_discoverable_through_legitimate_play():
     # test_block_ip_correct_guess_includes_the_matched_ioc_body_live_and_on_resync)
     # — discovered_ioc_keys already counts this as earned the instant the
     # correct IP is blocked, so the live delta must show what a resync
-    # would show, not under-report it.
-    assert result.delta == {
+    # would show, not under-report it. tool_output (diegetic iptables
+    # rendering) checked separately below, not part of this dict-equality
+    # assertion — it's covered on its own in test_tool_output.py.
+    delta = dict(result.delta)
+    tool_output = delta.pop("tool_output")
+    assert delta == {
         "correct": True,
         "host_id": ip_placement.host_id,
         "revealed_iocs": [ip_placement.to_dict()],
     }
+    assert extracted_ip in tool_output["command"]
 
 
 def test_block_ip_wrong_address_records_a_penalty_and_isolates_nothing():
     compiled = _compiled()
     run = verb_engine.new_run(compiled)
     result = verb_engine.apply_verb(run, "block_ip", "9.9.9.9")
-    assert result.delta == {"correct": False}
+    assert result.delta["correct"] is False
+    assert set(result.delta.keys()) == {"correct", "tool_output"}
     assert any(p["type"] == "wrong_block_ip" for p in result.run.penalties)
     assert not any(h.isolated for h in result.run.world.hosts)
 
@@ -253,7 +259,8 @@ def test_reset_creds_unknown_account_records_a_penalty():
     compiled = _compiled()
     run = verb_engine.new_run(compiled)
     result = verb_engine.apply_verb(run, "reset_creds", "not-a-real-account")
-    assert result.delta == {"correct": False}
+    assert result.delta["correct"] is False
+    assert set(result.delta.keys()) == {"correct", "tool_output"}
 
 
 def test_reset_creds_wrong_guess_penalty_matches_block_ip_exactly():
@@ -308,7 +315,9 @@ def test_reset_creds_reveals_a_username_keyed_ioc_with_no_matching_credential():
     run = verb_engine.new_run(compiled)
 
     result = verb_engine.apply_verb(run, "reset_creds", "d.park@mgmresorts.com")
-    assert result.delta == {"correct": True, "revealed_iocs": [ioc.to_dict()]}
+    delta = dict(result.delta)
+    delta.pop("tool_output")
+    assert delta == {"correct": True, "revealed_iocs": [ioc.to_dict()]}
 
 
 def test_reset_creds_username_answer_is_discoverable_through_legitimate_play():
@@ -370,7 +379,16 @@ def test_no_verb_response_ever_leaks_unrevealed_hidden_state():
     """Anti-leak test, mirroring backend/tests/test_teaser.py's pattern:
     plays a realistic sequence of verbs and asserts that at no point does a
     delta contain another host's hidden IOC text, the raw stage timeline,
-    or any hidden_iocs the player hasn't earned yet."""
+    or any hidden_iocs the player hasn't earned yet.
+
+    This also covers diegetic tool_output (backend/app/services/
+    tool_output.py) for free, without any changes needed here: tool_output
+    is nested INSIDE each verb's own delta (verb_engine.apply_verb), so
+    `payload = json.dumps(result.delta)` below already serializes it, and
+    the raw_log/description containment checks scan the whole payload
+    string — an unrevealed IOC's text leaking through render_query_logs or
+    render_image_disk specifically would already fail this test exactly
+    like a leak anywhere else in the delta would."""
     compiled = _compiled(seed=99)
     run = verb_engine.new_run(compiled)
 
@@ -797,3 +815,31 @@ def test_same_scenario_and_seed_produce_identical_outcome_and_score_across_indep
     outcome_b, score_b = _play(_CORE_LOOP_SEED)
     assert outcome_a == outcome_b
     assert score_a == score_b
+
+
+def test_tool_output_is_deterministic_across_independent_replays():
+    """Diegetic tool output's own determinism requirement (tool_output.py's
+    module docstring) — same scenario+seed+verb sequence must render
+    byte-identical tool_output every time, same as outcome/score above."""
+    def _play(seed):
+        compiled = action_engine.compile_scenario(_COMPRESSED_SCENARIO, seed=seed)
+        run = verb_engine.new_run(compiled)
+        outputs = []
+        result = verb_engine.apply_verb(run, "scan_network")
+        outputs.append(result.delta["tool_output"])
+        run = result.run
+        for host in compiled.world.hosts[:2]:
+            result = verb_engine.apply_verb(run, "query_logs", host.id)
+            outputs.append(result.delta["tool_output"])
+            run = result.run
+            result = verb_engine.apply_verb(run, "isolate", host.id)
+            outputs.append(result.delta["tool_output"])
+            run = result.run
+        result = verb_engine.apply_verb(run, "escalate")
+        outputs.append(result.delta["tool_output"])
+        return outputs
+
+    outputs_a = _play(_CORE_LOOP_SEED)
+    outputs_b = _play(_CORE_LOOP_SEED)
+    assert outputs_a == outputs_b
+    assert all(o["output"] for o in outputs_a), "every rendered tool_output must have real content"
