@@ -254,3 +254,84 @@ the now-declared convention above; deliberately not done alongside the
 username fix since only 2 IOCs across all 5 flagship scenarios currently
 need it — worth adding once a second scenario actually leans on
 process-name signatures, not preemptively.
+
+## MGM Resorts needs real hostnames — content pass, blocks collateral-weight authoring
+
+Found while speccing "Proportionate Response" (outcome grading + collateral
+cost, see that spec for full context). All 10 of MGM's hosts are named
+`BACKUP-VEEAM-{NN}` — one undifferentiated pattern, no signal
+distinguishing "this is the reservation system" from "this is a random
+backup target." Every other flagship scenario's harvested hostnames
+(Colonial's `OT-HISTORIAN-01`, SolarWinds' `adfs-01.corp.internal`,
+NHS's `NHS-PACS-01`) carry enough real-world specificity to author
+per-host collateral weights against; MGM's don't, and inventing
+distinctions the content doesn't support is exactly the fabrication the
+provenance rule (same discipline as `hidden_iocs`) forbids.
+
+The real incident (Scattered Spider, 2023, via vished helpdesk social
+engineering into ALPHV/BlackCat ransomware) is well documented as hitting
+reservation, loyalty-program, and casino-floor systems specifically —
+real hostnames reflecting that (property-management-system, slot-network,
+key-card-server, loyalty-db, etc.) would give this scenario's map the
+same narrative weight the other four already have, and unblock
+collateral-weight authoring for it. Until this lands, MGM's collateral
+weights stay unauthored — Proportionate Response ships for the other four
+scenarios first.
+
+## NHS WannaCry: legacy/unpatched hosts are decoys, but that's backwards
+
+Found in the same pass. `NHS-LEGACY-XP-03` and `NHS-SERVER-LEGACY-08` sit
+in the compiled decoy pool (never appear in any stage's
+`compromises_host_ids`) — but "unpatched legacy Windows, notably XP" is
+*the* documented root-cause vulnerability class in the real 2017 WannaCry
+incident, not incidental flavor. A player who reasons correctly from the
+real incident and isolates exactly those hosts is isolating hosts the
+game currently scores as pure collateral — the game penalizing a player
+for knowing the actual history is the worst failure mode available here,
+worse than not rewarding it. Worth a scenario-content look at whether
+these two should be on the attack path instead of padding. Filed
+separately from Proportionate Response, not blocking it — NHS's other
+decoys (PACS, domain controller, ortho/lab workstations) are sourced
+enough to author weights for now.
+
+## PRIORITY: Final-stage target is unbound from real content in 3 of 5 flagship scenarios
+
+**Higher priority than the other two entries above.** The single host a
+player must isolate to win — the most important host in the entire
+incident — has no tie to the real breach in 3 of 5 flagship scenarios.
+That cuts against the provenance discipline this whole content model is
+built on, and it cuts at the exact point that matters most. The MGM
+hostname pass and the NHS legacy-host placement question are real but
+narrower; this one should get attention sooner, not batched in behind
+them.
+
+Found while resolving how to key `collateral_weights` stably across seeds
+(scenario mode uses `secrets.randbelow` — a genuinely random seed per
+playthrough, see `action_runs.py`). Compiled Colonial Pipeline, SolarWinds,
+Log4Shell, MGM, and NHS across 5 different seeds each and checked whether
+the final stage's `compromises_host_ids` target is one of the scenario's
+own `host_harvest.harvest_hostnames()` — the real, author-cited names
+(`OT-DC-19`, `CORP-HISTORIAN-*`, `BACKUP-VEEAM-*`-style) vs. procedurally
+generated padding.
+
+**Log4Shell and NHS: final target is the same real, harvested hostname on
+every seed** (`app-svr-07.prod.internal`, `NHS-LAB-SRV-01`) — stable and
+narratively grounded. **Colonial Pipeline, SolarWinds, and MGM: the final
+target is a procedurally generated hostname on every seed tested, and a
+*different* one each time** — the win condition's own target host has no
+fixed identity tied to the scenario's authored content at all for these
+three. A player who reads Colonial's real story and reasons "the pipeline
+OT domain controller is what actually matters" is isolating a stably-named
+host (`OT-HISTORIAN-01` or similar) that may or may not be anywhere near
+whatever randomly-named host the engine actually picked as this run's
+final target.
+
+This is a `host_harvest`/`action_engine` stage-to-host binding question
+(likely `_build_stages`'s `preferred_host_ids` matching not being
+constrained to prefer harvested hosts for the final gate specifically),
+not something Proportionate Response's collateral-weight authoring can
+paper over — filed separately. Worked around for now by keying
+`collateral_weights` on hostname and restricting authored entries to each
+scenario's actual `harvest_hostnames()` set; procedural hosts (including,
+for these three scenarios, the final target itself) get the flat default
+weight rather than a fabricated citation.
