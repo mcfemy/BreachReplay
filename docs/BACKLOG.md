@@ -371,3 +371,56 @@ authored pacing to ever land there. Worth a look in the Phase 3 tuning
 pass — either NHS's pacing is intentionally this tight and that's fine as
 is, or the compression/head-start interaction deserves a per-scenario
 adjustment. Not a bug to fix now, a design question to revisit deliberately.
+
+## Arena mode doesn't share the Action Console's new surfaces
+
+Deliberate isolation from Phase 2 Item 3 onward — Arena and the solo Action
+Console have always been separate code paths (REVIEW_CRITERIA.md's org-
+tabletop isolation rule (d) cites Arena's own prior isolation as the
+precedent it follows) — but it means the two modes now teach differently.
+Neither Proportionate Response's 5-state grading nor diegetic tool output
+reached Arena; both are Action Console-only. Assessed scope for each
+before filing this, rather than assuming either is a quick port:
+
+**Outcome grading — large, not a rename.** Arena's terminal result is a
+hard boolean, decided in `_mark_match_completed_if_needed`
+(`backend/app/websocket/handlers.py:620`): attacker wins if
+`global_flags["impact_deployed"]`, defender wins if
+`check_defender_containment` passes after a minimum action count, defender
+wins by default if the match hits `_MAX_MATCH_ACTIONS` unresolved. That
+feeds directly into an ELO rating update
+(`arena_rating_service.compute_new_ratings`, K_FACTOR=32) in the same
+transaction. There is no scored breakdown and no collateral/proportionality
+signal computed anywhere in `org_simulation.py` or the handler — introducing
+`contained_at_cost`/`overreacted`-equivalents would mean inventing a new
+metric (e.g., unnecessary isolations, over-broad `increase_monitoring`)
+from `OrgState` that doesn't exist today, then deciding how a 5-state
+outcome coexists with (or replaces) the ELO win/loss feed the whole rating
+system depends on. `ArenaDebriefPage.tsx:267-269` still renders the raw
+`match.status` enum ("attacker won" / "defender won") and doesn't reference
+`useRunSocket.ts`'s `OUTCOME_LABELS` map at all — cosmetic relabeling alone
+would be trivial; making the labels mean something the way they do in the
+Action Console is new game-design work, not a port.
+
+**Diegetic tool output — also large, different action vocabulary.** No
+`tool_output` hook exists anywhere in Arena's path (confirmed: zero
+references outside `verb_engine.py`/its tests). Arena's only per-action
+feedback today is the alert feed (`ArenaMatchPage.tsx`) — detection-rule
+flavor text for the *observer*, not tool-rendered output for the *actor*.
+Arena's action vocabulary is also materially different from the console's
+8 verbs: 12 action_types across two roles (`org_simulation.py:427-459`) —
+attacker `discover_segment/discover_host/gain_foothold/dump_credentials/
+escalate_privilege/lateral_move/deploy_impact`, defender `isolate_host/
+disable_credential/patch_host/increase_monitoring/acknowledge` — only
+loosely overlapping the console's verbs (`isolate_host`≈`isolate`,
+`patch_host` has no console equivalent, and Action Console has no
+attacker-side actions at all). `tool_output.py`'s renderers are keyed to
+the console's exact 8 payload shapes; reuse here means writing ~12 new
+renderers for two roles, not pointing Arena at the existing module.
+
+Not proposing either for the current phase. Worth scoping properly as a
+real Phase 3+ project — likely its own spec, not a follow-on task to either
+Proportionate Response or diegetic tool output — given both would need new
+game-design decisions (what collateral means for a live PvP match; what
+"real tool output" means for attacker-side actions like credential
+dumping), not just code reuse.
