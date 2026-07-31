@@ -108,6 +108,16 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   const [xpVisible, setXpVisible] = useState(false);
   const [resultToast, setResultToast] = useState<{ text: string; good: boolean } | null>(null);
   const [toolOutputExpanded, setToolOutputExpanded] = useState(false);
+  // nmap specifically streams line-by-line instead of appearing all at
+  // once — "as though it's a real exercise" — everything else stays a
+  // static reveal on expand. Purely a client-side rendering pace over
+  // already-deterministic server content (tool_output.py's own output
+  // string never changes); it has no bearing on scoring, action_log, or
+  // Phase 4 ghost-replay determinism, which only ever depend on that
+  // string's CONTENT, never how long the client took to animate it.
+  const [nmapRevealedLines, setNmapRevealedLines] = useState<string[]>([]);
+  const nmapStreamRef = useRef<{ lines: string[]; timer: ReturnType<typeof setInterval> | null }>({ lines: [], timer: null });
+  const toolOutputScrollRef = useRef<HTMLPreElement | null>(null);
   const [idleNudgeVisible, setIdleNudgeVisible] = useState(false);
   const lastActionAtRef = useRef(0);
   const idleNudgedThisStretchRef = useRef(false);
@@ -162,7 +172,17 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     const delta = run.lastDelta;
     if (!delta) return;
 
-    if (typeof delta.host_id === "string") {
+    // query_logs and image_disk both carry `revealed_iocs` with no
+    // `correct` flag — their diegetic tool panel (Splunk / dd+sha256sum)
+    // already shows that same IOC content, so auto-opening the drawer too
+    // just duplicates it on a 390px screen. block_ip's correct guess also
+    // carries revealed_iocs, but its tool panel (iptables) shows a
+    // DIFFERENT thing (the rule pushed, not the IOC) — `correct` being a
+    // boolean is what distinguishes it, so it keeps opening the drawer.
+    const toolPanelAlreadyShowsThisReveal =
+      Array.isArray(delta.revealed_iocs) && typeof delta.correct !== "boolean";
+
+    if (typeof delta.host_id === "string" && !toolPanelAlreadyShowsThisReveal) {
       setSelectedHostId(delta.host_id);
     }
 
@@ -181,6 +201,51 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     const t = setTimeout(() => setResultToast(null), 3000);
     return () => clearTimeout(t);
   }, [resultToast]);
+
+  // nmap's tool output streams in line by line, like watching the scan
+  // actually run, instead of the static instant reveal every other verb
+  // gets — forces the panel open for this one case only. Every OTHER
+  // verb's result resets the panel back to collapsed (not just "leaves it
+  // however it was") — otherwise, once nmap opened it once, it would stay
+  // pinned open for every later verb too, silently breaking the "collapsed
+  // by default" call for everything that isn't nmap.
+  useEffect(() => {
+    const toolOutput = run.lastDelta?.tool_output;
+    if (!toolOutput) return;
+
+    if (toolOutput.tool !== "nmap") {
+      if (nmapStreamRef.current.timer) {
+        clearInterval(nmapStreamRef.current.timer);
+        nmapStreamRef.current.timer = null;
+      }
+      setToolOutputExpanded(false);
+      return;
+    }
+
+    if (nmapStreamRef.current.timer) clearInterval(nmapStreamRef.current.timer);
+    const lines = toolOutput.output.split("\n");
+    nmapStreamRef.current.lines = lines;
+    setNmapRevealedLines([]);
+    setToolOutputExpanded(true);
+
+    let i = 0;
+    nmapStreamRef.current.timer = setInterval(() => {
+      i += 1;
+      setNmapRevealedLines(lines.slice(0, i));
+      if (toolOutputScrollRef.current) {
+        toolOutputScrollRef.current.scrollTop = toolOutputScrollRef.current.scrollHeight;
+      }
+      if (i >= lines.length && nmapStreamRef.current.timer) {
+        clearInterval(nmapStreamRef.current.timer);
+        nmapStreamRef.current.timer = null;
+      }
+    }, 45);
+
+    return () => {
+      if (nmapStreamRef.current.timer) clearInterval(nmapStreamRef.current.timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.lastDelta]);
 
   // Guided first-run beats — shape-sniffed off the same run.lastDelta every
   // other reaction here uses (see useRunSocket.ts's own shape-sniffing for
@@ -444,10 +509,11 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
           Shows the real command (where the verb has one) and realistic
           output in that tool's real format, entirely server-rendered
           (backend/app/services/tool_output.py) — never templated here.
-          Collapsed by default (one-line summary); a shrink-0 sibling of
-          the map, same as the chip bar below, so it never pushes either
-          off screen at 390px — only the map's own flex-1 area shrinks to
-          make room. */}
+          Collapsed by default (tool name only — the command lives in the
+          expanded body, not the header, so a long Splunk query never
+          truncates mid-word); a shrink-0 sibling of the map, same as the
+          chip bar below, so it never pushes either off screen at 390px —
+          only the map's own flex-1 area shrinks to make room. */}
       {run.lastDelta?.tool_output && (
         <div className="shrink-0 border-t border-dim/20 bg-panel">
           <button
@@ -456,14 +522,25 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
           >
             <span className="text-[10px] font-term uppercase tracking-widest text-phosphor truncate">
               {run.lastDelta.tool_output.tool}
-              {run.lastDelta.tool_output.command ? ` — ${run.lastDelta.tool_output.command}` : ""}
             </span>
             <span className="text-dim text-xs shrink-0 ml-2">{toolOutputExpanded ? "▲" : "▼"}</span>
           </button>
           {toolOutputExpanded && (
-            <pre className="max-h-32 overflow-y-auto px-4 pb-2 text-[10px] font-mono text-white/80 whitespace-pre-wrap break-words">
-              {run.lastDelta.tool_output.output}
-            </pre>
+            <div className="px-4 pb-2">
+              {run.lastDelta.tool_output.command && (
+                <p className="text-[10px] font-mono text-phosphor/80 mb-1 break-all">
+                  $ {run.lastDelta.tool_output.command}
+                </p>
+              )}
+              <pre
+                ref={toolOutputScrollRef}
+                className="max-h-32 overflow-y-auto text-[10px] font-mono text-white/80 whitespace-pre-wrap break-words"
+              >
+                {run.lastDelta.tool_output.tool === "nmap"
+                  ? nmapRevealedLines.join("\n")
+                  : run.lastDelta.tool_output.output}
+              </pre>
+            </div>
           )}
         </div>
       )}
