@@ -17,6 +17,9 @@ from app.models.arena_event import ArenaEvent
 from app.models.teaser_event import TeaserEvent
 from app.models.xp_transaction import XPTransaction
 from app.models.action_run import ActionRun
+from app.models.cmmc_org import ConsultingOrg, ClientOrg
+from app.models.membership import Membership
+from app.models.evidence_session import EvidenceSession
 
 __all__ = [
     "Base",
@@ -46,4 +49,8 @@ __all__ = [
     "TeaserEvent",
     "XPTransaction",
     "ActionRun",
+    "ConsultingOrg",
+    "ClientOrg",
+    "Membership",
+    "EvidenceSession",
 ]

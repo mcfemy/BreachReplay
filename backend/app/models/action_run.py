@@ -4,7 +4,7 @@ from typing import Optional
 
 from sqlalchemy import String, Integer, DateTime, ForeignKey, JSON, Enum as SAEnum, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
 
 
@@ -71,4 +71,16 @@ class ActionRun(Base):
         ),
         nullable=False,
     )
+    # Phase 2.5 CMMC Evidence Layer (migration 0035) — which exercise this
+    # run belongs to, if any. Nullable: most runs (daily/scenario/teaser
+    # solo play) belong to no evidence session at all. SET NULL, not
+    # RESTRICT: an ActionRun is real gameplay data independent of the
+    # evidence layer and must survive an EvidenceSession's deletion (which
+    # is itself RESTRICTed at the ClientOrg level and thus rare) rather
+    # than block it.
+    evidence_session_id: Mapped[Optional[str]] = mapped_column(
+        String, ForeignKey("evidence_sessions.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+    evidence_session: Mapped[Optional["EvidenceSession"]] = relationship("EvidenceSession", back_populates="runs")
