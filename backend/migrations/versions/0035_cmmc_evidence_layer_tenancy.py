@@ -127,33 +127,45 @@ def upgrade() -> None:
     op.create_index("ix_evidence_sessions_client_org_id", "evidence_sessions", ["client_org_id"])
     op.create_index("ix_evidence_sessions_scenario_id", "evidence_sessions", ["scenario_id"])
 
-    # Batch mode with recreate="always", confirmed by testing (not
-    # assumed) — three real, separate SQLite/Alembic issues chained into
-    # this one line:
-    #   1. Alembic's SQLite dialect flatly refuses to ALTER-add a
-    #      constraint outside batch mode ("No support for ALTER of
-    #      constraints in SQLite dialect"), which a FK column triggers
-    #      even with an inline REFERENCES — Alembic models the FK as a
-    #      separate constraint-add step regardless. Batch mode is required.
-    #   2. Batch mode's default recreate="auto" heuristic doesn't detect
-    #      that this particular add needs a full recreate, picks
-    #      lightweight ALTER instead, and only then discovers ALTER can't
-    #      express the FK — recreate="always" forces the correct strategy
-    #      up front instead of Alembic guessing wrong.
-    #   3. Once genuinely recreating, batch mode's automatic column-
-    #      reordering pass throws a spurious CircularDependencyError
-    #      against action_runs' existing column set unless given an
-    #      explicit placement hint — insert_after="created_at" (the last
-    #      existing column) resolves it deterministically.
-    with op.batch_alter_table("action_runs", recreate="always") as batch_op:
-        batch_op.add_column(
-            sa.Column(
-                "evidence_session_id", sa.String(),
-                sa.ForeignKey("evidence_sessions.id", ondelete="SET NULL", name="fk_action_runs_evidence_session_id"),
-                nullable=True,
-            ),
-            insert_after="created_at",
-        )
+    # Dialect-branched, confirmed necessary by testing against BOTH a real
+    # throwaway Postgres and SQLite — not a guess, and not the same code
+    # path for both:
+    #
+    # Postgres: plain op.add_column. Postgres supports ADD COLUMN ...
+    # REFERENCES natively in one ALTER TABLE statement — no recreate of any
+    # kind needed. This matters beyond style: forcing batch-mode's
+    # recreate="always" here (the SQLite fix below) also runs on Postgres
+    # if used unconditionally, and a full "recreate" tries to re-CREATE
+    # TYPE action_run_mode (the still-native enum on action_runs.mode,
+    # untouched by migration 0034) — which already exists, raising
+    # DuplicateObject. Caught by actually rehearsing this migration against
+    # a real Postgres container, not assumed from the SQLite test suite.
+    #
+    # SQLite: batch mode with recreate="always", for three separate,
+    # confirmed-by-testing reasons: (1) Alembic's SQLite dialect flatly
+    # refuses to ALTER-add a constraint outside batch mode ("No support for
+    # ALTER of constraints in SQLite dialect"), which a FK column triggers
+    # even with an inline REFERENCES — Alembic models the FK as a separate
+    # constraint-add step regardless, so batch mode is required. (2) Batch
+    # mode's default recreate="auto" heuristic doesn't detect that this
+    # particular add needs a full recreate, picks lightweight ALTER
+    # instead, and only then discovers ALTER can't express the FK —
+    # recreate="always" forces the correct strategy up front. (3) Once
+    # genuinely recreating, batch mode's automatic column-reordering pass
+    # throws a spurious CircularDependencyError against action_runs'
+    # existing column set unless given an explicit placement hint —
+    # insert_after="created_at" (the last existing column) resolves it.
+    bind = op.get_bind()
+    evidence_session_fk_column = sa.Column(
+        "evidence_session_id", sa.String(),
+        sa.ForeignKey("evidence_sessions.id", ondelete="SET NULL", name="fk_action_runs_evidence_session_id"),
+        nullable=True,
+    )
+    if bind.dialect.name == "postgresql":
+        op.add_column("action_runs", evidence_session_fk_column)
+    else:
+        with op.batch_alter_table("action_runs", recreate="always") as batch_op:
+            batch_op.add_column(evidence_session_fk_column, insert_after="created_at")
     op.create_index("ix_action_runs_evidence_session_id", "action_runs", ["evidence_session_id"])
 
 

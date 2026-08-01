@@ -25,7 +25,20 @@ class ConsultingOrg(Base):
     branding: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=False, default=dict, server_default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
 
-    client_orgs: Mapped[list["ClientOrg"]] = relationship("ClientOrg", back_populates="consulting_org", cascade="all, delete-orphan")
+    # Deliberately NO cascade="all, delete-orphan" here — that would make
+    # SQLAlchemy's ORM delete every ClientOrg (and, transitively, their
+    # EvidenceSessions) in Python BEFORE the DB-level ondelete="RESTRICT"
+    # on ClientOrg.consulting_org_id ever gets a chance to fire, silently
+    # defeating the exact protection that FK exists for. Confirmed as a
+    # real bug by rehearsing against actual Postgres (not caught by the
+    # SQLite test suite, which never exercised deletion) — ORM cascade and
+    # DB-level ondelete=RESTRICT are not the same guarantee, and declaring
+    # both here would have made the DB one unreachable. A plain
+    # relationship (default cascade: save-update, merge only) leaves
+    # deletion decisions entirely to the DB constraint.
+    client_orgs: Mapped[list["ClientOrg"]] = relationship("ClientOrg", back_populates="consulting_org")
+    # Memberships ARE safe to cascade — pure access-control rows, not
+    # evidence, fine to auto-clean when their org is removed.
     memberships: Mapped[list["Membership"]] = relationship("Membership", back_populates="consulting_org", cascade="all, delete-orphan")
 
 
@@ -58,4 +71,9 @@ class ClientOrg(Base):
 
     consulting_org: Mapped["ConsultingOrg"] = relationship("ConsultingOrg", back_populates="client_orgs")
     memberships: Mapped[list["Membership"]] = relationship("Membership", back_populates="client_org", cascade="all, delete-orphan")
-    evidence_sessions: Mapped[list["EvidenceSession"]] = relationship("EvidenceSession", back_populates="client_org", cascade="all, delete-orphan")
+    # No cascade="all, delete-orphan" — same reasoning as ConsultingOrg.
+    # client_orgs above. EvidenceSession is the signed/attested evidence
+    # record itself; ondelete="RESTRICT" on its client_org_id FK is the
+    # real protection, and an ORM-level cascade here would bypass it the
+    # exact same way.
+    evidence_sessions: Mapped[list["EvidenceSession"]] = relationship("EvidenceSession", back_populates="client_org")

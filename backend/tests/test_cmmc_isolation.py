@@ -205,3 +205,44 @@ async def test_action_run_evidence_session_scoping(db, two_tenant_setup, approve
     fetched_session = await db.get(EvidenceSession, run.evidence_session_id)
     assert fetched_session is not None
     assert fetched_session.client_org_id == s["client_org_x"].id
+
+
+async def test_consulting_org_relationship_does_not_orm_cascade_delete_client_orgs(db, two_tenant_setup):
+    """Regression guard for a real bug caught by rehearsing migration 0035
+    against actual Postgres: ConsultingOrg.client_orgs originally declared
+    cascade="all, delete-orphan", which made SQLAlchemy's ORM delete every
+    child ClientOrg in Python BEFORE the DB-level ondelete="RESTRICT" on
+    ClientOrg.consulting_org_id ever got a chance to fire — silently
+    defeating the exact protection that FK exists for (compliance evidence
+    must never disappear as a side effect of deleting its parent org).
+
+    Without that cascade, SQLAlchemy's ORM default behavior for a deleted
+    "one" side is to try nulling the FK on associated "many" side rows
+    first — which fails here too, since consulting_org_id is NOT NULL, so
+    the net effect on THIS SQLite suite is an IntegrityError from a NOT
+    NULL violation rather than a FK violation. Either way the guarantee
+    that matters holds: deletion fails loudly instead of silently taking
+    the ClientOrg down with it. The DB-level RESTRICT itself (the real
+    production path, since asyncpg/psycopg upsert flows don't necessarily
+    touch the FK column the same way) was separately confirmed against a
+    real throwaway Postgres container this session, not reproducible in
+    CI: deleting a ConsultingOrg with a live ClientOrg raised
+    IntegrityError there too, and deleting a ClientOrg with a live
+    EvidenceSession did as well."""
+    s = two_tenant_setup
+    client_org_id = s["client_org_x"].id
+
+    # SAVEPOINT (begin_nested), not a plain flush + db.rollback() — the
+    # `db` fixture already wraps the whole test in one outer transaction
+    # (see conftest.py) that provides this test's own two_tenant_setup
+    # data; a full session.rollback() here rolled that back too, not just
+    # the failed delete, and made the "still there" assertion meaningless
+    # (found by actually running this test, not assumed). A SAVEPOINT
+    # scopes the rollback to just this failed delete attempt.
+    with pytest.raises(IntegrityError):
+        async with db.begin_nested():
+            await db.delete(s["consulting_org_a"])
+            await db.flush()
+
+    still_there = await db.get(ClientOrg, client_org_id)
+    assert still_there is not None, "ClientOrg must survive a failed attempt to delete its parent ConsultingOrg"
