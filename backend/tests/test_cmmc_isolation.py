@@ -63,10 +63,10 @@ async def two_tenant_setup(db, approved_scenario):
     await db.flush()
 
     evidence_session_x = EvidenceSession(
-        client_org_id=client_org_x.id, scenario_id=approved_scenario.id, exercise_date=approved_scenario.created_at,
+        client_org_id=client_org_x.id, title="Session X", scenario_id=approved_scenario.id, exercise_date=approved_scenario.created_at,
     )
     evidence_session_y = EvidenceSession(
-        client_org_id=client_org_y.id, scenario_id=approved_scenario.id, exercise_date=approved_scenario.created_at,
+        client_org_id=client_org_y.id, title="Session Y", scenario_id=approved_scenario.id, exercise_date=approved_scenario.created_at,
     )
     db.add_all([evidence_session_x, evidence_session_y])
     await db.flush()

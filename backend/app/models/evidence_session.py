@@ -30,6 +30,11 @@ class EvidenceSession(Base):
     # signed/attested evidence must never disappear as a side effect of
     # deleting its parent client org.
     client_org_id: Mapped[str] = mapped_column(String, ForeignKey("client_orgs.id", ondelete="RESTRICT"), nullable=False, index=True)
+    # Build-order item 3 (migration 0036). "Participants" is deliberately
+    # NOT a column here — it's derived from which users' runs are attached
+    # (ActionRun.user_id), not stored separately, so there's no second
+    # source of truth to go stale.
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
     scenario_id: Mapped[str] = mapped_column(String, ForeignKey("scenarios.id"), nullable=False, index=True)
     exercise_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_by_user_id: Mapped[Optional[str]] = mapped_column(String, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)

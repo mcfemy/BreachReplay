@@ -1,19 +1,28 @@
-"""Phase 2.5 CMMC Evidence Layer — onboarding & invitation flow (build-order item 2).
+"""Phase 2.5 CMMC Evidence Layer — onboarding/invitations (item 2) and
+EvidenceSession designation (item 3).
 
-Two routers, matching the two trust levels from the approved design:
+Two routers, matching the two trust levels from item 2's approved design:
 - `admin_router` (/admin/cmmc): staff-only. The ONLY way a new ConsultingOrg
   comes into existence — "gated, not self-serve, for v1" per Femi's explicit
   call: a ConsultingOrg issues signed compliance artifacts under
   BreachReplay's name, so who can issue is a trust decision.
-- `router` (/cmmc): any authenticated user. Consultant-to-consultant
-  invites, client-org creation, and invite redemption all live here — an
-  existing consultant_admin acts within their own org without staff
-  involvement.
+- `router` (/cmmc): any authenticated user, individually scoped per route.
+  Consultant-to-consultant invites, client-org creation, invite
+  redemption, and every item-3 designation/aggregation route live here.
 
 Every invite (staff-bootstrapping the first admin, a consultant_admin
 inviting a peer, a consultant_admin inviting a client_participant) goes
 through the single `_issue_invite` helper, so the email-binding / single-
 use / expiry guarantees exist in exactly one place.
+
+Every item-3 route is consultant_admin-only — "compliance is an export,
+never an experience" (Femi's item-3 constraint) means a client_participant
+must get the same 404 a stranger would from every one of them, including
+the read-only ones. Enforced structurally via
+get_evidence_session_for_consulting_admin /
+get_client_org_for_consulting_admin (app/services/cmmc_access.py), which
+never grant a client_participant's membership as sufficient — never the
+broader get_evidence_session_scoped from item 1, which deliberately does.
 """
 from __future__ import annotations
 
@@ -23,7 +32,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_current_user, require_admin
 from app.db.session import get_db
+from app.models.action_run import ActionRun
 from app.models.cmmc_org import ClientOrg, ConsultingOrg
+from app.models.evidence_session import EvidenceSession
 from app.models.membership import Membership
 from app.models.user import User
 from app.schemas.cmmc import (
@@ -31,11 +42,29 @@ from app.schemas.cmmc import (
     ClientOrgOut,
     ConsultingOrgCreate,
     ConsultingOrgOut,
+    DesignateRunsRequest,
+    EvidenceSessionAggregateOut,
+    EvidenceSessionCreate,
+    EvidenceSessionDetailOut,
+    EvidenceSessionOut,
+    EvidenceSessionUpdate,
     InviteCreate,
     InvitePreviewOut,
+    RunSummaryOut,
 )
 from app.schemas.user import MessageResponse
-from app.services.cmmc_access import get_client_orgs_for_user, get_consulting_org_admin_membership
+from app.services.cmmc_access import (
+    get_client_org_for_consulting_admin,
+    get_client_orgs_for_user,
+    get_consulting_org_admin_membership,
+    get_evidence_session_for_consulting_admin,
+)
+from app.services.cmmc_evidence import (
+    build_evidence_session_aggregate,
+    designate_runs,
+    list_client_org_runs,
+    runs_with_participant_names,
+)
 from app.services.cmmc_invites import (
     delete_cmmc_invite,
     emails_match,
@@ -244,3 +273,197 @@ async def list_my_client_orgs(
     db: AsyncSession = Depends(get_db),
 ):
     return await get_client_orgs_for_user(db, current_user)
+
+
+# ── Build-order item 3: EvidenceSession designation from completed runs ────
+
+@router.get("/client-orgs/{client_org_id}/runs", response_model=list[RunSummaryOut])
+async def list_client_org_runs_route(
+    client_org_id: str,
+    designated: bool | None = None,
+    scenario_id: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Completed runs belonging to this client org's participants — every
+    ActionRun row IS a completed run by construction (see
+    action_run_store.finalize's docstring: a row is written exactly once,
+    at run.end; an in-progress run lives only in the in-process
+    ActionRunStore, never here), so there's no separate "is it done yet"
+    filter to apply. `designated=false` (the common case) narrows to runs
+    not yet in any evidence session."""
+    client_org = await get_client_org_for_consulting_admin(db, current_user, client_org_id)
+    if client_org is None:
+        raise HTTPException(status_code=404, detail="Client org not found")
+
+    runs = await list_client_org_runs(db, client_org_id, designated=designated, scenario_id=scenario_id)
+    return await runs_with_participant_names(db, runs)
+
+
+@router.post("/client-orgs/{client_org_id}/evidence-sessions", response_model=EvidenceSessionOut, status_code=201)
+async def create_evidence_session(
+    client_org_id: str,
+    payload: EvidenceSessionCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Creates an empty session — no runs yet. Runs are added afterward via
+    POST .../runs, since designation happens on rows that already exist
+    ("compliance is an export, never an experience"): there's no reason a
+    session's creation and its run-designation should be the same
+    request, and separating them lets a consultant fix a session's title/
+    date before deciding which runs belong in it."""
+    client_org = await get_client_org_for_consulting_admin(db, current_user, client_org_id)
+    if client_org is None:
+        raise HTTPException(status_code=404, detail="Client org not found")
+
+    session = EvidenceSession(
+        client_org_id=client_org_id,
+        title=payload.title,
+        scenario_id=payload.scenario_id,
+        exercise_date=payload.exercise_date,
+        created_by_user_id=current_user.id,
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+    return session
+
+
+@router.get("/client-orgs/{client_org_id}/evidence-sessions", response_model=list[EvidenceSessionOut])
+async def list_client_org_evidence_sessions(
+    client_org_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    client_org = await get_client_org_for_consulting_admin(db, current_user, client_org_id)
+    if client_org is None:
+        raise HTTPException(status_code=404, detail="Client org not found")
+
+    result = await db.execute(
+        select(EvidenceSession).where(EvidenceSession.client_org_id == client_org_id)
+        .order_by(EvidenceSession.exercise_date.desc())
+    )
+    return list(result.scalars().all())
+
+
+@router.get("/evidence-sessions/{evidence_session_id}", response_model=EvidenceSessionDetailOut)
+async def get_evidence_session(
+    evidence_session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The session plus a lightweight per-run summary — outcome and score,
+    not the full merged timeline/collateral breakdown (see .../aggregate
+    for that)."""
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    result = await db.execute(select(ActionRun).where(ActionRun.evidence_session_id == evidence_session_id))
+    runs = list(result.scalars().all())
+    run_summaries = await runs_with_participant_names(db, runs)
+
+    return EvidenceSessionDetailOut(
+        id=session.id,
+        client_org_id=session.client_org_id,
+        title=session.title,
+        scenario_id=session.scenario_id,
+        exercise_date=session.exercise_date,
+        created_at=session.created_at,
+        runs=run_summaries,
+    )
+
+
+def _require_not_finalized(session: EvidenceSession) -> None:
+    """consultant_signoff is item 5's (not-yet-built) after-action stub
+    column — unused today, but this IS what "before it's finalised" means
+    once item 5 ships, so the check goes in now rather than being
+    forgotten later. Can never trigger yet since nothing sets it."""
+    if session.consultant_signoff is not None:
+        raise HTTPException(status_code=400, detail="Evidence session already finalized")
+
+
+@router.patch("/evidence-sessions/{evidence_session_id}", response_model=EvidenceSessionOut)
+async def update_evidence_session(
+    evidence_session_id: str,
+    payload: EvidenceSessionUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+    _require_not_finalized(session)
+
+    if payload.title is not None:
+        session.title = payload.title
+    if payload.scenario_id is not None:
+        session.scenario_id = payload.scenario_id
+    if payload.exercise_date is not None:
+        session.exercise_date = payload.exercise_date
+
+    await db.commit()
+    await db.refresh(session)
+    return session
+
+
+@router.post("/evidence-sessions/{evidence_session_id}/runs", response_model=MessageResponse)
+async def designate_runs_route(
+    evidence_session_id: str,
+    payload: DesignateRunsRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """All-or-nothing over the whole batch — see
+    app.services.cmmc_evidence.designate_runs's docstring. A run already
+    in a DIFFERENT session is rejected loudly (409), never silently
+    re-parented; a run already in THIS session is treated as a no-op."""
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+    _require_not_finalized(session)
+
+    errors = await designate_runs(db, session, payload.run_ids)
+    if errors:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "One or more runs failed validation; nothing was designated", "errors": errors},
+        )
+
+    await db.commit()
+    return MessageResponse(message=f"Designated {len(payload.run_ids)} run(s)")
+
+
+@router.delete("/evidence-sessions/{evidence_session_id}/runs/{run_id}", response_model=MessageResponse)
+async def remove_run_from_evidence_session(
+    evidence_session_id: str,
+    run_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+    _require_not_finalized(session)
+
+    run = await db.get(ActionRun, run_id)
+    if run is None or run.evidence_session_id != evidence_session_id:
+        raise HTTPException(status_code=404, detail="Run not found in this evidence session")
+
+    run.evidence_session_id = None
+    await db.commit()
+    return MessageResponse(message="Run removed from evidence session")
+
+
+@router.get("/evidence-sessions/{evidence_session_id}/aggregate", response_model=EvidenceSessionAggregateOut)
+async def get_evidence_session_aggregate(
+    evidence_session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    return await build_evidence_session_aggregate(db, session)

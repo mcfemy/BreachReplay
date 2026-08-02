@@ -84,12 +84,53 @@ async def get_evidence_session_scoped(
     owning ConsultingOrg, as a consultant_admin) — `None` otherwise,
     whether the row doesn't exist at all or exists but belongs to a tenant
     this user has no membership in. Callers must not distinguish those two
-    cases in what they show the user (see module docstring)."""
+    cases in what they show the user (see module docstring).
+
+    NOTE: this grants BOTH roles read access, which is correct for
+    whatever build-order item 5's client-facing sign-off eventually needs.
+    Build-order item 3 (designation) must NOT use this — see
+    get_evidence_session_for_consulting_admin below."""
     session = await db.get(EvidenceSession, evidence_session_id)
     if session is None:
         return None
 
     visible_client_org_ids = {org.id for org in await get_client_orgs_for_user(db, user)}
     if session.client_org_id not in visible_client_org_ids:
+        return None
+    return session
+
+
+async def get_client_org_for_consulting_admin(
+    db: AsyncSession, user: User, client_org_id: str,
+) -> Optional[ClientOrg]:
+    """None unless `user` is a consultant_admin of the ConsultingOrg that
+    owns this exact ClientOrg — the same check item 2's client-org
+    invitation route already did inline, factored out here since
+    build-order item 3 needs it in three places (list runs, create
+    session, list sessions), all consultant_admin-only."""
+    client_org = await db.get(ClientOrg, client_org_id)
+    if client_org is None:
+        return None
+    membership = await get_consulting_org_admin_membership(db, user, client_org.consulting_org_id)
+    if membership is None:
+        return None
+    return client_org
+
+
+async def get_evidence_session_for_consulting_admin(
+    db: AsyncSession, user: User, evidence_session_id: str,
+) -> Optional[EvidenceSession]:
+    """Consultant-admin-only variant of get_evidence_session_scoped above.
+    Build-order item 3 (designation) is deliberately consultant-only —
+    "compliance is an export, never an experience" means a
+    client_participant must get the exact same None a stranger would from
+    every item-3 route, not a scoped read. Every item-3 route that
+    operates on an existing EvidenceSession calls this, never the
+    broader helper above."""
+    session = await db.get(EvidenceSession, evidence_session_id)
+    if session is None:
+        return None
+    client_org = await get_client_org_for_consulting_admin(db, user, session.client_org_id)
+    if client_org is None:
         return None
     return session
