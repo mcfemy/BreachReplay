@@ -208,18 +208,31 @@ _CSS = """
     font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
     font-size: 10pt; line-height: 1.5;
   }
-  section { page-break-before: always; padding-top: 4px; }
-  section:first-child { page-break-before: avoid; }
-  h1 { font-size: 15pt; color: #0f172a; margin: 0 0 10px; padding-left: 12px; border-left: 4px solid #ef4444; }
-  p { margin: 0 0 8px; }
+  /* Sections flow continuously — no forced page-break-before. A pack with
+     little content (few participants, few lessons) should be short; only
+     the cover gets its own page (a letterhead convention, not a space-
+     filler). Real page breaks happen only where content actually runs
+     out of room, driven by Chromium's normal layout, not by section
+     count. break-inside: avoid keeps a table's header from being stranded
+     alone at the bottom of a page, separated from its own rows. */
+  section { padding-top: 10px; margin-top: 6px; border-top: 1px solid #e2e8f0; }
+  section:first-child { padding-top: 0; margin-top: 0; border-top: none; }
+  h1 { font-size: 14pt; color: #0f172a; margin: 0 0 8px; padding-left: 12px; border-left: 4px solid #ef4444; }
+  p { margin: 0 0 6px; }
   .note {
     font-size: 8.5pt; color: #64748b; font-style: italic;
     background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px;
-    padding: 8px 10px; margin: 8px 0 14px;
+    padding: 6px 10px; margin: 6px 0 10px;
   }
-  table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 6px 0 14px; }
+  /* No break-inside:avoid on the table itself — a long timeline/lessons
+     table should be allowed to split across pages between rows (its
+     default behaviour, with <thead> repeating on each page) rather than
+     being forced entirely onto its own page and wasting the space above
+     it. Only individual rows are kept intact. */
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 4px 0 10px; }
+  tr { break-inside: avoid; page-break-inside: avoid; }
   th, td {
-    border: 1px solid #e2e8f0; padding: 6px 8px; font-size: 8.5pt;
+    border: 1px solid #e2e8f0; padding: 4px 8px; font-size: 8.5pt;
     text-align: left; vertical-align: top; word-wrap: break-word; overflow-wrap: break-word;
   }
   th { background: #1e293b; color: #f1f5f9; font-weight: 700; }
