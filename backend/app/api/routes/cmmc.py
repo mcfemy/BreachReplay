@@ -15,14 +15,26 @@ inviting a peer, a consultant_admin inviting a client_participant) goes
 through the single `_issue_invite` helper, so the email-binding / single-
 use / expiry guarantees exist in exactly one place.
 
-Every item-3 route is consultant_admin-only — "compliance is an export,
-never an experience" (Femi's item-3 constraint) means a client_participant
-must get the same 404 a stranger would from every one of them, including
-the read-only ones. Enforced structurally via
-get_evidence_session_for_consulting_admin /
-get_client_org_for_consulting_admin (app/services/cmmc_access.py), which
-never grant a client_participant's membership as sufficient — never the
-broader get_evidence_session_scoped from item 1, which deliberately does.
+Every item-3 WRITE route (create/update session, designate/remove runs)
+is consultant_admin-only — "compliance is an export, never an experience"
+(Femi's item-3 constraint) means a client_participant must get the same
+404 a stranger would. Enforced via get_evidence_session_for_consulting_admin
+/ get_client_org_for_consulting_admin (app/services/cmmc_access.py), which
+never grant a client_participant's membership as sufficient.
+
+Item 5 deliberately WIDENS the two read routes (GET .../evidence-sessions/
+{id} and .../aggregate) to item 1's broader get_evidence_session_scoped —
+"the client attests the record is accurate" requires the client to be
+able to see it first. Every write route stays exactly as consultant-only
+as before; only reads opened up, and only to the session's own client
+org's participants. Item 5's own write routes split further: lessons/
+remediation stay consultant-authored (get_client_org_for_consulting_admin
+/ get_evidence_session_for_consulting_admin), while the two sign-off
+routes are each gated to the ONE role that attestation belongs to
+(get_consulting_org_admin_membership for consultant_signoff,
+get_client_participant_membership for client_signoff) — the first routes
+in this whole layer where a client_participant's own Membership grants a
+write action, not just a scoped read.
 """
 from __future__ import annotations
 
@@ -48,19 +60,40 @@ from app.schemas.cmmc import (
     EvidenceSessionDetailOut,
     EvidenceSessionOut,
     EvidenceSessionUpdate,
+    ExportReadinessOut,
     InviteCreate,
     InvitePreviewOut,
+    LessonCreate,
+    LessonOut,
+    LessonUpdate,
     NotificationMatrixEntryCreate,
     NotificationMatrixEntryOut,
     NotificationMatrixEntryUpdate,
+    RemediationItemCreate,
+    RemediationItemOut,
+    RemediationItemUpdate,
     RunSummaryOut,
+    SignoffOut,
 )
 from app.schemas.user import MessageResponse
 from app.services.cmmc_access import (
     get_client_org_for_consulting_admin,
     get_client_orgs_for_user,
+    get_client_participant_membership,
     get_consulting_org_admin_membership,
     get_evidence_session_for_consulting_admin,
+    get_evidence_session_scoped,
+)
+from app.services.cmmc_after_action import (
+    AfterActionError,
+    add_lesson,
+    add_remediation_item,
+    evidence_session_export_blockers,
+    record_signoff,
+    remove_lesson,
+    remove_remediation_item,
+    update_lesson,
+    update_remediation_item,
 )
 from app.services.cmmc_evidence import (
     build_evidence_session_aggregate,
@@ -364,8 +397,12 @@ async def get_evidence_session(
 ):
     """The session plus a lightweight per-run summary — outcome and score,
     not the full merged timeline/collateral breakdown (see .../aggregate
-    for that)."""
-    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    for that) — plus the AAR content (item 5). Readable by BOTH
+    consultant_admin and client_participant of this session
+    (get_evidence_session_scoped, not the consultant-only helper item 3's
+    write routes still use) — "the client attests the record is
+    accurate" requires being able to see it first."""
+    session = await get_evidence_session_scoped(db, current_user, evidence_session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Evidence session not found")
 
@@ -381,6 +418,10 @@ async def get_evidence_session(
         exercise_date=session.exercise_date,
         created_at=session.created_at,
         runs=run_summaries,
+        lessons_learned=session.lessons_learned,
+        remediation_items=session.remediation_items,
+        client_signoff=session.client_signoff,
+        consultant_signoff=session.consultant_signoff,
     )
 
 
@@ -471,7 +512,10 @@ async def get_evidence_session_aggregate(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    """Widened for item 5, same reasoning as get_evidence_session above:
+    "the record" a client_participant is attesting to includes the merged
+    timeline and per-participant outcomes, not just the lesson text."""
+    session = await get_evidence_session_scoped(db, current_user, evidence_session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Evidence session not found")
 
@@ -555,3 +599,220 @@ async def remove_client_org_notification_matrix_entry(
 
     await db.commit()
     return MessageResponse(message="Notification matrix entry removed")
+
+
+# ── Build-order item 5: after-action workflow ────────────────────────────────
+# Lessons/remediation stay consultant-authored (get_evidence_session_for_
+# consulting_admin) — the client's only WRITE action anywhere in this
+# layer is signing. See the two signoff routes below for the first place
+# a client_participant's own Membership grants a write, and
+# get_evidence_session/get_evidence_session_aggregate above for the
+# widened reads that make "attest to the record" possible.
+
+@router.post("/evidence-sessions/{evidence_session_id}/lessons", response_model=LessonOut, status_code=201)
+async def add_evidence_session_lesson(
+    evidence_session_id: str,
+    payload: LessonCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    try:
+        lesson = await add_lesson(
+            db, session,
+            text=payload.text,
+            anchor=payload.anchor.model_dump() if payload.anchor else None,
+            irp_incorporated=payload.irp_incorporated,
+            irp_note=payload.irp_note,
+            created_by=current_user,
+        )
+    except AfterActionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    await db.commit()
+    return lesson
+
+
+@router.patch("/evidence-sessions/{evidence_session_id}/lessons/{lesson_id}", response_model=LessonOut)
+async def update_evidence_session_lesson(
+    evidence_session_id: str,
+    lesson_id: str,
+    payload: LessonUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    # model_dump() already recurses LessonAnchorIn -> a plain dict when
+    # payload.anchor is set — update_lesson re-validates that raw dict
+    # against the session's actual runs (see validate_lesson_anchor),
+    # never trusting a client-supplied anchor as-is.
+    changes = payload.model_dump(exclude_unset=True)
+
+    try:
+        updated = await update_lesson(db, session, lesson_id, changes)
+    except AfterActionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    await db.commit()
+    return updated
+
+
+@router.delete("/evidence-sessions/{evidence_session_id}/lessons/{lesson_id}", response_model=MessageResponse)
+async def remove_evidence_session_lesson(
+    evidence_session_id: str,
+    lesson_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    try:
+        removed = remove_lesson(session, lesson_id)
+    except AfterActionError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not removed:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    await db.commit()
+    return MessageResponse(message="Lesson removed")
+
+
+@router.post("/evidence-sessions/{evidence_session_id}/remediation-items", response_model=RemediationItemOut, status_code=201)
+async def add_evidence_session_remediation_item(
+    evidence_session_id: str,
+    payload: RemediationItemCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deliberately not gated on sign-off state, unlike lessons — "track
+    remediation items to closure" is an ongoing process that continues
+    after the exercise and after sign-off; see cmmc_after_action's module
+    docstring."""
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    item = add_remediation_item(session, payload.model_dump(mode="json"))
+    await db.commit()
+    return item
+
+
+@router.patch("/evidence-sessions/{evidence_session_id}/remediation-items/{item_id}", response_model=RemediationItemOut)
+async def update_evidence_session_remediation_item(
+    evidence_session_id: str,
+    item_id: str,
+    payload: RemediationItemUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    changes = payload.model_dump(mode="json", exclude_unset=True)
+    updated = update_remediation_item(session, item_id, changes)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Remediation item not found")
+
+    await db.commit()
+    return updated
+
+
+@router.delete("/evidence-sessions/{evidence_session_id}/remediation-items/{item_id}", response_model=MessageResponse)
+async def remove_evidence_session_remediation_item(
+    evidence_session_id: str,
+    item_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    removed = remove_remediation_item(session, item_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Remediation item not found")
+
+    await db.commit()
+    return MessageResponse(message="Remediation item removed")
+
+
+@router.post("/evidence-sessions/{evidence_session_id}/signoff/consultant", response_model=SignoffOut)
+async def sign_evidence_session_as_consultant(
+    evidence_session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Consultant attests to facilitation. Any consultant_admin of the
+    owning ConsultingOrg may sign — not restricted to whoever created the
+    session, same scoping item 3's other consultant routes already use."""
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    try:
+        signoff = record_signoff(session, "consultant_signoff", current_user)
+    except AfterActionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    await db.commit()
+    return signoff
+
+
+@router.post("/evidence-sessions/{evidence_session_id}/signoff/client", response_model=SignoffOut)
+async def sign_evidence_session_as_client(
+    evidence_session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Client attests the record is accurate. Resolves the session via the
+    broad scoped-read first (so an unrelated user gets 404, not a
+    role-mismatch signal), then requires the caller specifically be a
+    client_participant of THIS session's client org — a consultant_admin
+    who can otherwise read this session gets the same 404 here, never a
+    403 that would confirm "you can see this, you're just the wrong
+    role."""
+    session = await get_evidence_session_scoped(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    membership = await get_client_participant_membership(db, current_user, session.client_org_id)
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    try:
+        signoff = record_signoff(session, "client_signoff", current_user)
+    except AfterActionError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    await db.commit()
+    return signoff
+
+
+@router.get("/evidence-sessions/{evidence_session_id}/export-readiness", response_model=ExportReadinessOut)
+async def get_evidence_session_export_readiness(
+    evidence_session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Femi's structural gate, read side: either legitimate role can check
+    readiness. Build-order item 6 (PDF generation) calls
+    evidence_session_export_blockers directly at export time — this route
+    is the same check, exposed so a UI can show "waiting on client
+    sign-off" ahead of actually trying to export."""
+    session = await get_evidence_session_scoped(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    blockers = evidence_session_export_blockers(session)
+    return ExportReadinessOut(ready=not blockers, missing=blockers)

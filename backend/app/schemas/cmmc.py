@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -91,8 +91,52 @@ class RunSummaryOut(BaseModel):
     created_at: datetime
 
 
+class LessonAnchorOut(BaseModel):
+    run_id: str
+    sequence_number: int
+    verb: str
+    target: Optional[str]
+    elapsed_seconds: int
+    participant_user_id: Optional[str]
+    participant_name: str
+
+
+class LessonOut(BaseModel):
+    id: str
+    text: str
+    anchor: Optional[LessonAnchorOut]
+    irp_incorporated: Optional[Literal["yes", "no", "n_a"]]
+    irp_note: Optional[str]
+    created_by_user_id: str
+    created_by_name: str
+    created_at: datetime
+
+
+class RemediationItemOut(BaseModel):
+    id: str
+    description: str
+    owner: str
+    due_date: datetime
+    status: Literal["open", "closed"]
+    closure_note: Optional[str]
+    created_at: datetime
+
+
+class SignoffOut(BaseModel):
+    signed_by_user_id: str
+    signed_by_name: str
+    signed_at: datetime
+
+
 class EvidenceSessionDetailOut(EvidenceSessionOut):
     runs: list[RunSummaryOut]
+    # Build-order item 5. Readable by both consultant_admin and
+    # client_participant of this session (see get_evidence_session_scoped)
+    # — the client needs to see exactly what they're attesting to.
+    lessons_learned: list[LessonOut]
+    remediation_items: list[RemediationItemOut]
+    client_signoff: Optional[SignoffOut]
+    consultant_signoff: Optional[SignoffOut]
 
 
 class DesignateRunsRequest(BaseModel):
@@ -189,3 +233,52 @@ class NotificationMatrixEntryOut(BaseModel):
     window: str
     last_validated: Optional[datetime]
     validation_note: Optional[str]
+
+
+# ── Build-order item 5: after-action workflow ───────────────────────────────
+
+class LessonAnchorIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: str
+    sequence_number: int
+
+
+class LessonCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=4000)
+    # Optional per the spec ("each optionally anchored to a moment in the
+    # run") — validated against the session's real runs/action_log at
+    # write time (app.services.cmmc_after_action.validate_lesson_anchor),
+    # not just stored as trusted freeform ids.
+    anchor: Optional[LessonAnchorIn] = None
+    irp_incorporated: Optional[Literal["yes", "no", "n_a"]] = None
+    irp_note: Optional[str] = Field(default=None, max_length=1000)
+
+
+class LessonUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: Optional[str] = Field(default=None, min_length=1, max_length=4000)
+    anchor: Optional[LessonAnchorIn] = None
+    irp_incorporated: Optional[Literal["yes", "no", "n_a"]] = None
+    irp_note: Optional[str] = Field(default=None, max_length=1000)
+
+
+class RemediationItemCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    description: str = Field(min_length=1, max_length=2000)
+    owner: str = Field(min_length=1, max_length=255)
+    due_date: datetime
+
+
+class RemediationItemUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    description: Optional[str] = Field(default=None, min_length=1, max_length=2000)
+    owner: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    due_date: Optional[datetime] = None
+    status: Optional[Literal["open", "closed"]] = None
+    closure_note: Optional[str] = Field(default=None, max_length=1000)
+
+
+class ExportReadinessOut(BaseModel):
+    ready: bool
+    missing: list[str]

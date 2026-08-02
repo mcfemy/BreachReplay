@@ -50,6 +50,24 @@ async def get_consulting_org_admin_membership(
     return result.scalar_one_or_none()
 
 
+async def get_client_participant_membership(
+    db: AsyncSession, user: User, client_org_id: str,
+) -> Optional[Membership]:
+    """Mirrors get_consulting_org_admin_membership's shape for the other
+    role — None unless `user` is specifically a client_participant of this
+    exact ClientOrg. Build-order item 5's client-signoff route is the
+    first place a client_participant's Membership grants a WRITE action,
+    not just scoped reads."""
+    result = await db.execute(
+        select(Membership).where(
+            Membership.user_id == user.id,
+            Membership.client_org_id == client_org_id,
+            Membership.role == "client_participant",
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_client_orgs_for_user(db: AsyncSession, user: User) -> list[ClientOrg]:
     """Every ClientOrg this user can legitimately see:
     - a consultant_admin sees every ClientOrg under their ConsultingOrg

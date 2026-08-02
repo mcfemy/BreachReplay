@@ -170,7 +170,13 @@ async def test_consultant_b_cannot_view_or_designate_into_consultant_a_evidence_
 
 # ── "compliance is an export, never an experience": no participant route ──
 
-async def test_client_participant_has_no_route_into_evidence_sessions(client, db, approved_scenario):
+async def test_client_participant_has_read_but_no_write_route_into_evidence_sessions(client, db, approved_scenario):
+    """Updated for build-order item 5: GET .../evidence-sessions/{id} and
+    .../aggregate deliberately widened to client_participant read access
+    ("the client attests the record is accurate" requires seeing it
+    first) — everything else (client-org-scoped list/create, session
+    update, run designation/removal) stays exactly as consultant-only as
+    item 3 shipped it. See app/api/routes/cmmc.py's module docstring."""
     _, _, org = await _make_consultant_admin(db)
     client_org = await _make_client_org(db, org)
     participant, participant_token = await _make_participant(db, client_org)
@@ -189,11 +195,11 @@ async def test_client_participant_has_no_route_into_evidence_sessions(client, db
         headers=headers,
     )).status_code == 404
     assert (await client.get(f"/api/v1/cmmc/client-orgs/{client_org.id}/evidence-sessions", headers=headers)).status_code == 404
-    assert (await client.get(f"/api/v1/cmmc/evidence-sessions/{session.id}", headers=headers)).status_code == 404
+    assert (await client.get(f"/api/v1/cmmc/evidence-sessions/{session.id}", headers=headers)).status_code == 200
     assert (await client.patch(f"/api/v1/cmmc/evidence-sessions/{session.id}", json={"title": "x"}, headers=headers)).status_code == 404
     assert (await client.post(f"/api/v1/cmmc/evidence-sessions/{session.id}/runs", json={"run_ids": ["x"]}, headers=headers)).status_code == 404
     assert (await client.delete(f"/api/v1/cmmc/evidence-sessions/{session.id}/runs/x", headers=headers)).status_code == 404
-    assert (await client.get(f"/api/v1/cmmc/evidence-sessions/{session.id}/aggregate", headers=headers)).status_code == 404
+    assert (await client.get(f"/api/v1/cmmc/evidence-sessions/{session.id}/aggregate", headers=headers)).status_code == 200
 
 
 # ── create / list / view / update ────────────────────────────────────────
