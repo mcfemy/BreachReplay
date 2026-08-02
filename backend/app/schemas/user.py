@@ -16,6 +16,12 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     full_name: Optional[str] = Field(default=None, max_length=100)
     organization_id: Optional[str] = Field(default=None, max_length=36)
+    # CMMC Evidence Layer invitation redemption (build-order item 2):
+    # register+redeem in one step, mirroring the organization_id pattern
+    # above. See app.services.cmmc_invites and the register() handler in
+    # app/api/routes/auth.py for the email-binding check this enables — a
+    # forwarded invite link must not grant access to a different email.
+    invite_token: Optional[str] = Field(default=None, max_length=128)
 
     @field_validator("password")
     @classmethod

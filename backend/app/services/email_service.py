@@ -213,6 +213,25 @@ associated with <strong style="color:#f1f5f9;">{to_email}</strong>.</p>
     return _send(to_email, subject, html)
 
 
+def send_cmmc_invite_email(to_email: str, org_name: str, role: str, invite_url: str) -> bool:
+    subject = f"You're invited to join {org_name} on BreachReplay"
+    role_display = "consultant admin" if role == "consultant_admin" else "client participant"
+    body = f"""
+<h2>You've Been Invited</h2>
+<p>You've been invited to join <strong style="color:#f1f5f9;">{org_name}</strong> on
+BreachReplay's CMMC Evidence Layer, as a <strong style="color:#f1f5f9;">{role_display}</strong>.</p>
+
+<a class="cta" href="{invite_url}">Accept Invitation →</a>
+
+<p style="font-size:11px; color:#475569;">
+  This link is valid for {settings.CMMC_INVITE_EXPIRE_MINUTES // 1440} days and can only be used by
+  {to_email}. If you weren't expecting this invitation, you can safely ignore this email.
+</p>
+"""
+    html = _HTML_WRAPPER.format(subject=subject, body=body, frontend_url=settings.FRONTEND_URL)
+    return _send(to_email, subject, html)
+
+
 def send_weekly_slack_digest_email(to_email: str, org_name: str, scenarios_ingested: int) -> bool:
     subject = f"BreachReplay Weekly Digest — {scenarios_ingested} New Scenarios"
     body = f"""

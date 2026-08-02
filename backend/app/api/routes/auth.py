@@ -93,6 +93,23 @@ async def register(request: Request, payload: UserCreate, db: AsyncSession = Dep
     result = await db.execute(select(User).where(User.email == payload.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Email already registered")
+
+    # CMMC Evidence Layer register+redeem in one step (build-order item 2):
+    # validated BEFORE the user is created, so a mismatched or expired
+    # token fails the whole registration rather than creating an
+    # orphaned, membership-less account. The email-binding check here is
+    # the actual protection against a forwarded invite link registering
+    # under a different address than the one invited.
+    invite = None
+    if payload.invite_token:
+        from app.services.cmmc_invites import emails_match, get_cmmc_invite
+
+        invite = await get_cmmc_invite(payload.invite_token)
+        if invite is None:
+            raise HTTPException(status_code=400, detail="Invite link is invalid or has expired")
+        if not emails_match(invite["email"], payload.email):
+            raise HTTPException(status_code=400, detail="This invite was issued to a different email address")
+
     user = User(
         email=payload.email,
         hashed_password=hash_password(payload.password),
@@ -101,6 +118,13 @@ async def register(request: Request, payload: UserCreate, db: AsyncSession = Dep
     )
     db.add(user)
     await db.flush()
+
+    if invite is not None:
+        from app.services.cmmc_invites import delete_cmmc_invite, redeem_invite_for_user
+
+        await redeem_invite_for_user(db, user, invite)
+        await delete_cmmc_invite(payload.invite_token)
+
     access_token = create_access_token({"sub": user.id})
     refresh_token = await create_refresh_token(str(user.id))
     await db.commit()

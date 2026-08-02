@@ -424,3 +424,26 @@ Proportionate Response or diegetic tool output — given both would need new
 game-design decisions (what collateral means for a live PvP match; what
 "real tool output" means for attacker-side actions like credential
 dumping), not just code reuse.
+
+## CMMC invitations have no audit trail — Redis-only, no DB row
+
+Flagged by Femi during item 2 (onboarding/invitation flow) design review.
+`app/services/cmmc_invites.py` stores invite tokens purely in Redis
+(`cmmc_invite:{token} -> JSON`, TTL via `CMMC_INVITE_EXPIRE_MINUTES`,
+deleted on redemption) — the same pattern as password-reset tokens. This
+satisfies every requirement actually asked for (email-bound, single-use,
+expiring) but means there is no way to answer "who invited whom, and
+when" once a token is redeemed or expires unredeemed — the payload is
+gone. For a product whose whole value proposition is compliance evidence,
+that gap may itself matter eventually (an auditor asking how a given
+client_participant got access, or a consultant_admin wanting to see/
+revoke their org's pending invites).
+
+Not fixed now because nothing in `PHASE_2_5_CMMC_EVIDENCE_SPEC_FINAL.md`
+or the approved item-2 design asks for invite listing, revocation, or
+audit history — building it speculatively would be scope beyond what was
+requested. If it's ever needed: add a lightweight `Invitation` DB row
+(token hash, not the raw token; email; role; org id; invited_by_user_id;
+created_at; redeemed_at nullable) alongside the existing Redis token
+rather than replacing it — Redis stays the fast single-use/expiry check,
+the DB row becomes the audit/list/revoke surface.

@@ -30,6 +30,26 @@ from app.models.membership import Membership
 from app.models.user import User
 
 
+async def get_consulting_org_admin_membership(
+    db: AsyncSession, user: User, consulting_org_id: str,
+) -> Optional[Membership]:
+    """None unless `user` is specifically a consultant_admin of this exact
+    ConsultingOrg — stricter than get_client_orgs_for_user, which also
+    returns orgs visible to client_participants. Build-order item 2's
+    invitation and client-org-creation routes are consultant_admin-only
+    actions; every route that needs "is this caller allowed to act as an
+    admin of org X" calls this once and 404s on None, rather than
+    re-deriving the query per route."""
+    result = await db.execute(
+        select(Membership).where(
+            Membership.user_id == user.id,
+            Membership.consulting_org_id == consulting_org_id,
+            Membership.role == "consultant_admin",
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_client_orgs_for_user(db: AsyncSession, user: User) -> list[ClientOrg]:
     """Every ClientOrg this user can legitimately see:
     - a consultant_admin sees every ClientOrg under their ConsultingOrg

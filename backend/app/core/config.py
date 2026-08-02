@@ -55,6 +55,7 @@ class Settings(BaseSettings):
 
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     PASSWORD_RESET_EXPIRE_MINUTES: int = 15
+    CMMC_INVITE_EXPIRE_MINUTES: int = 10080  # 7 days — a B2B onboarding window, not a same-session reset window
     FRONTEND_URL: str = "http://localhost:5173"
 
     SLACK_WEBHOOK_URL: Optional[str] = None
