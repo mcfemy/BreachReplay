@@ -1,7 +1,7 @@
 """
-Tests for the Phase 2.5 CMMC Evidence Layer's evidence pack PDF generation
+Tests for the Phase 2.5 CMMC Evidence Layer's evidence pack generation
 (build-order item 6): backend/app/services/cmmc_pdf.py and the
-GET /cmmc/evidence-sessions/{id}/pack route.
+GET /cmmc/evidence-sessions/{id}/pack (+ /pack/view) routes.
 
 Per Femi's approved design: dual sign-off is a hard, structural gate on
 generation (not a convention); the pack is scoped the same way item 5's
@@ -9,7 +9,18 @@ reads are (both consultant_admin and client_participant of the session's
 own client org); and the three known persistence gaps (tool_output,
 IOC identities, escalate targets) are marked "not evidenced by this
 exercise" via a structural control-mapping table, never padded.
+
+Rendering pivoted mid-item from reportlab to HTML + Playwright/Chromium
+after visual review found real defects (overlapping/overflowing table
+text, hard truncation, no brand identity) — same section structure and
+wording, different engine. Per Femi's explicit requirement, this file
+also carries a permanent determinism test: item 7 hashes this output, so
+a future Chromium/Playwright/pypdf upgrade that reintroduces
+non-determinism (Chromium embeds a live /CreationDate/ModDate by default;
+pypdf pins them) must fail CI immediately, not be discovered when hash
+verification starts failing in production.
 """
+import hashlib
 import uuid
 from datetime import datetime
 
@@ -21,7 +32,12 @@ from app.models.cmmc_org import ClientOrg, ConsultingOrg
 from app.models.evidence_session import EvidenceSession
 from app.models.membership import Membership
 from app.models.user import User
-from app.services.cmmc_pdf import build_control_mapping, build_pack_payload
+from app.services.cmmc_pdf import (
+    build_control_mapping,
+    build_pack_payload,
+    generate_evidence_pack_pdf,
+    render_evidence_pack_html,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -271,3 +287,64 @@ async def test_pack_payload_timeline_and_notifications_shape(db, approved_scenar
     assert payload["aggregate"]["timeline"]
     assert payload["aggregate"]["escalations"] == []  # no escalate verb in the fixture run
     assert payload["notification_matrix"] == []  # none declared
+
+
+# ── determinism — permanent guard, per Femi's explicit requirement ─────────
+
+async def test_pack_renders_deterministically(db, approved_scenario):
+    """item 7 hashes this PDF, so the same session data must produce
+    byte-identical output every time. Verified empirically during design
+    that Chromium's page.pdf() embeds a live /CreationDate and /ModDate by
+    default (the only non-deterministic fields found) and that pinning
+    them via pypdf in generate_evidence_pack_pdf fixes it — this test
+    makes that guarantee permanent so a future Chromium/Playwright/pypdf
+    upgrade that reintroduces non-determinism fails CI immediately."""
+    ctx = await _fully_signed_session(db, approved_scenario)
+    session = ctx["session"]
+    # Signing directly at the DB level (bypassing the HTTP routes) — this
+    # test is about renderer determinism, not the signoff flow itself.
+    session.consultant_signoff = {"signed_by_user_id": "u1", "signed_by_name": "Alex Rivera", "signed_at": "2026-01-01T00:00:00"}
+    session.client_signoff = {"signed_by_user_id": "u2", "signed_by_name": "Jane Doe", "signed_at": "2026-01-01T00:00:00"}
+    await db.commit()
+
+    payload = await build_pack_payload(db, session, ctx["org"], ctx["client_org"], approved_scenario)
+
+    pdf1 = await generate_evidence_pack_pdf(payload)
+    pdf2 = await generate_evidence_pack_pdf(payload)
+
+    assert hashlib.sha256(pdf1).hexdigest() == hashlib.sha256(pdf2).hexdigest()
+    assert pdf1 == pdf2
+
+
+# ── /pack/view (the HTML half — view before/instead of downloading) ────────
+
+async def test_pack_view_returns_html_with_download_link_and_honesty_notes(client, db, approved_scenario):
+    ctx = await _fully_signed_session(db, approved_scenario)
+    await client.post(f"{BASE}/{ctx['session'].id}/signoff/consultant", headers=auth_headers(ctx["consultant_token"]))
+    await client.post(f"{BASE}/{ctx['session'].id}/signoff/client", headers=auth_headers(ctx["participant_token"]))
+
+    resp = await client.get(f"{BASE}/{ctx['session'].id}/pack/view", headers=auth_headers(ctx["consultant_token"]))
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    body = resp.text
+    assert f"/cmmc/evidence-sessions/{ctx['session'].id}/pack" in body
+    assert "is not persisted and is not evidenced by this exercise" in " ".join(body.split())
+    assert "NIST SP 800-171 3.6.3" in body
+
+
+async def test_pack_view_blocked_without_both_signoffs(client, db, approved_scenario):
+    ctx = await _fully_signed_session(db, approved_scenario)
+    resp = await client.get(f"{BASE}/{ctx['session'].id}/pack/view", headers=auth_headers(ctx["consultant_token"]))
+    assert resp.status_code == 400
+
+
+async def test_pack_view_scoped_same_as_download(client, db, approved_scenario):
+    ctx = await _fully_signed_session(db, approved_scenario)
+    await client.post(f"{BASE}/{ctx['session'].id}/signoff/consultant", headers=auth_headers(ctx["consultant_token"]))
+    await client.post(f"{BASE}/{ctx['session'].id}/signoff/client", headers=auth_headers(ctx["participant_token"]))
+
+    _, other_consultant_token, _ = await _make_consultant_admin(db)
+    await db.commit()
+
+    resp = await client.get(f"{BASE}/{ctx['session'].id}/pack/view", headers=auth_headers(other_consultant_token))
+    assert resp.status_code == 404

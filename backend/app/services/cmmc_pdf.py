@@ -1,22 +1,33 @@
-"""Phase 2.5 CMMC Evidence Layer — evidence pack PDF generation (build-order
+"""Phase 2.5 CMMC Evidence Layer — evidence pack generation (build-order
 item 6).
 
-Reuses reportlab (already a dependency, per app/services/cert_service.py)
-but builds on `reportlab.platypus` (SimpleDocTemplate + flowables), not
-cert_service.py's raw `canvas` API — that API is right for a one-page,
-fixed-layout certificate; it gives no pagination or table layout for a
-12-section, variable-length report (a timeline can have dozens of rows).
+Rendering pipeline (pivoted from an initial reportlab version after visual
+review — see git history / the plan doc for why): HTML, styled with
+BreachReplay's actual established palette (reused verbatim from
+app/services/email_service.py's _HTML_WRAPPER — #0f172a navy, #1e293b
+card, #ef4444 red accent — not invented fresh for this feature), rendered
+to PDF via a real browser engine (Playwright + Chromium) rather than
+reportlab's flowable layout primitives. Real HTML tables wrap text within
+a cell by default, which is what reportlab's plain-string Table cells did
+not do — that was the actual cause of the overlapping/overflowing text
+in the first version, not a styling choice.
 
-Visual identity is deliberately NOT cert_service.py's dark, gamified
-badge look. Spec section 7's own instruction: "Tone: assessor-facing,
-plain, no marketing." A cert is a player-facing achievement; this is an
-audit document a third party has to actually read and trust. White
-background, black/gray text, and colour used only functionally (red for
-"Not Evidenced," matching how it's visually distinguished, never
-decoratively).
+`build_control_mapping`/`build_pack_payload` are pure data assembly,
+untouched by this pivot — completely rendering-engine-agnostic.
 
-Two deliberate honesty mechanisms, both reported and approved before this
-was written:
+Determinism (item 7 hashes this output): Chromium's page.pdf() embeds a
+live /CreationDate and /ModDate by default, verified empirically to be
+the ONLY source of non-determinism for identical input (diffed two runs
+of identical content down to exactly those two fields). Both are pinned
+to a fixed value via a pypdf post-processing pass in render_pdf_from_html
+— verified to produce byte-identical SHA-256 output across repeated runs.
+test_cmmc_evidence_pack.py's determinism test makes this permanent: a
+future Chromium/Playwright/pypdf upgrade that reintroduces non-determinism
+(a new metadata field, different font-subsetting order) fails CI
+immediately instead of silently breaking item 7's hash verification.
+
+Two deliberate honesty mechanisms, both reported and approved before item
+6 was first written, unchanged by this rendering pivot:
 - §8 Notifications renders the declared matrix and the escalation log as
   two SEPARATE tables, never joined — a merged table would visually imply
   a mapping the data doesn't support.
@@ -26,23 +37,13 @@ was written:
 """
 from __future__ import annotations
 
+import html as html_escape
 import uuid
 from datetime import datetime, timedelta
 from io import BytesIO
-from typing import Optional
 
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.lib.units import cm
-from reportlab.platypus import (
-    PageBreak,
-    Paragraph,
-    SimpleDocTemplate,
-    Spacer,
-    Table,
-    TableStyle,
-)
+from playwright.async_api import async_playwright
+from pypdf import PdfReader, PdfWriter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -53,10 +54,9 @@ from app.models.scenario import Scenario
 from app.services import action_engine
 from app.services.cmmc_evidence import build_evidence_session_aggregate, runs_with_participant_names
 
-_RED = colors.HexColor("#b91c1c")
-_GREEN = colors.HexColor("#15803d")
-_GRAY = colors.HexColor("#4b5563")
-_LIGHT_GRAY = colors.HexColor("#e5e7eb")
+# Pinned rather than "now" — the whole point is that regenerating the same
+# session's pack twice produces byte-identical output (see module docstring).
+_FIXED_PDF_METADATA_DATE = "D:20260101000000+00'00'"
 
 
 def build_control_mapping() -> list[dict]:
@@ -177,6 +177,18 @@ async def build_pack_payload(
 
 # ── rendering ────────────────────────────────────────────────────────────
 
+def _esc(value) -> str:
+    """Every payload string reaches real browser-parsed HTML now (unlike
+    reportlab's Paragraph, which never executed markup) — lesson text,
+    remediation descriptions, participant/org names are all user-supplied
+    content and MUST be escaped before going into the template. Never
+    build a cell/paragraph string by f-string-ing raw payload values
+    directly into the HTML below without going through this first."""
+    if value is None:
+        return ""
+    return html_escape.escape(str(value))
+
+
 def _fmt_dt(value) -> str:
     if value is None:
         return "-"
@@ -184,312 +196,479 @@ def _fmt_dt(value) -> str:
         try:
             value = datetime.fromisoformat(value)
         except ValueError:
-            return value
+            return _esc(value)
     return value.strftime("%B %d, %Y %H:%M UTC")
 
 
-def _styles():
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle("PackTitle", fontSize=20, leading=24, spaceAfter=6, fontName="Helvetica-Bold"))
-    styles.add(ParagraphStyle("SectionHeading", fontSize=14, leading=18, spaceBefore=14, spaceAfter=8, fontName="Helvetica-Bold"))
-    styles.add(ParagraphStyle("Body", fontSize=9.5, leading=13, textColor=colors.black))
-    styles.add(ParagraphStyle("Note", fontSize=8.5, leading=12, textColor=_GRAY, spaceAfter=8))
-    return styles
+_CSS = """
+  @page { size: A4; margin: 2.2cm 1.8cm; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0; color: #1e293b;
+    font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
+    font-size: 10pt; line-height: 1.5;
+  }
+  section { page-break-before: always; padding-top: 4px; }
+  section:first-child { page-break-before: avoid; }
+  h1 { font-size: 15pt; color: #0f172a; margin: 0 0 10px; padding-left: 12px; border-left: 4px solid #ef4444; }
+  p { margin: 0 0 8px; }
+  .note {
+    font-size: 8.5pt; color: #64748b; font-style: italic;
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px;
+    padding: 8px 10px; margin: 8px 0 14px;
+  }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 6px 0 14px; }
+  th, td {
+    border: 1px solid #e2e8f0; padding: 6px 8px; font-size: 8.5pt;
+    text-align: left; vertical-align: top; word-wrap: break-word; overflow-wrap: break-word;
+  }
+  th { background: #1e293b; color: #f1f5f9; font-weight: 700; }
+  tr:nth-child(even) td { background: #f8fafc; }
+  .evidenced-yes { color: #15803d; font-weight: 700; }
+  .evidenced-no { color: #b91c1c; font-weight: 700; }
+  .cover {
+    page-break-before: avoid; page-break-after: always;
+    background: #0f172a; color: #f1f5f9; margin: -2.2cm -1.8cm; padding: 4cm 3cm;
+    min-height: 100vh;
+  }
+  .cover .logo { font-size: 11pt; font-weight: 900; letter-spacing: 0.2em; color: #ef4444; text-transform: uppercase; margin-bottom: 24px; }
+  .cover h1 { border: none; padding: 0; color: #f1f5f9; font-size: 26pt; margin: 0 0 10px; }
+  .cover .subtitle { color: #cbd5e1; font-size: 12pt; margin-bottom: 28px; }
+  .cover .meta-row { color: #cbd5e1; font-size: 10pt; margin-bottom: 6px; }
+  .cover .meta-row b { color: #f1f5f9; }
+  .cover .cover-note {
+    margin-top: 32px; font-size: 9pt; color: #94a3b8; line-height: 1.6;
+    border-top: 1px solid #334155; padding-top: 16px;
+  }
+  .subheading { font-size: 10.5pt; font-weight: 700; color: #0f172a; margin: 14px 0 6px; }
+  .download-bar {
+    background: #1e293b; padding: 14px 20px; text-align: center;
+    position: sticky; top: 0; z-index: 10;
+  }
+  .download-bar a {
+    display: inline-block; background: #ef4444; color: #fff; text-decoration: none;
+    font-weight: 700; font-size: 11pt; padding: 10px 24px; border-radius: 6px;
+    letter-spacing: 0.02em;
+  }
+  @media print { .no-print { display: none !important; } }
+"""
 
 
-def _table(rows: list[list[str]], col_widths: Optional[list[float]] = None) -> Table:
-    t = Table(rows, colWidths=col_widths, repeatRows=1)
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), _LIGHT_GRAY),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#d1d5db")),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
-    return t
+def _cover_html(payload: dict) -> str:
+    consulting_name = _esc(payload["consulting_org"]["name"])
+    client_name = _esc(payload["client_org"]["name"])
+    return f"""
+<section class="cover">
+  <div class="logo">&#11043; BreachReplay</div>
+  <h1>CMMC Evidence Pack</h1>
+  <div class="subtitle">Prepared by {consulting_name} for {client_name}</div>
+  <div class="meta-row"><b>Exercise date:</b> {_esc(_fmt_dt(payload['session']['exercise_date']))}</div>
+  <div class="meta-row"><b>Controls addressed:</b> NIST SP 800-171 3.6.3</div>
+  <div class="meta-row"><b>Document ID:</b> {_esc(payload['document_id'])}</div>
+  <div class="cover-note">
+    This document is issued by BreachReplay for the exercise described within. It distinguishes
+    what this exercise directly evidences from what the organization declares — see the Control
+    Mapping section for a claim-by-claim account.
+  </div>
+</section>
+"""
 
 
-def _cover_section(payload: dict, styles) -> list:
-    consulting_name = payload["consulting_org"]["name"]
-    client_name = payload["client_org"]["name"]
-    story = [
-        Spacer(1, 3 * cm),
-        Paragraph("CMMC Evidence Pack", styles["PackTitle"]),
-        Paragraph(f"Prepared by {consulting_name} for {client_name}", styles["Body"]),
-        Spacer(1, 0.3 * cm),
-        Paragraph(f"Exercise date: {_fmt_dt(payload['session']['exercise_date'])}", styles["Body"]),
-        Paragraph("Controls addressed: NIST SP 800-171 3.6.3", styles["Body"]),
-        Paragraph(f"Document ID: {payload['document_id']}", styles["Body"]),
-        Spacer(1, 0.5 * cm),
-        Paragraph(
-            "This document is issued by BreachReplay for the exercise described below. "
-            "It distinguishes what this exercise directly evidences from what the "
-            "organization declares - see the Control Mapping section for a claim-by-claim account.",
-            styles["Note"],
-        ),
-    ]
-    return story
-
-
-def _exercise_summary_section(payload: dict, styles) -> list:
+def _exercise_summary_html(payload: dict) -> str:
     scenario = payload["scenario"]
-    citation = scenario["source_reference"] or scenario["source_url"] or "-"
-    story = [
-        Paragraph("Exercise Summary", styles["SectionHeading"]),
-        Paragraph(f"Scenario: {scenario['title']}", styles["Body"]),
-        Paragraph(f"Source: {scenario['source_type']} - {citation}", styles["Body"]),
-        Paragraph(f"Real-incident date: {_fmt_dt(scenario['incident_date'])}", styles["Body"]),
-        Paragraph(f"Session title: {payload['session']['title']}", styles["Body"]),
-        Spacer(1, 0.3 * cm),
-    ]
-    return story
+    citation = _esc(scenario["source_reference"] or scenario["source_url"] or "-")
+    return f"""
+<section>
+  <h1>Exercise Summary</h1>
+  <p><b>Scenario:</b> {_esc(scenario['title'])}</p>
+  <p><b>Source:</b> {_esc(scenario['source_type'])} - {citation}</p>
+  <p><b>Real-incident date:</b> {_esc(_fmt_dt(scenario['incident_date']))}</p>
+  <p><b>Session title:</b> {_esc(payload['session']['title'])}</p>
+  {_participants_html(payload)}
+</section>
+"""
 
 
-def _participants_section(payload: dict, styles) -> list:
-    rows = [["Participant", "Role", "Outcome"]]
-    for p in payload["aggregate"]["participants"]:
-        rows.append([p["participant_name"], "Client participant", p["outcome"]])
-    story = [Paragraph("Participants", styles["SectionHeading"]), _table(rows, [7 * cm, 5 * cm, 5 * cm])]
-    return story
+def _participants_html(payload: dict) -> str:
+    rows = "".join(
+        f"<tr><td>{_esc(p['participant_name'])}</td><td>Client participant</td><td>{_esc(p['outcome'])}</td></tr>"
+        for p in payload["aggregate"]["participants"]
+    )
+    return f"""
+  <div class="subheading">Participants</div>
+  <table>
+    <colgroup><col style="width:40%"><col style="width:30%"><col style="width:30%"></colgroup>
+    <thead><tr><th>Participant</th><th>Role</th><th>Outcome</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+"""
 
 
-def _timeline_section(payload: dict, styles) -> list:
-    story = [Paragraph("Timeline", styles["SectionHeading"])]
-    story.append(Paragraph(
-        "This timeline reflects every logged action and the scenario's attacker-stage "
-        "progression, reconstructed from recorded run data. The simulated tool output "
-        "shown to each participant during play (e.g., specific command output, log "
-        "excerpts) is not persisted and is not evidenced by this exercise.",
-        styles["Note"],
-    ))
-
-    rows = [["Time (elapsed)", "Participant", "Action"]]
-    for entry in payload["aggregate"]["timeline"]:
-        target = f" -> {entry['target']}" if entry.get("target") else ""
-        rows.append([
-            f"{entry['elapsed_seconds_in_run']}s",
-            entry["participant_name"],
-            f"{entry['verb']}{target}",
-        ])
-    story.append(_table(rows, [3 * cm, 6 * cm, 8 * cm]))
-    story.append(Spacer(1, 0.3 * cm))
-
-    story.append(Paragraph("Attacker stage progression (per participant, recomputed from the scenario and run seed)", styles["Body"]))
+def _timeline_html(payload: dict) -> str:
+    timeline_rows = "".join(
+        f"<tr><td>{entry['elapsed_seconds_in_run']}s</td><td>{_esc(entry['participant_name'])}</td>"
+        f"<td>{_esc(entry['verb'])}{' &rarr; ' + _esc(entry['target']) if entry.get('target') else ''}</td></tr>"
+        for entry in payload["aggregate"]["timeline"]
+    )
+    stage_blocks = []
     for run_stages in payload["attacker_stages"]:
-        story.append(Paragraph(run_stages["participant_name"], styles["Body"]))
-        stage_rows = [["Trigger (s)", "Kind", "MITRE", "Final", "Hosts compromised if uncontained"]]
-        for stage in run_stages["stages"]:
-            stage_rows.append([
-                str(stage["trigger_seconds"]),
-                stage["kind"],
-                stage["mitre_technique"] or "-",
-                "Yes" if stage["is_final"] else "No",
-                ", ".join(stage["compromised_hostnames"]) or "-",
-            ])
-        story.append(_table(stage_rows, [2.5 * cm, 3 * cm, 3 * cm, 2 * cm, 6.5 * cm]))
-        story.append(Spacer(1, 0.2 * cm))
-    return story
+        stage_rows = "".join(
+            f"<tr><td>{stage['trigger_seconds']}</td><td>{_esc(stage['kind'])}</td>"
+            f"<td>{_esc(stage['mitre_technique'] or '-')}</td><td>{'Yes' if stage['is_final'] else 'No'}</td>"
+            f"<td>{_esc(', '.join(stage['compromised_hostnames']) or '-')}</td></tr>"
+            for stage in run_stages["stages"]
+        )
+        stage_blocks.append(f"""
+  <p><i>{_esc(run_stages['participant_name'])}</i></p>
+  <table>
+    <colgroup><col style="width:14%"><col style="width:18%"><col style="width:16%"><col style="width:12%"><col style="width:40%"></colgroup>
+    <thead><tr><th>Trigger (s)</th><th>Kind</th><th>MITRE</th><th>Final</th><th>Hosts compromised if uncontained</th></tr></thead>
+    <tbody>{stage_rows}</tbody>
+  </table>
+""")
+    return f"""
+<section>
+  <h1>Timeline</h1>
+  <div class="note">
+    This timeline reflects every logged action and the scenario's attacker-stage progression,
+    reconstructed from recorded run data. The simulated tool output shown to each participant
+    during play (e.g., specific command output, log excerpts) is not persisted and is not
+    evidenced by this exercise.
+  </div>
+  <table>
+    <colgroup><col style="width:18%"><col style="width:32%"><col style="width:50%"></colgroup>
+    <thead><tr><th>Time (elapsed)</th><th>Participant</th><th>Action</th></tr></thead>
+    <tbody>{timeline_rows}</tbody>
+  </table>
+  <div class="subheading">Attacker stage progression (per participant, recomputed from the scenario and run seed)</div>
+  {''.join(stage_blocks)}
+</section>
+"""
 
 
-def _outcomes_section(payload: dict, styles) -> list:
-    story = [Paragraph("Outcomes", styles["SectionHeading"])]
+def _outcomes_html(payload: dict) -> str:
     dist = payload["aggregate"]["outcome_distribution"]
-    dist_str = ", ".join(f"{k}: {v}" for k, v in dist.items())
-    story.append(Paragraph(f"Session summary (distribution across {payload['aggregate']['participant_count']} participant(s)): {dist_str}", styles["Body"]))
-    story.append(Paragraph(
-        "No single session-level outcome is computed - a team's exercise produces "
-        "several independently graded outcomes; the distribution above is the complete answer.",
-        styles["Note"],
-    ))
+    dist_str = ", ".join(f"{_esc(k)}: {v}" for k, v in dist.items())
+    rows = "".join(
+        f"<tr><td>{_esc(p['participant_name'])}</td><td>{_esc(p['outcome'])}</td>"
+        f"<td>{p['total_score']} ({p['score_pct']}%)</td></tr>"
+        for p in payload["aggregate"]["participants"]
+    )
+    return f"""
+<section>
+  <h1>Outcomes</h1>
+  <p>Session summary (distribution across {payload['aggregate']['participant_count']} participant(s)): {dist_str}</p>
+  <div class="note">
+    No single session-level outcome is computed - a team's exercise produces several
+    independently graded outcomes; the distribution above is the complete answer.
+  </div>
+  <table>
+    <colgroup><col style="width:40%"><col style="width:30%"><col style="width:30%"></colgroup>
+    <thead><tr><th>Participant</th><th>Outcome</th><th>Score</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+  {_operational_impact_html(payload)}
+</section>
+"""
 
-    rows = [["Participant", "Outcome", "Score"]]
-    for p in payload["aggregate"]["participants"]:
-        rows.append([p["participant_name"], p["outcome"], f"{p['total_score']} ({p['score_pct']}%)"])
-    story.append(_table(rows, [7 * cm, 6 * cm, 4 * cm]))
-    return story
 
-
-def _operational_impact_section(payload: dict, styles) -> list:
-    story = [Paragraph("Operational Impact of the Response", styles["SectionHeading"])]
-    story.append(Paragraph(
-        f"Total avoidable collateral cost across the exercise: {payload['aggregate']['collateral_total_penalty']}.",
-        styles["Body"],
-    ))
-    rows = [["Participant", "Host", "Weight"]]
-    any_collateral = False
+def _operational_impact_html(payload: dict) -> str:
+    rows = []
     for p in payload["aggregate"]["participants"]:
         for host in p["collateral"]:
-            any_collateral = True
-            rows.append([p["participant_name"], host.get("hostname", host.get("host_id", "-")), str(host.get("weight", "-"))])
-    if any_collateral:
-        story.append(_table(rows, [6 * cm, 6 * cm, 5 * cm]))
-    else:
-        story.append(Paragraph("No systems were taken offline unnecessarily during this exercise.", styles["Body"]))
-    return story
+            rows.append(
+                f"<tr><td>{_esc(p['participant_name'])}</td>"
+                f"<td>{_esc(host.get('hostname', host.get('host_id', '-')))}</td>"
+                f"<td>{_esc(host.get('weight', '-'))}</td></tr>"
+            )
+    body = "".join(rows) if rows else '<tr><td colspan="3">No systems were taken offline unnecessarily during this exercise.</td></tr>'
+    return f"""
+  <div class="subheading">Operational Impact of the Response</div>
+  <p>Total avoidable collateral cost across the exercise: {payload['aggregate']['collateral_total_penalty']}.</p>
+  <table>
+    <colgroup><col style="width:35%"><col style="width:35%"><col style="width:30%"></colgroup>
+    <thead><tr><th>Participant</th><th>Host</th><th>Weight</th></tr></thead>
+    <tbody>{body}</tbody>
+  </table>
+"""
 
 
-def _evidence_discovered_section(payload: dict, styles) -> list:
-    story = [Paragraph("Evidence Discovered", styles["SectionHeading"])]
-    rows = [["Participant", "Indicators Found", "Indicators Total"]]
-    for p in payload["aggregate"]["participants"]:
-        rows.append([p["participant_name"], str(p["evidence_found"]), str(p["evidence_total"])])
-    story.append(_table(rows, [7 * cm, 5 * cm, 5 * cm]))
-    story.append(Paragraph(
-        "The identities of specific indicators discovered or missed are not evidenced "
-        "by this exercise; only aggregate counts are recorded.",
-        styles["Note"],
-    ))
-    return story
+def _evidence_discovered_html(payload: dict) -> str:
+    rows = "".join(
+        f"<tr><td>{_esc(p['participant_name'])}</td><td>{p['evidence_found']}</td><td>{p['evidence_total']}</td></tr>"
+        for p in payload["aggregate"]["participants"]
+    )
+    return f"""
+<section>
+  <h1>Evidence Discovered</h1>
+  <table>
+    <colgroup><col style="width:40%"><col style="width:30%"><col style="width:30%"></colgroup>
+    <thead><tr><th>Participant</th><th>Indicators Found</th><th>Indicators Total</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+  <div class="note">
+    The identities of specific indicators discovered or missed are not evidenced by this
+    exercise; only aggregate counts are recorded.
+  </div>
+  {_notifications_html(payload)}
+</section>
+"""
 
 
-def _notifications_section(payload: dict, styles) -> list:
-    story = [Paragraph("Notifications", styles["SectionHeading"])]
-
+def _notifications_html(payload: dict) -> str:
     matrix = payload["notification_matrix"]
-    story.append(Paragraph("Declared notification matrix", styles["Body"]))
     if matrix:
-        rows = [["Authority", "Basis", "Channel", "Window"]]
-        for entry in matrix:
-            rows.append([entry["authority"], entry["basis"], entry["channel"], entry["window"]])
-        story.append(_table(rows, [4 * cm, 5 * cm, 4 * cm, 4 * cm]))
+        matrix_rows = "".join(
+            f"<tr><td>{_esc(e['authority'])}</td><td>{_esc(e['basis'])}</td>"
+            f"<td>{_esc(e['channel'])}</td><td>{_esc(e['window'])}</td></tr>"
+            for e in matrix
+        )
+        matrix_html = f"""
+  <table>
+    <colgroup><col style="width:25%"><col style="width:30%"><col style="width:25%"><col style="width:20%"></colgroup>
+    <thead><tr><th>Authority</th><th>Basis</th><th>Channel</th><th>Window</th></tr></thead>
+    <tbody>{matrix_rows}</tbody>
+  </table>
+"""
     else:
-        story.append(Paragraph("No notification matrix has been declared for this client org.", styles["Body"]))
+        matrix_html = "<p>No notification matrix has been declared for this client org.</p>"
 
     escalations = payload["aggregate"]["escalations"]
     n = len(escalations)
-    story.append(Spacer(1, 0.3 * cm))
-    story.append(Paragraph("Escalations logged during this exercise", styles["Body"]))
     if n:
-        rows = [["Participant", "Elapsed time from exercise start"]]
-        for e in escalations:
-            rows.append([e["participant_name"], f"{e['elapsed_seconds_in_run']}s"])
-        story.append(_table(rows, [8 * cm, 9 * cm]))
-        story.append(Paragraph(
-            f"{n} escalation(s) occurred during this exercise (logged above: who, and elapsed "
-            "time from exercise start). This exercise does not evidence which declared authority, "
-            "channel, or obligation - if any - each escalation was directed to. The mapping "
-            "between escalation events and the organization's declared notification matrix "
-            "above is not evidenced by this exercise.",
-            styles["Note"],
-        ))
+        esc_rows = "".join(
+            f"<tr><td>{_esc(e['participant_name'])}</td><td>{e['elapsed_seconds_in_run']}s</td></tr>"
+            for e in escalations
+        )
+        esc_html = f"""
+  <table>
+    <colgroup><col style="width:50%"><col style="width:50%"></colgroup>
+    <thead><tr><th>Participant</th><th>Elapsed time from exercise start</th></tr></thead>
+    <tbody>{esc_rows}</tbody>
+  </table>
+  <div class="note">
+    {n} escalation(s) occurred during this exercise (logged above: who, and elapsed time from
+    exercise start). This exercise does not evidence which declared authority, channel, or
+    obligation - if any - each escalation was directed to. The mapping between escalation
+    events and the organization's declared notification matrix above is not evidenced by
+    this exercise.
+  </div>
+"""
     else:
-        story.append(Paragraph("No escalations were logged during this exercise.", styles["Body"]))
-    return story
+        esc_html = "<p>No escalations were logged during this exercise.</p>"
+
+    return f"""
+  <div class="subheading">Notifications</div>
+  <p>Declared notification matrix</p>
+  {matrix_html}
+  <p>Escalations logged during this exercise</p>
+  {esc_html}
+"""
 
 
-def _lessons_remediation_section(payload: dict, styles) -> list:
-    story = [Paragraph("Lessons Learned and Remediation", styles["SectionHeading"])]
+def _lessons_remediation_html(payload: dict) -> str:
+    lessons = payload["lessons_learned"]
+    if lessons:
+        lesson_items = []
+        for lesson in lessons:
+            anchor = lesson.get("anchor")
+            anchor_str = ""
+            if anchor:
+                anchor_str = (
+                    f" <i>(anchored to {_esc(anchor['participant_name'])}'s "
+                    f"{_esc(anchor['verb'])} at {anchor['elapsed_seconds']}s)</i>"
+                )
+            lesson_items.append(
+                f"<li>{_esc(lesson['text'])}{anchor_str}<br>"
+                f"<span style=\"color:#64748b;font-size:8.5pt;\">"
+                f"{_esc(lesson['created_by_name'])}, {_esc(_fmt_dt(lesson['created_at']))}</span></li>"
+            )
+        lessons_html = f"<ul style=\"padding-left:18px;\">{''.join(lesson_items)}</ul>"
+    else:
+        lessons_html = "<p>No lessons were recorded for this exercise.</p>"
 
-    story.append(Paragraph("Lessons learned", styles["Body"]))
-    for lesson in payload["lessons_learned"]:
-        anchor = lesson.get("anchor")
-        anchor_str = ""
-        if anchor:
-            anchor_str = f" (anchored to {anchor['participant_name']}'s {anchor['verb']} at {anchor['elapsed_seconds']}s)"
-        story.append(Paragraph(
-            f"- {lesson['text']}{anchor_str} - {lesson['created_by_name']}, {_fmt_dt(lesson['created_at'])}",
-            styles["Body"],
-        ))
-    if not payload["lessons_learned"]:
-        story.append(Paragraph("No lessons were recorded for this exercise.", styles["Body"]))
-
-    story.append(Spacer(1, 0.3 * cm))
-    story.append(Paragraph("Remediation items", styles["Body"]))
     items = payload["remediation_items"]
     if items:
-        rows = [["Description", "Owner", "Due", "Status"]]
-        for item in items:
-            rows.append([item["description"], item["owner"], _fmt_dt(item["due_date"]), item["status"]])
-        story.append(_table(rows, [7 * cm, 4 * cm, 4 * cm, 2 * cm]))
+        item_rows = "".join(
+            f"<tr><td>{_esc(item['description'])}</td><td>{_esc(item['owner'])}</td>"
+            f"<td>{_esc(_fmt_dt(item['due_date']))}</td><td>{_esc(item['status'])}</td></tr>"
+            for item in items
+        )
+        items_html = f"""
+  <table>
+    <colgroup><col style="width:45%"><col style="width:20%"><col style="width:20%"><col style="width:15%"></colgroup>
+    <thead><tr><th>Description</th><th>Owner</th><th>Due</th><th>Status</th></tr></thead>
+    <tbody>{item_rows}</tbody>
+  </table>
+"""
     else:
-        story.append(Paragraph("No remediation items were recorded for this exercise.", styles["Body"]))
-    return story
+        items_html = "<p>No remediation items were recorded for this exercise.</p>"
+
+    return f"""
+<section>
+  <h1>Lessons Learned and Remediation</h1>
+  <div class="subheading">Lessons learned</div>
+  {lessons_html}
+  <div class="subheading">Remediation items</div>
+  {items_html}
+  {_irp_linkage_html(payload)}
+</section>
+"""
 
 
-def _irp_linkage_section(payload: dict, styles) -> list:
-    story = [Paragraph("IRP Linkage", styles["SectionHeading"])]
-    story.append(Paragraph(f"IRP reference: {payload['irp_reference'] or 'not declared'}", styles["Body"]))
-    rows = [["Lesson", "Incorporated", "Note"]]
-    for lesson in payload["lessons_learned"]:
-        rows.append([lesson["text"][:60], lesson.get("irp_incorporated") or "not assessed", lesson.get("irp_note") or "-"])
-    if len(rows) > 1:
-        story.append(_table(rows, [8 * cm, 3 * cm, 6 * cm]))
+def _irp_linkage_html(payload: dict) -> str:
+    lessons = payload["lessons_learned"]
+    if lessons:
+        rows = "".join(
+            f"<tr><td>{_esc(lesson['text'])}</td><td>{_esc(lesson.get('irp_incorporated') or 'not assessed')}</td>"
+            f"<td>{_esc(lesson.get('irp_note') or '-')}</td></tr>"
+            for lesson in lessons
+        )
+        table_html = f"""
+  <table>
+    <colgroup><col style="width:50%"><col style="width:20%"><col style="width:30%"></colgroup>
+    <thead><tr><th>Lesson</th><th>Incorporated</th><th>Note</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+"""
     else:
-        story.append(Paragraph("No lessons to map against the IRP.", styles["Body"]))
-    story.append(Paragraph(
-        "IRP linkage is an attestation - recorded as declared by the organization, not independently verified.",
-        styles["Note"],
-    ))
-    return story
+        table_html = "<p>No lessons to map against the IRP.</p>"
+
+    return f"""
+  <div class="subheading">IRP Linkage</div>
+  <p>IRP reference: {_esc(payload['irp_reference'] or 'not declared')}</p>
+  {table_html}
+  <div class="note">
+    IRP linkage is an attestation - recorded as declared by the organization, not
+    independently verified.
+  </div>
+"""
 
 
-def _control_mapping_section(payload: dict, styles) -> list:
-    story = [Paragraph("Control Mapping", styles["SectionHeading"])]
-    rows = [["Control", "Claim", "Evidenced", "Note"]]
-    for row in payload["control_mapping"]:
-        rows.append([row["control"], row["claim"], "Yes" if row["evidenced"] else "No", row["note"]])
-    table = _table(rows, [2 * cm, 6 * cm, 2 * cm, 7 * cm])
-    # Colour the Evidenced column per-row — setStyle calls accumulate on
-    # top of _table()'s base style, they don't replace it.
-    for i, row in enumerate(payload["control_mapping"], start=1):
-        color = _GREEN if row["evidenced"] else _RED
-        table.setStyle(TableStyle([("TEXTCOLOR", (2, i), (2, i), color), ("FONTNAME", (2, i), (2, i), "Helvetica-Bold")]))
-    story.append(table)
-    return story
+def _control_mapping_html(payload: dict) -> str:
+    rows = "".join(
+        f"<tr><td>{_esc(row['control'])}</td><td>{_esc(row['claim'])}</td>"
+        f"<td class=\"{'evidenced-yes' if row['evidenced'] else 'evidenced-no'}\">"
+        f"{'Yes' if row['evidenced'] else 'No'}</td><td>{_esc(row['note'])}</td></tr>"
+        for row in payload["control_mapping"]
+    )
+    return f"""
+<section>
+  <h1>Control Mapping</h1>
+  <table>
+    <colgroup><col style="width:10%"><col style="width:38%"><col style="width:12%"><col style="width:40%"></colgroup>
+    <thead><tr><th>Control</th><th>Claim</th><th>Evidenced</th><th>Note</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+  {_attestation_html(payload)}
+</section>
+"""
 
 
-def _attestation_section(payload: dict, styles) -> list:
-    story = [Paragraph("Attestation and Signatures", styles["SectionHeading"])]
+def _attestation_html(payload: dict) -> str:
     client = payload["client_signoff"]
     consultant = payload["consultant_signoff"]
-    story.append(Paragraph(
-        f"Client attestation (record accuracy): {client['signed_by_name']}, {_fmt_dt(client['signed_at'])}",
-        styles["Body"],
-    ))
-    story.append(Paragraph(
-        f"Consultant attestation (facilitation): {consultant['signed_by_name']}, {_fmt_dt(consultant['signed_at'])}",
-        styles["Body"],
-    ))
-    story.append(Paragraph(
-        "This artifact was issued by BreachReplay for this session on this date. It does "
-        "not itself claim the organization's declarations are true - see Control Mapping.",
-        styles["Note"],
-    ))
-    return story
+    return f"""
+  <div class="subheading">Attestation and Signatures</div>
+  <p><b>Client attestation (record accuracy):</b> {_esc(client['signed_by_name'])}, {_esc(_fmt_dt(client['signed_at']))}</p>
+  <p><b>Consultant attestation (facilitation):</b> {_esc(consultant['signed_by_name'])}, {_esc(_fmt_dt(consultant['signed_at']))}</p>
+  <div class="note">
+    This artifact was issued by BreachReplay for this session on this date. It does not
+    itself claim the organization's declarations are true - see Control Mapping.
+  </div>
+"""
 
 
-def generate_evidence_pack_pdf(payload: dict) -> bytes:
-    buf = BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        topMargin=2 * cm, bottomMargin=2 * cm, leftMargin=2 * cm, rightMargin=2 * cm,
-        title="CMMC Evidence Pack",
-    )
-    styles = _styles()
+def render_evidence_pack_html(payload: dict, *, show_download_button: bool = False) -> str:
+    """The same 12 sections/wording as item 6's original reportlab version,
+    as HTML. `show_download_button` is only True for the human-facing
+    /pack/view route — the PDF-rendering path never wants that button in
+    the printed output (the .no-print CSS rule would hide it in print
+    media anyway, but omitting it outright keeps the PDF's HTML source
+    minimal and avoids depending on emulate_media doing the right thing)."""
+    download_bar = ""
+    if show_download_button:
+        download_bar = f"""
+<div class="download-bar no-print">
+  <a href="/api/v1/cmmc/evidence-sessions/{payload['aggregate']['evidence_session_id']}/pack">Download PDF</a>
+</div>
+"""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CMMC Evidence Pack</title>
+<style>{_CSS}</style>
+</head>
+<body>
+{download_bar}
+{_cover_html(payload)}
+{_exercise_summary_html(payload)}
+{_timeline_html(payload)}
+{_outcomes_html(payload)}
+{_evidence_discovered_html(payload)}
+{_lessons_remediation_html(payload)}
+{_control_mapping_html(payload)}
+</body>
+</html>
+"""
 
-    story: list = []
-    story += _cover_section(payload, styles)
-    story.append(PageBreak())
-    story += _exercise_summary_section(payload, styles)
-    story += _participants_section(payload, styles)
-    story.append(PageBreak())
-    story += _timeline_section(payload, styles)
-    story.append(PageBreak())
-    story += _outcomes_section(payload, styles)
-    story += _operational_impact_section(payload, styles)
-    story.append(PageBreak())
-    story += _evidence_discovered_section(payload, styles)
-    story += _notifications_section(payload, styles)
-    story.append(PageBreak())
-    story += _lessons_remediation_section(payload, styles)
-    story += _irp_linkage_section(payload, styles)
-    story.append(PageBreak())
-    story += _control_mapping_section(payload, styles)
-    story += _attestation_section(payload, styles)
 
-    doc.build(story)
-    return buf.getvalue()
+async def render_pdf_from_html(html: str) -> bytes:
+    """Playwright's ASYNC api, never the sync one — docker-compose.prod.yml
+    runs the backend with --workers 1 (Live Arena's in-process singleton
+    state requires it), so a blocking sync call during a ~1-3s render
+    would stall the entire app for every other user, not just the
+    requester. A fresh browser per request, not a kept-warm pool — this
+    is a low-frequency route; pooling is a legitimate future optimization
+    if pack-generation volume ever justifies the added lifecycle
+    complexity, not built now.
+
+    The pypdf pass at the end is not cleanup — it's the fix for the one
+    verified source of non-determinism (Chromium's live /CreationDate and
+    /ModDate), pinned to a fixed value so identical session data always
+    produces byte-identical output. See module docstring."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.set_content(html, wait_until="load")
+            await page.emulate_media(media="print")
+            pdf_bytes = await page.pdf(
+                format="A4",
+                print_background=True,
+                display_header_footer=True,
+                header_template="<div></div>",
+                footer_template=(
+                    '<div style="width:100%;font-size:7.5pt;color:#94a3b8;'
+                    'text-align:center;font-family:Arial,sans-serif;">'
+                    "BreachReplay CMMC Evidence Pack &middot; "
+                    '<span class="pageNumber"></span> / <span class="totalPages"></span>'
+                    "</div>"
+                ),
+                margin={"top": "2.2cm", "bottom": "1.6cm", "left": "1.8cm", "right": "1.8cm"},
+            )
+        finally:
+            await browser.close()
+
+    return _pin_pdf_metadata(pdf_bytes)
+
+
+def _pin_pdf_metadata(pdf_bytes: bytes) -> bytes:
+    reader = PdfReader(BytesIO(pdf_bytes))
+    writer = PdfWriter()
+    writer.append(reader)
+    writer.add_metadata({
+        "/CreationDate": _FIXED_PDF_METADATA_DATE,
+        "/ModDate": _FIXED_PDF_METADATA_DATE,
+        "/Producer": "BreachReplay",
+    })
+    out = BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+async def generate_evidence_pack_pdf(payload: dict) -> bytes:
+    html = render_evidence_pack_html(payload, show_download_button=False)
+    return await render_pdf_from_html(html)

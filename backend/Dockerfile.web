@@ -1,0 +1,34 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc libpq-dev && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1001 appuser
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Playwright's Chromium (the CMMC evidence-pack PDF renderer,
+# app/services/cmmc_pdf.py) needs both the browser binary and a handful of
+# shared libraries (fonts, libnss3, etc.) — `--with-deps` installs both via
+# apt-get, which needs root, so this runs BEFORE `USER appuser` below.
+# PLAYWRIGHT_BROWSERS_PATH is pinned to a fixed, explicitly-chowned path
+# rather than the default (~/.cache/ms-playwright, under whichever user's
+# $HOME ran the install) so the non-root appuser that actually serves
+# requests can read it at runtime.
+#
+# This is a SEPARATE Dockerfile from the plain `Dockerfile` docker-compose
+# still uses for `worker`/`beat` (docker-compose.prod.yml) — those are
+# Celery processes that never render PDFs, so they don't carry Chromium's
+# weight (~280MB) for nothing. Only the `backend` service builds this one.
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/pw-browsers
+RUN python -m playwright install --with-deps chromium
+
+COPY --chown=appuser:appuser . .
+RUN chown -R appuser:appuser /app/pw-browsers
+
+USER appuser
+
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
