@@ -50,6 +50,9 @@ from app.schemas.cmmc import (
     EvidenceSessionUpdate,
     InviteCreate,
     InvitePreviewOut,
+    NotificationMatrixEntryCreate,
+    NotificationMatrixEntryOut,
+    NotificationMatrixEntryUpdate,
     RunSummaryOut,
 )
 from app.schemas.user import MessageResponse
@@ -72,6 +75,12 @@ from app.services.cmmc_invites import (
     new_invite_token,
     redeem_invite_for_user,
     store_cmmc_invite,
+)
+from app.services.cmmc_notification_matrix import (
+    add_notification_matrix_entry,
+    list_notification_matrix,
+    remove_notification_matrix_entry,
+    update_notification_matrix_entry,
 )
 
 router = APIRouter(prefix="/cmmc", tags=["cmmc"])
@@ -467,3 +476,82 @@ async def get_evidence_session_aggregate(
         raise HTTPException(status_code=404, detail="Evidence session not found")
 
     return await build_evidence_session_aggregate(db, session)
+
+
+# ── Build-order item 4: notification matrix CRUD ────────────────────────────
+# Consultant_admin-only, same gating as every other CMMC route so far — the
+# spec doesn't say who maintains the matrix, and this matches how the
+# consultant already enters ClientOrg.poc_name/irp_reference on the
+# client's behalf rather than the client self-serving it. Easy to open up
+# to client-side read access later; not assumed here.
+
+@router.get("/client-orgs/{client_org_id}/notification-matrix", response_model=list[NotificationMatrixEntryOut])
+async def list_client_org_notification_matrix(
+    client_org_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    client_org = await get_client_org_for_consulting_admin(db, current_user, client_org_id)
+    if client_org is None:
+        raise HTTPException(status_code=404, detail="Client org not found")
+    return list_notification_matrix(client_org)
+
+
+@router.post("/client-orgs/{client_org_id}/notification-matrix", response_model=NotificationMatrixEntryOut, status_code=201)
+async def add_client_org_notification_matrix_entry(
+    client_org_id: str,
+    payload: NotificationMatrixEntryCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    client_org = await get_client_org_for_consulting_admin(db, current_user, client_org_id)
+    if client_org is None:
+        raise HTTPException(status_code=404, detail="Client org not found")
+
+    # mode="json": serializes last_validated (a datetime) to an ISO string
+    # before it goes into the JSONB list — the column has no custom JSON
+    # serializer configured (app/db/session.py), so a raw Python datetime
+    # object would fail to serialize on commit.
+    entry = add_notification_matrix_entry(client_org, payload.model_dump(mode="json"))
+    await db.commit()
+    return entry
+
+
+@router.patch("/client-orgs/{client_org_id}/notification-matrix/{entry_id}", response_model=NotificationMatrixEntryOut)
+async def update_client_org_notification_matrix_entry(
+    client_org_id: str,
+    entry_id: str,
+    payload: NotificationMatrixEntryUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    client_org = await get_client_org_for_consulting_admin(db, current_user, client_org_id)
+    if client_org is None:
+        raise HTTPException(status_code=404, detail="Client org not found")
+
+    changes = payload.model_dump(mode="json", exclude_unset=True)
+    updated = update_notification_matrix_entry(client_org, entry_id, changes)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Notification matrix entry not found")
+
+    await db.commit()
+    return updated
+
+
+@router.delete("/client-orgs/{client_org_id}/notification-matrix/{entry_id}", response_model=MessageResponse)
+async def remove_client_org_notification_matrix_entry(
+    client_org_id: str,
+    entry_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    client_org = await get_client_org_for_consulting_admin(db, current_user, client_org_id)
+    if client_org is None:
+        raise HTTPException(status_code=404, detail="Client org not found")
+
+    removed = remove_notification_matrix_entry(client_org, entry_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Notification matrix entry not found")
+
+    await db.commit()
+    return MessageResponse(message="Notification matrix entry removed")

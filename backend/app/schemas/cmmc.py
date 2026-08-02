@@ -154,3 +154,38 @@ class EvidenceSessionAggregateOut(BaseModel):
 class DesignationErrorOut(BaseModel):
     message: str
     errors: dict[str, str]
+
+
+# ── Build-order item 4: notification matrix CRUD ────────────────────────────
+# Field shape is the spec's own table (PHASE_2_5_CMMC_EVIDENCE_SPEC_FINAL.md
+# section 5): authority/basis/channel/window required, last_validated/
+# validation_note optional.
+
+class NotificationMatrixEntryCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    authority: str = Field(min_length=1, max_length=255)
+    basis: str = Field(min_length=1, max_length=255)
+    channel: str = Field(min_length=1, max_length=255)
+    window: str = Field(min_length=1, max_length=100)
+    last_validated: Optional[datetime] = None
+    validation_note: Optional[str] = Field(default=None, max_length=1000)
+
+
+class NotificationMatrixEntryUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    authority: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    basis: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    channel: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    window: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    last_validated: Optional[datetime] = None
+    validation_note: Optional[str] = Field(default=None, max_length=1000)
+
+
+class NotificationMatrixEntryOut(BaseModel):
+    id: str
+    authority: str
+    basis: str
+    channel: str
+    window: str
+    last_validated: Optional[datetime]
+    validation_note: Optional[str]
