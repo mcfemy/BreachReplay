@@ -39,6 +39,7 @@ write action, not just a scoped read.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,6 +49,7 @@ from app.models.action_run import ActionRun
 from app.models.cmmc_org import ClientOrg, ConsultingOrg
 from app.models.evidence_session import EvidenceSession
 from app.models.membership import Membership
+from app.models.scenario import Scenario
 from app.models.user import User
 from app.schemas.cmmc import (
     ClientOrgCreate,
@@ -115,6 +117,7 @@ from app.services.cmmc_notification_matrix import (
     remove_notification_matrix_entry,
     update_notification_matrix_entry,
 )
+from app.services.cmmc_pdf import build_pack_payload, generate_evidence_pack_pdf
 
 router = APIRouter(prefix="/cmmc", tags=["cmmc"])
 admin_router = APIRouter(prefix="/admin/cmmc", tags=["cmmc-admin"])
@@ -816,3 +819,45 @@ async def get_evidence_session_export_readiness(
 
     blockers = evidence_session_export_blockers(session)
     return ExportReadinessOut(ready=not blockers, missing=blockers)
+
+
+# ── Build-order item 6: evidence pack (PDF) ──────────────────────────────────
+
+@router.get("/evidence-sessions/{evidence_session_id}/pack")
+async def download_evidence_session_pack(
+    evidence_session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The one and only way to get a PDF — no draft/preview mode. Item 5's
+    hard gate applies here, structurally: evidence_session_export_blockers
+    is called before anything is rendered, and a non-empty result 400s
+    with exactly what's missing rather than generating a partial pack.
+    Scoped via get_evidence_session_scoped (both roles) — the client
+    should be able to download the artifact they attested to, same
+    reasoning as item 5's widened reads."""
+    session = await get_evidence_session_scoped(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    blockers = evidence_session_export_blockers(session)
+    if blockers:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Evidence session is not ready to export", "missing": blockers},
+        )
+
+    client_org = await db.get(ClientOrg, session.client_org_id)
+    consulting_org = await db.get(ConsultingOrg, client_org.consulting_org_id)
+    scenario = await db.get(Scenario, session.scenario_id)
+
+    payload = await build_pack_payload(db, session, consulting_org, client_org, scenario)
+    pdf_bytes = generate_evidence_pack_pdf(payload)
+
+    safe_title = session.title.replace(" ", "-")
+    filename = f"BreachReplay-Evidence-Pack-{safe_title}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
