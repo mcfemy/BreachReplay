@@ -47,8 +47,19 @@ services:
     # `pgdata` below across every redeploy. Still only a single-EC2-
     # instance safeguard, not off-site backup — logged to BACKLOG.md,
     # S3 is the eventual real answer.
+    #
+    # uploads_data fixes the exact same defect for the pre-existing
+    # ingestion feature (app/api/routes/ingestion.py, orgs.py), found as
+    # a side effect of investigating issued_packs' durability, confirmed
+    # for real via docker inspect (zero mounts) and an empty live
+    # UPLOAD_DIR after a redeploy — not the `backend/app/uploads/`
+    # directory baked into the image (that path is gitignored, never
+    # read by current code, and dead: UPLOAD_DIR defaults to
+    # /tmp/breachreplay_uploads, which is what was actually losing data).
+    # UPLOAD_DIR is set in .env.prod to point at this mount.
     volumes:
       - issued_packs_data:/app/issued_packs
+      - uploads_data:/app/uploads_data
     depends_on:
       db:
         condition: service_healthy
@@ -97,3 +108,4 @@ services:
 volumes:
   pgdata:
   issued_packs_data:
+  uploads_data:

@@ -478,31 +478,47 @@ nothing about the current, low issuance volume makes it urgent, and it
 adds real complexity (credentials, a new dependency, a migration path
 for whatever's already been issued by the time it's built).
 
-## `app/uploads/` (ingestion feature): confirmed non-durable for new runtime writes
+## `app/uploads/` (ingestion feature) durability — FIXED, and the original note here was imprecise about which directory was actually live
 
 Discovered as a side effect of investigating the issued-packs durability
-question above — not something item 7 introduced, a pre-existing gap.
+question above, initially logged as a hypothesis pointing at
+`backend/app/uploads/`. Follow-up investigation (before building the fix,
+not after) corrected that: `backend/app/uploads/` is **gitignored**
+(`.gitignore:119`, confirmed via `git ls-files` — zero tracked files) and
+**not read by any current code path** — `ingestion.py`/`orgs.py` both
+resolve their upload directory via `os.environ.get("UPLOAD_DIR",
+"/tmp/breachreplay_uploads")`, and `UPLOAD_DIR` was never set in
+`.env.prod`. The Jul-24-dated files sitting in `backend/app/uploads/` on
+the EC2 host are a dead, pre-refactor artifact — never deleted (not git-
+tracked, so `deploy.ps1`'s rsync never touches it either way) and quietly
+re-baked into every image via `COPY . .` (which copies whatever exists in
+the build context regardless of gitignore status), but genuinely inert:
+confirmed zero `BreachDocument`/`Scenario` rows reference any file under
+it, and zero rows reference a `/tmp/breachreplay_uploads` path either
+(the ingestion feature has apparently never been used against production
+yet). Checked directly rather than assumed, given the difference between
+"dead legacy directory" and "live feature losing real data" matters.
 
-`deploy.ps1`'s rsync step excludes `app/uploads/` from being overwritten
-by each deploy's freshly-extracted git archive, which looks at first
-glance like a working persistence mechanism (and IS why the existing
-Jul-24-dated files in there survive redeploy after redeploy). But
-`docker inspect` on the production `backend` container confirms zero
-volume/bind mounts — meaning those files persist ONLY because they were
-seeded directly on the EC2 host once and get re-baked into every new
-Docker image via `COPY --chown=appuser:appuser . .` at build time, not
-because live writes from a running container are protected in any way.
+The REAL live path, `/tmp/breachreplay_uploads`, had the defect: `docker
+inspect` confirmed zero volume/bind mounts on `backend`, and `/tmp`
+inside a container is part of its ephemeral writable layer — wiped on
+every restart, and (unlike `backend/app/uploads/`) never protected by
+the rsync-exclude/image-rebuild cycle either, since it sits outside the
+git-tracked source tree entirely. Confirmed empty immediately after a
+real redeploy.
 
-A genuinely NEW document uploaded by a real user today, via the actual
-ingestion feature, would be written into the running container's own
-ephemeral filesystem layer — which never reaches the host at all (no
-mount to copy it back through) — and would be silently, permanently lost
-the moment the container is next recreated (i.e., the very next deploy).
-Not verified against a live user-facing upload end-to-end (would require
-either touching real production data through the actual feature or a
-higher-risk write test not worth doing as a side investigation), but the
-`docker inspect` evidence and the deploy mechanics involved leave little
-room for another explanation. Needs the same fix pattern applied to
-`issued_evidence_packs` in item 7: a real Docker named volume for
-`app/uploads/` (or wherever `UPLOAD_DIR` resolves to in production),
-before anyone relies on a document surviving past the next deploy.
+**Fixed**: same named-volume pattern as `issued_evidence_packs` (item 7)
+— a new `uploads_data` Docker volume mounted at `/app/uploads_data`
+(`docker-compose.prod.yml`, `backend` service only — `worker`/`beat`
+never serve upload routes), `mkdir -p /app/uploads_data && chown -R
+appuser:appuser` in `Dockerfile.web` (fresh volumes mount root-owned
+otherwise — the exact bug hit and fixed during item 7's own
+verification), and `UPLOAD_DIR=/app/uploads_data` set in `.env.prod`. No
+application code changes needed — `ingestion.py`/`orgs.py` already read
+`UPLOAD_DIR` from the environment correctly; this was purely an infra
+gap. Verified surviving a real redeploy the same way `issued_packs_data`
+was. The dead `backend/app/uploads/` directory and its 20 orphaned files
+are unaffected and still gitignored/unreferenced — not cleaned up as
+part of this fix, since removing committed-adjacent server state
+unilaterally is a separate, lower-stakes decision, not a durability
+question.

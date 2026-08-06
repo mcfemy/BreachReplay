@@ -40,6 +40,14 @@ RUN chown -R appuser:appuser /app/pw-browsers
 # volume alone was sufficient.
 RUN mkdir -p /app/issued_packs && chown -R appuser:appuser /app/issued_packs
 
+# Same fix, same reasoning, for the pre-existing ingestion feature
+# (app/api/routes/ingestion.py, orgs.py) — its UPLOAD_DIR defaults to
+# /tmp/breachreplay_uploads, which is not just root-owned but genuinely
+# ephemeral (wiped on every container restart, not only recreation) and
+# was never protected by anything. .env.prod points UPLOAD_DIR at this
+# mount instead.
+RUN mkdir -p /app/uploads_data && chown -R appuser:appuser /app/uploads_data
+
 USER appuser
 
 EXPOSE 8000
