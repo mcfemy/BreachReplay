@@ -28,6 +28,18 @@ RUN python -m playwright install --with-deps chromium
 COPY --chown=appuser:appuser . .
 RUN chown -R appuser:appuser /app/pw-browsers
 
+# The issued_packs_data named volume (docker-compose.prod.yml) mounts at
+# this exact path. Docker only auto-populates a freshly-created volume's
+# ownership from what already exists in the image at the mount point — if
+# /app/issued_packs doesn't exist here, a fresh volume mounts as
+# root:root, and the non-root appuser this container actually runs as
+# (USER appuser, below) can't write to it. Confirmed the hard way: the
+# first deploy of this volume mounted root-owned and appuser got
+# "Permission denied" on its first real write, caught by testing the
+# actual persistence mechanism end-to-end rather than assuming a named
+# volume alone was sufficient.
+RUN mkdir -p /app/issued_packs && chown -R appuser:appuser /app/issued_packs
+
 USER appuser
 
 EXPOSE 8000
