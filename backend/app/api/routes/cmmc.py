@@ -38,7 +38,7 @@ write action, not just a scoped read.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,6 +55,8 @@ from app.models.membership import Membership
 from app.models.scenario import Scenario
 from app.models.user import User
 from app.schemas.cmmc import (
+    BrandingOut,
+    BrandingUpdate,
     ClientOrgCreate,
     ClientOrgOut,
     ConsultingOrgCreate,
@@ -117,6 +119,7 @@ from app.services.cmmc_invites import (
     redeem_invite_for_user,
     store_cmmc_invite,
 )
+from app.services.cmmc_branding import InvalidLogoError, remove_logo, save_logo, update_tagline, validate_and_normalize_logo
 from app.services.cmmc_issuance import get_issued_pack, issue_pack, verify_pack
 from app.services.cmmc_notification_matrix import (
     add_notification_matrix_entry,
@@ -615,6 +618,93 @@ async def remove_client_org_notification_matrix_entry(
 
     await db.commit()
     return MessageResponse(message="Notification matrix entry removed")
+
+
+# ── Build-order item 8: consultant branding ─────────────────────────────────
+# Logo + text only, no accent colors — see app/services/cmmc_branding.py's
+# module docstring for the full reasoning (real content-type validation,
+# storage path, the embed-at-issuance guarantee). All four routes are
+# consultant_admin-only, scoped to their OWN ConsultingOrg via
+# get_consulting_org_admin_membership — mirrors every other org-settings
+# route in this file (e.g. the notification-matrix routes above).
+
+async def _get_own_consulting_org(db: AsyncSession, current_user: User, consulting_org_id: str) -> ConsultingOrg:
+    membership = await get_consulting_org_admin_membership(db, current_user, consulting_org_id)
+    if membership is None:
+        raise HTTPException(status_code=404, detail="Consulting org not found")
+    consulting_org = await db.get(ConsultingOrg, consulting_org_id)
+    if consulting_org is None:
+        raise HTTPException(status_code=404, detail="Consulting org not found")
+    return consulting_org
+
+
+@router.get("/consulting-orgs/{consulting_org_id}/branding", response_model=BrandingOut)
+async def get_consulting_org_branding(
+    consulting_org_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    consulting_org = await _get_own_consulting_org(db, current_user, consulting_org_id)
+    branding = consulting_org.branding or {}
+    return BrandingOut(
+        tagline=branding.get("tagline"),
+        has_logo=bool(branding.get("logo_path")),
+        logo_content_type=branding.get("logo_content_type"),
+    )
+
+
+@router.patch("/consulting-orgs/{consulting_org_id}/branding", response_model=BrandingOut)
+async def update_consulting_org_branding(
+    consulting_org_id: str,
+    payload: BrandingUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    consulting_org = await _get_own_consulting_org(db, current_user, consulting_org_id)
+    update_tagline(consulting_org, payload.tagline)
+    await db.commit()
+    branding = consulting_org.branding or {}
+    return BrandingOut(
+        tagline=branding.get("tagline"),
+        has_logo=bool(branding.get("logo_path")),
+        logo_content_type=branding.get("logo_content_type"),
+    )
+
+
+@router.post("/consulting-orgs/{consulting_org_id}/branding/logo", response_model=BrandingOut, status_code=201)
+async def upload_consulting_org_logo(
+    consulting_org_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    consulting_org = await _get_own_consulting_org(db, current_user, consulting_org_id)
+    raw = await file.read()
+    try:
+        content, content_type = validate_and_normalize_logo(raw)
+    except InvalidLogoError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    save_logo(consulting_org, content, content_type)
+    await db.commit()
+    branding = consulting_org.branding or {}
+    return BrandingOut(
+        tagline=branding.get("tagline"),
+        has_logo=bool(branding.get("logo_path")),
+        logo_content_type=branding.get("logo_content_type"),
+    )
+
+
+@router.delete("/consulting-orgs/{consulting_org_id}/branding/logo", response_model=MessageResponse)
+async def delete_consulting_org_logo(
+    consulting_org_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    consulting_org = await _get_own_consulting_org(db, current_user, consulting_org_id)
+    remove_logo(consulting_org)
+    await db.commit()
+    return MessageResponse(message="Logo removed")
 
 
 # ── Build-order item 5: after-action workflow ────────────────────────────────

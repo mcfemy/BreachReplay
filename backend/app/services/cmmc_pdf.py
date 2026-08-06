@@ -52,6 +52,7 @@ from app.models.cmmc_org import ClientOrg, ConsultingOrg
 from app.models.evidence_session import EvidenceSession
 from app.models.scenario import Scenario
 from app.services import action_engine
+from app.services.cmmc_branding import logo_data_uri
 from app.services.cmmc_evidence import build_evidence_session_aggregate, runs_with_participant_names
 
 # Pinned rather than "now" — the whole point is that regenerating the same
@@ -115,7 +116,16 @@ async def build_pack_payload(
     data already persisted by items 1-5 — no new instrumentation. Attacker
     stage progression is recomputed here (not stored anywhere) via
     action_engine.compile_scenario(scenario, run.seed) — a verified-pure
-    function of data already on the ActionRun/Scenario rows."""
+    function of data already on the ActionRun/Scenario rows.
+
+    Build-order item 8: logo_data_uri(consulting_org) reads whatever logo
+    is CURRENTLY on disk at the moment this function runs. Since item 7's
+    issuance lifecycle calls this exactly once per issued pack (never
+    again — issued bytes are stored and re-served, not re-rendered), the
+    logo captured here is frozen into that pack forever, even if the
+    org's logo is later replaced or removed. No special-casing needed —
+    this is item 7's existing "compute once, freeze forever" discipline,
+    just fed a logo instead of session data."""
     aggregate = await build_evidence_session_aggregate(db, session)
 
     runs_result = await db.execute(select(ActionRun).where(ActionRun.evidence_session_id == session.id))
@@ -149,7 +159,12 @@ async def build_pack_payload(
 
     return {
         "document_id": str(uuid.uuid4()),
-        "consulting_org": {"name": consulting_org.name, "branding": consulting_org.branding},
+        "consulting_org": {
+            "name": consulting_org.name,
+            "branding": consulting_org.branding,
+            "tagline": (consulting_org.branding or {}).get("tagline"),
+            "logo_data_uri": logo_data_uri(consulting_org),
+        },
         "client_org": {"name": client_org.name},
         "scenario": {
             "title": scenario.title,
@@ -253,6 +268,8 @@ _CSS = """
     margin-top: 32px; font-size: 9pt; color: #94a3b8; line-height: 1.6;
     border-top: 1px solid #334155; padding-top: 16px;
   }
+  .cover .consultant-logo { max-height: 56px; max-width: 220px; margin-bottom: 18px; display: block; }
+  .cover .consultant-tagline { color: #94a3b8; font-size: 10pt; font-style: italic; margin-bottom: 28px; }
   .subheading { font-size: 10.5pt; font-weight: 700; color: #0f172a; margin: 14px 0 6px; }
   .download-bar {
     background: #1e293b; padding: 14px 20px; text-align: center;
@@ -270,11 +287,22 @@ _CSS = """
 def _cover_html(payload: dict) -> str:
     consulting_name = _esc(payload["consulting_org"]["name"])
     client_name = _esc(payload["client_org"]["name"])
+    logo_data_uri = payload["consulting_org"].get("logo_data_uri")
+    tagline = payload["consulting_org"].get("tagline")
+    # Logo + optional tagline only — no accent colors, no other cover
+    # styling changes (build-order item 8, scope confirmed explicitly:
+    # "the plain assessor-facing document stays"). Both are optional; a
+    # pack for a consulting org with no branding configured renders
+    # exactly as it did before item 8.
+    logo_html = f'<img class="consultant-logo" src="{_esc(logo_data_uri)}" alt="{consulting_name} logo">' if logo_data_uri else ""
+    tagline_html = f'<div class="consultant-tagline">{_esc(tagline)}</div>' if tagline else ""
     return f"""
 <section class="cover">
   <div class="logo">&#11043; BreachReplay</div>
+  {logo_html}
   <h1>CMMC Evidence Pack</h1>
   <div class="subtitle">Prepared by {consulting_name} for {client_name}</div>
+  {tagline_html}
   <div class="meta-row"><b>Exercise date:</b> {_esc(_fmt_dt(payload['session']['exercise_date']))}</div>
   <div class="meta-row"><b>Controls addressed:</b> NIST SP 800-171 3.6.3</div>
   <div class="meta-row"><b>Document ID:</b> {_esc(payload['document_id'])}</div>

@@ -310,3 +310,16 @@ class PublicKeyOut(BaseModel):
     key_id: str
     public_key_b64: str
     algorithm: str
+
+
+# ── Build-order item 8: consultant branding ─────────────────────────────────
+
+class BrandingUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tagline: Optional[str] = Field(default=None, max_length=255)
+
+
+class BrandingOut(BaseModel):
+    tagline: Optional[str]
+    has_logo: bool
+    logo_content_type: Optional[str]
