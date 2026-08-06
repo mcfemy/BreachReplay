@@ -140,17 +140,21 @@ async def _fully_signed_session(db, approved_scenario):
 # ── the structural gate ─────────────────────────────────────────────────────
 
 async def test_pack_blocked_without_both_signoffs(client, db, approved_scenario):
+    """Build-order item 7 moved the dual-signoff export-readiness gate
+    from the download route onto /pack/issue (see test_cmmc_signing.py's
+    test_issue_blocked_without_both_signoffs for that gate itself) —
+    /pack now just serves whatever's been issued, so with nothing issued
+    yet (because nothing CAN be issued yet) it 404s the same as it would
+    for any other not-yet-issued session."""
     ctx = await _fully_signed_session(db, approved_scenario)
     headers = auth_headers(ctx["consultant_token"])
 
     resp = await client.get(f"{BASE}/{ctx['session'].id}/pack", headers=headers)
-    assert resp.status_code == 400
-    assert set(resp.json()["detail"]["missing"]) == {"client_signoff", "consultant_signoff"}
+    assert resp.status_code == 404
 
     await client.post(f"{BASE}/{ctx['session'].id}/signoff/consultant", headers=headers)
     resp2 = await client.get(f"{BASE}/{ctx['session'].id}/pack", headers=headers)
-    assert resp2.status_code == 400
-    assert resp2.json()["detail"]["missing"] == ["client_signoff"]
+    assert resp2.status_code == 404
 
 
 async def test_pack_generates_after_both_signoffs(client, db, approved_scenario):
@@ -160,6 +164,8 @@ async def test_pack_generates_after_both_signoffs(client, db, approved_scenario)
 
     await client.post(f"{BASE}/{ctx['session'].id}/signoff/consultant", headers=consultant_headers)
     await client.post(f"{BASE}/{ctx['session'].id}/signoff/client", headers=participant_headers)
+    issue_resp = await client.post(f"{BASE}/{ctx['session'].id}/pack/issue", headers=consultant_headers)
+    assert issue_resp.status_code == 201, issue_resp.text
 
     resp = await client.get(f"{BASE}/{ctx['session'].id}/pack", headers=consultant_headers)
     assert resp.status_code == 200
@@ -201,6 +207,7 @@ async def test_pack_pdf_text_contains_honesty_notes(client, db, approved_scenari
 
     await client.post(f"{BASE}/{ctx['session'].id}/signoff/consultant", headers=auth_headers(ctx["consultant_token"]))
     await client.post(f"{BASE}/{ctx['session'].id}/signoff/client", headers=auth_headers(ctx["participant_token"]))
+    await client.post(f"{BASE}/{ctx['session'].id}/pack/issue", headers=auth_headers(ctx["consultant_token"]))
 
     resp = await client.get(f"{BASE}/{ctx['session'].id}/pack", headers=auth_headers(ctx["consultant_token"]))
     assert resp.status_code == 200
@@ -224,6 +231,7 @@ async def test_pack_downloadable_by_client_participant_too(client, db, approved_
     ctx = await _fully_signed_session(db, approved_scenario)
     await client.post(f"{BASE}/{ctx['session'].id}/signoff/consultant", headers=auth_headers(ctx["consultant_token"]))
     await client.post(f"{BASE}/{ctx['session'].id}/signoff/client", headers=auth_headers(ctx["participant_token"]))
+    await client.post(f"{BASE}/{ctx['session'].id}/pack/issue", headers=auth_headers(ctx["consultant_token"]))
 
     resp = await client.get(f"{BASE}/{ctx['session'].id}/pack", headers=auth_headers(ctx["participant_token"]))
     assert resp.status_code == 200

@@ -447,3 +447,62 @@ requested. If it's ever needed: add a lightweight `Invitation` DB row
 created_at; redeemed_at nullable) alongside the existing Redis token
 rather than replacing it — Redis stays the fast single-use/expiry check,
 the DB row becomes the audit/list/revoke surface.
+
+## Issued evidence packs: single-EC2-instance storage, no off-site backup
+
+Flagged by Femi during item 7 (signing/tamper-evidence) design review.
+`app/services/cmmc_issuance.py` writes each issued, signed PDF to
+`ISSUED_PACKS_DIR` once, at issuance, and serves those exact bytes on
+every subsequent download — deliberately never re-rendered, since a
+future Chromium/Playwright upgrade re-rendering the same session could
+silently produce different bytes than what was actually signed.
+
+Item 7 added a Docker named volume (`issued_packs_data`, `docker-
+compose.prod.yml`) so this storage survives an ordinary redeploy — before
+that fix, it would NOT have: `docker inspect` on the production `backend`
+container showed zero volume/bind mounts, and `docker compose up -d
+--build` recreates the container from a fresh image on every deploy, so
+anything written to a bare in-container directory is destroyed the
+moment the container is torn down. The volume fixes that specific,
+otherwise-fatal problem.
+
+What the volume does NOT fix: it's still a single EC2 instance's local
+EBS volume. Instance termination, EBS volume loss/corruption, or
+accidental `docker volume rm` all still mean permanent, unrecoverable
+loss of a legally/compliance-significant signed document with no way to
+regenerate an identical replacement (the whole point of signing is that
+"identical" is exactly what can no longer be reconstructed after the
+fact for a session whose data may have since changed). S3 (versioned,
+cross-AZ replicated) is the real eventual answer — not built now because
+nothing about the current, low issuance volume makes it urgent, and it
+adds real complexity (credentials, a new dependency, a migration path
+for whatever's already been issued by the time it's built).
+
+## `app/uploads/` (ingestion feature): confirmed non-durable for new runtime writes
+
+Discovered as a side effect of investigating the issued-packs durability
+question above — not something item 7 introduced, a pre-existing gap.
+
+`deploy.ps1`'s rsync step excludes `app/uploads/` from being overwritten
+by each deploy's freshly-extracted git archive, which looks at first
+glance like a working persistence mechanism (and IS why the existing
+Jul-24-dated files in there survive redeploy after redeploy). But
+`docker inspect` on the production `backend` container confirms zero
+volume/bind mounts — meaning those files persist ONLY because they were
+seeded directly on the EC2 host once and get re-baked into every new
+Docker image via `COPY --chown=appuser:appuser . .` at build time, not
+because live writes from a running container are protected in any way.
+
+A genuinely NEW document uploaded by a real user today, via the actual
+ingestion feature, would be written into the running container's own
+ephemeral filesystem layer — which never reaches the host at all (no
+mount to copy it back through) — and would be silently, permanently lost
+the moment the container is next recreated (i.e., the very next deploy).
+Not verified against a live user-facing upload end-to-end (would require
+either touching real production data through the actual feature or a
+higher-risk write test not worth doing as a side investigation), but the
+`docker inspect` evidence and the deploy mechanics involved leave little
+room for another explanation. Needs the same fix pattern applied to
+`issued_evidence_packs` in item 7: a real Docker named volume for
+`app/uploads/` (or wherever `UPLOAD_DIR` resolves to in production),
+before anyone relies on a document surviving past the next deploy.

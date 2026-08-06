@@ -141,6 +141,25 @@ async def setup_redis():
 
 
 @pytest.fixture(autouse=True)
+def cmmc_signing_keys(monkeypatch, tmp_path):
+    """Build-order item 7 needs a real, working Ed25519 key for any test
+    that issues/verifies a CMMC evidence pack — global autouse (mirrors
+    setup_redis above) so no test needs to remember to opt in. Two fixed
+    keys, not one, so rotation tests (test_cmmc_signing.py) can switch
+    "active" mid-test without losing the ability to verify a pack already
+    signed under the other one. ISSUED_PACKS_DIR points at pytest's own
+    tmp_path — isolated, auto-cleaned, never touches the real dev
+    ISSUED_PACKS_DIR default."""
+    from app.core.config import settings
+
+    key_a = "test-key-a:g2V5ABl1diwTrcZ6Blr/j221fzG+ds2Vo25yUGyq/Po="
+    key_b = "test-key-b:3MetN1pahLa+mSxGiqLdphbHzOQK4aLKTmVGHTAqC0U="
+    monkeypatch.setattr(settings, "CMMC_SIGNING_KEYS", f"{key_a},{key_b}")
+    monkeypatch.setattr(settings, "CMMC_ACTIVE_SIGNING_KEY_ID", "test-key-a")
+    monkeypatch.setattr(settings, "ISSUED_PACKS_DIR", str(tmp_path / "issued_packs"))
+
+
+@pytest.fixture(autouse=True)
 async def dispose_app_engine_pool_after_test():
     """Pre-existing test-infra gap, unrelated to any feature under test:
     several arena tests (test_arena_ai_attacker.py, test_arena_ai_defender.py)

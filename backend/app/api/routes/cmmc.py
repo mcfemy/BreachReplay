@@ -43,6 +43,9 @@ from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cmmc_signing import SigningNotConfigured
+from app.core.cmmc_signing import public_keys as signing_public_keys
+from app.core.config import settings
 from app.core.security import get_current_user, require_admin
 from app.db.session import get_db
 from app.models.action_run import ActionRun
@@ -65,17 +68,20 @@ from app.schemas.cmmc import (
     ExportReadinessOut,
     InviteCreate,
     InvitePreviewOut,
+    IssuedPackOut,
     LessonCreate,
     LessonOut,
     LessonUpdate,
     NotificationMatrixEntryCreate,
     NotificationMatrixEntryOut,
     NotificationMatrixEntryUpdate,
+    PublicKeyOut,
     RemediationItemCreate,
     RemediationItemOut,
     RemediationItemUpdate,
     RunSummaryOut,
     SignoffOut,
+    VerifyPackOut,
 )
 from app.schemas.user import MessageResponse
 from app.services.cmmc_access import (
@@ -111,16 +117,23 @@ from app.services.cmmc_invites import (
     redeem_invite_for_user,
     store_cmmc_invite,
 )
+from app.services.cmmc_issuance import get_issued_pack, issue_pack, verify_pack
 from app.services.cmmc_notification_matrix import (
     add_notification_matrix_entry,
     list_notification_matrix,
     remove_notification_matrix_entry,
     update_notification_matrix_entry,
 )
-from app.services.cmmc_pdf import build_pack_payload, generate_evidence_pack_pdf, render_evidence_pack_html
+from app.services.cmmc_pdf import build_pack_payload, render_evidence_pack_html
 
 router = APIRouter(prefix="/cmmc", tags=["cmmc"])
 admin_router = APIRouter(prefix="/admin/cmmc", tags=["cmmc-admin"])
+# Build-order item 7. No auth, deliberately: an assessor holding a PDF
+# must be able to verify it without a BreachReplay account. Separate
+# router (not just unauthenticated routes on `router`) so the "this is
+# public" boundary is visible at a glance, not buried in per-route
+# Depends() absence.
+verify_router = APIRouter(prefix="/cmmc/verify", tags=["cmmc-verify"])
 
 
 async def _issue_invite(
@@ -829,14 +842,48 @@ async def download_evidence_session_pack(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """The one and only way to get a PDF — no draft/preview mode. Item 5's
-    hard gate applies here, structurally: evidence_session_export_blockers
-    is called before anything is rendered, and a non-empty result 400s
-    with exactly what's missing rather than generating a partial pack.
-    Scoped via get_evidence_session_scoped (both roles) — the client
-    should be able to download the artifact they attested to, same
-    reasoning as item 5's widened reads."""
+    """Build-order item 7: serves the STORED, previously-issued bytes —
+    never a fresh render. A signed artifact has to be issued once and
+    served identically forever after; re-rendering on every download
+    would mean a future Chromium/Playwright upgrade could silently change
+    what "the issued pack" contains, breaking the hash it was signed
+    under. 404 if nothing has been issued yet — call .../pack/issue
+    first. Scoped via get_evidence_session_scoped (both roles) — the
+    client should be able to download the artifact they attested to,
+    same reasoning as item 5's widened reads."""
     session = await get_evidence_session_scoped(db, current_user, evidence_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Evidence session not found")
+
+    issued = await get_issued_pack(db, evidence_session_id)
+    if issued is None:
+        raise HTTPException(status_code=404, detail="No pack has been issued for this evidence session yet")
+
+    with open(issued.pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+
+    safe_title = session.title.replace(" ", "-")
+    filename = f"BreachReplay-Evidence-Pack-{safe_title}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.post("/evidence-sessions/{evidence_session_id}/pack/issue", response_model=IssuedPackOut, status_code=201)
+async def issue_evidence_session_pack(
+    evidence_session_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The one, discrete, one-way act of signing and permanently
+    recording an evidence pack — consultant_admin-only (matches every
+    other lifecycle-managing action in this layer), gated on the same
+    dual-signoff export-readiness check as the download route.
+    Idempotent: re-calling this for an already-issued session returns the
+    existing record rather than re-signing or overwriting it."""
+    session = await get_evidence_session_for_consulting_admin(db, current_user, evidence_session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="Evidence session not found")
 
@@ -847,20 +894,15 @@ async def download_evidence_session_pack(
             detail={"message": "Evidence session is not ready to export", "missing": blockers},
         )
 
-    client_org = await db.get(ClientOrg, session.client_org_id)
-    consulting_org = await db.get(ConsultingOrg, client_org.consulting_org_id)
-    scenario = await db.get(Scenario, session.scenario_id)
+    try:
+        issued = await issue_pack(
+            db, session, issued_by=current_user, verify_url_base=f"{settings.FRONTEND_URL}/api/v1/cmmc/verify",
+        )
+    except SigningNotConfigured as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    payload = await build_pack_payload(db, session, consulting_org, client_org, scenario)
-    pdf_bytes = await generate_evidence_pack_pdf(payload)
-
-    safe_title = session.title.replace(" ", "-")
-    filename = f"BreachReplay-Evidence-Pack-{safe_title}.pdf"
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    await db.commit()
+    return issued
 
 
 @router.get("/evidence-sessions/{evidence_session_id}/pack/view", response_class=HTMLResponse)
@@ -891,3 +933,31 @@ async def view_evidence_session_pack(
 
     payload = await build_pack_payload(db, session, consulting_org, client_org, scenario)
     return HTMLResponse(content=render_evidence_pack_html(payload, show_download_button=True))
+
+
+# ── Build-order item 7: public verification (no auth) ───────────────────────
+
+@verify_router.get("/public-keys", response_model=list[PublicKeyOut])
+async def list_signing_public_keys():
+    """Every known key, not just the currently-active one — so a
+    signature made before a rotation stays independently checkable
+    offline, forever, by anyone holding this response, without ever
+    calling this endpoint (or any of ours) again."""
+    return signing_public_keys()
+
+
+@verify_router.get("/{document_id}", response_model=VerifyPackOut)
+async def verify_issued_pack(document_id: str, hash: str, db: AsyncSession = Depends(get_db)):
+    """No auth. Reveals only whether the artifact was issued and hasn't
+    been altered, plus the issuing org's name (already printed on the
+    cover of the PDF the caller is holding — confirming it matches what's
+    on file is the entire point). Never the pack's contents, never
+    anything about client_org/participants/lessons. An unknown
+    document_id and a hash that doesn't match a real one return the
+    IDENTICAL {valid: false} shape — no existence leakage, matching this
+    whole layer's established discipline, extended here to an anonymous
+    public caller instead of an authenticated wrong-tenant one."""
+    result = await verify_pack(db, document_id, hash)
+    if result is None:
+        return VerifyPackOut(valid=False)
+    return VerifyPackOut(**result)

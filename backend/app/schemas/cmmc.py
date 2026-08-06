@@ -282,3 +282,31 @@ class RemediationItemUpdate(BaseModel):
 class ExportReadinessOut(BaseModel):
     ready: bool
     missing: list[str]
+
+
+# ── Build-order item 7: signing and tamper-evidence ─────────────────────────
+
+class IssuedPackOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    evidence_session_id: str
+    sha256_hash: str
+    key_id: str
+    issued_at: datetime
+
+
+class VerifyPackOut(BaseModel):
+    valid: bool
+    issued_at: Optional[datetime] = None
+    key_id: Optional[str] = None
+    # Not a leak: the caller is already holding a PDF with this org's name
+    # printed on the cover. Confirming it matches what's on file is the
+    # whole point of "was this genuinely issued by the org whose name is
+    # on it" verification.
+    consulting_org_name: Optional[str] = None
+
+
+class PublicKeyOut(BaseModel):
+    key_id: str
+    public_key_b64: str
+    algorithm: str

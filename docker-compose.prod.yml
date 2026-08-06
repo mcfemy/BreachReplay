@@ -36,6 +36,19 @@ services:
     ports:
       - "8000:8000"
     env_file: .env.prod
+    # Build-order item 7: signed evidence packs (app/services/
+    # cmmc_issuance.py, ISSUED_PACKS_DIR) MUST survive a redeploy — a
+    # bare directory inside the container does not. `docker compose up -d
+    # --build` recreates this container from a fresh image on every
+    # deploy (confirmed via the actual deploy log), so anything written
+    # to the container's own ephemeral layer at runtime is gone the
+    # moment it's torn down. A named volume is Docker-managed state
+    # external to the image, the same mechanism already protecting
+    # `pgdata` below across every redeploy. Still only a single-EC2-
+    # instance safeguard, not off-site backup — logged to BACKLOG.md,
+    # S3 is the eventual real answer.
+    volumes:
+      - issued_packs_data:/app/issued_packs
     depends_on:
       db:
         condition: service_healthy
@@ -83,3 +96,4 @@ services:
 
 volumes:
   pgdata:
+  issued_packs_data:

@@ -20,6 +20,7 @@ from app.models.action_run import ActionRun
 from app.models.cmmc_org import ConsultingOrg, ClientOrg
 from app.models.membership import Membership
 from app.models.evidence_session import EvidenceSession
+from app.models.issued_evidence_pack import IssuedEvidencePack
 
 __all__ = [
     "Base",
@@ -53,4 +54,5 @@ __all__ = [
     "ClientOrg",
     "Membership",
     "EvidenceSession",
+    "IssuedEvidencePack",
 ]

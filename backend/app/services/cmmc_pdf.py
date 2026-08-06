@@ -628,7 +628,16 @@ def render_evidence_pack_html(payload: dict, *, show_download_button: bool = Fal
 """
 
 
-async def render_pdf_from_html(html: str) -> bytes:
+_DEFAULT_FOOTER_TEMPLATE = (
+    '<div style="width:100%;font-size:7.5pt;color:#94a3b8;'
+    'text-align:center;font-family:Arial,sans-serif;">'
+    "BreachReplay CMMC Evidence Pack &middot; "
+    '<span class="pageNumber"></span> / <span class="totalPages"></span>'
+    "</div>"
+)
+
+
+async def render_pdf_from_html(html: str, *, footer_template: str = _DEFAULT_FOOTER_TEMPLATE) -> bytes:
     """Playwright's ASYNC api, never the sync one — docker-compose.prod.yml
     runs the backend with --workers 1 (Live Arena's in-process singleton
     state requires it), so a blocking sync call during a ~1-3s render
@@ -653,13 +662,7 @@ async def render_pdf_from_html(html: str) -> bytes:
                 print_background=True,
                 display_header_footer=True,
                 header_template="<div></div>",
-                footer_template=(
-                    '<div style="width:100%;font-size:7.5pt;color:#94a3b8;'
-                    'text-align:center;font-family:Arial,sans-serif;">'
-                    "BreachReplay CMMC Evidence Pack &middot; "
-                    '<span class="pageNumber"></span> / <span class="totalPages"></span>'
-                    "</div>"
-                ),
+                footer_template=footer_template,
                 margin={"top": "2.2cm", "bottom": "1.6cm", "left": "1.8cm", "right": "1.8cm"},
             )
         finally:
@@ -685,3 +688,35 @@ def _pin_pdf_metadata(pdf_bytes: bytes) -> bytes:
 async def generate_evidence_pack_pdf(payload: dict) -> bytes:
     html = render_evidence_pack_html(payload, show_download_button=False)
     return await render_pdf_from_html(html)
+
+
+def _certifiable_footer_template(document_id: str, verify_url: str) -> str:
+    return (
+        '<div style="width:100%;font-size:7pt;color:#94a3b8;'
+        'text-align:center;font-family:Arial,sans-serif;padding:0 1.8cm;">'
+        f"BreachReplay CMMC Evidence Pack &middot; Document ID: {_esc(document_id)} "
+        f"&middot; Verify at: {_esc(verify_url)} &middot; "
+        '<span class="pageNumber"></span> / <span class="totalPages"></span>'
+        "</div>"
+    )
+
+
+async def render_certifiable_pdf(payload: dict, *, document_id: str, verify_url: str) -> bytes:
+    """The exact bytes that get hashed and signed at issuance (build-order
+    item 7). Same 12 sections/wording as render_evidence_pack_html — only
+    the footer differs, carrying the Document ID and verification URL
+    (both knowable before hashing) but deliberately NOT the hash or
+    signature themselves.
+
+    This isn't a style choice: a hash cannot include a printed copy of
+    its own output (H = SHA256(bytes containing "the hash is H") is
+    circular for any hash function). The one real technique that could
+    work around this — hash with a fixed-length placeholder, then
+    byte-patch the real digest in afterward — is fragile against
+    Chromium's compressed PDF content streams, so it wasn't built.
+    Reported and accepted before this was written: an assessor gets the
+    hash/signature by visiting the verification URL printed here, not by
+    reading raw hex off the page."""
+    html = render_evidence_pack_html(payload, show_download_button=False)
+    footer = _certifiable_footer_template(document_id, verify_url)
+    return await render_pdf_from_html(html, footer_template=footer)

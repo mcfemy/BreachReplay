@@ -29,6 +29,17 @@ import app.models  # noqa: F401 — ensure every model (incl. the 4 new ones) is
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 _NEW_TABLES = {"consulting_orgs", "client_orgs", "memberships", "evidence_sessions"}
+# Tables that don't exist yet as of migration 0035 (this test's subject)
+# but DO exist in the CURRENT Base.metadata because a later migration
+# added them — item 7's issued_evidence_packs (migration 0037) has a FK
+# to evidence_sessions, which IS in _NEW_TABLES and gets excluded from
+# the baseline below; without also excluding issued_evidence_packs here,
+# to_metadata() would try to clone a FK pointing at a table that was
+# never added to the baseline, raising NoReferencedTableError. This test
+# never runs migration 0037 at all (it upgrades only as far as 0035), so
+# issued_evidence_packs correctly has no business existing anywhere in
+# this test's baseline OR post-upgrade schema.
+_TABLES_NOT_YET_EXISTING_AT_0035 = _NEW_TABLES | {"issued_evidence_packs"}
 
 _EXPECTED_MEMBERSHIP_COLUMNS = {
     "id", "user_id", "consulting_org_id", "client_org_id", "role", "joined_at",
@@ -61,7 +72,7 @@ def migration_engine(tmp_path):
     # evidence_session_id — so it's never created in the first place.
     baseline_metadata = sa.MetaData()
     for name, table in Base.metadata.tables.items():
-        if name in _NEW_TABLES:
+        if name in _TABLES_NOT_YET_EXISTING_AT_0035:
             continue
         if name == "action_runs":
             cols = [c.copy() for c in table.columns if c.name != "evidence_session_id"]

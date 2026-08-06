@@ -58,6 +58,25 @@ class Settings(BaseSettings):
     CMMC_INVITE_EXPIRE_MINUTES: int = 10080  # 7 days — a B2B onboarding window, not a same-session reset window
     FRONTEND_URL: str = "http://localhost:5173"
 
+    # Build-order item 7 (signing/tamper-evidence). "key_id:base64_private_key"
+    # pairs, comma-separated — never in the repo, loaded from the environment
+    # only. Multiple keys can be present at once so a rotation doesn't
+    # invalidate verification of packs signed with a retired key.
+    CMMC_SIGNING_KEYS: Optional[str] = None
+    # Which key_id in CMMC_SIGNING_KEYS signs NEWLY issued packs. Verification
+    # always looks up the key_id stored with the specific pack being checked,
+    # never this value — that's what makes rotation non-destructive.
+    CMMC_ACTIVE_SIGNING_KEY_ID: Optional[str] = None
+    # Where issued, signed PDF bytes are stored — see app/services/
+    # cmmc_issuance.py. Matches UPLOAD_DIR's existing /tmp default for local
+    # dev/test; production points this at the issued_packs_data Docker
+    # volume's mount point (docker-compose.prod.yml), not a bare directory
+    # inside the image — a bare directory does not survive a redeploy
+    # (confirmed via `docker inspect`: the backend service has zero volume
+    # mounts, and the container is recreated from a fresh image on every
+    # deploy).
+    ISSUED_PACKS_DIR: str = "/tmp/breachreplay_issued_packs"
+
     SLACK_WEBHOOK_URL: Optional[str] = None
     SLACK_SIGNING_SECRET: Optional[str] = None
     SLACK_CHANNEL_ID: Optional[str] = None
