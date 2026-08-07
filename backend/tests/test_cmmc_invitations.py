@@ -100,6 +100,7 @@ async def test_admin_creates_consulting_org_and_issues_founding_invite(client, d
     )
     assert resp.status_code == 201, resp.text
     org_id = resp.json()["id"]
+    assert resp.json()["admin_email"] == founding_email
 
     org = await db.get(ConsultingOrg, org_id)
     assert org is not None

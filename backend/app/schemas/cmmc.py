@@ -1,7 +1,22 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+
+def _naive_utc(v: Optional[datetime]) -> Optional[datetime]:
+    """Normalizes a tz-aware datetime to naive UTC; leaves an already-naive
+    one untouched (assumed UTC already, matching every other timestamp in
+    this app — see models.utcnow() usage throughout). Every DateTime
+    column this layer writes to is TIMESTAMP WITHOUT TIME ZONE; asyncpg
+    rejects a tz-aware Python datetime against one of those outright
+    ("can't subtract offset-naive and offset-aware datetimes"). A trailing
+    'Z' — exactly what every browser's Date.toISOString() produces — is
+    the single most common way a real client would trip this, so this
+    normalizes rather than rejects."""
+    if v is not None and v.tzinfo is not None:
+        v = v.astimezone(timezone.utc).replace(tzinfo=None)
+    return v
 
 
 class ConsultingOrgCreate(BaseModel):
@@ -15,6 +30,16 @@ class ConsultingOrgOut(BaseModel):
     id: str
     name: str
     created_at: datetime
+
+
+class ConsultingOrgCreateOut(ConsultingOrgOut):
+    """POST /admin/cmmc/consulting-orgs only — admin_email is the founding
+    invite's target, not a persisted attribute of the org itself (there's
+    no single "the admin" over an org's lifetime, so this never belongs on
+    plain ConsultingOrgOut). Echoed back so the staff operator who just
+    typed it gets on-screen confirmation of who the invite actually went
+    to, instead of trusting their own typing silently."""
+    admin_email: str
 
 
 class ClientOrgCreate(BaseModel):
@@ -61,12 +86,16 @@ class EvidenceSessionCreate(BaseModel):
     scenario_id: str
     exercise_date: datetime
 
+    _normalize_exercise_date = field_validator("exercise_date")(_naive_utc)
+
 
 class EvidenceSessionUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     title: Optional[str] = Field(default=None, min_length=1, max_length=255)
     scenario_id: Optional[str] = None
     exercise_date: Optional[datetime] = None
+
+    _normalize_exercise_date = field_validator("exercise_date")(_naive_utc)
 
 
 class EvidenceSessionOut(BaseModel):

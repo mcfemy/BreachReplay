@@ -114,6 +114,12 @@ async def test_finalize_persists_action_run_and_evicts_from_store(db, store, fas
     assert summary["outcome"] in (
         "contained", "contained_at_cost", "overreacted", "breached_spread_limited", "breached",
     )
+    # The persisted row's id is deliberately the SAME as run_id (not an
+    # independently-generated uuid4) — see finalize()'s ActionRun(id=...)
+    # comment for why: a caller must be able to trust the id POST
+    # /action-runs handed them up front, not discover a second "real" id
+    # only via the run.end WS event.
+    assert summary["action_run_id"] == run_id
 
     assert await store.get(run_id) is None  # evicted
 

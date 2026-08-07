@@ -232,6 +232,39 @@ async def test_create_and_list_and_view_evidence_session(client, db, approved_sc
     assert patch_resp.json()["title"] == "Q3 Tabletop — Revised"
 
 
+async def test_create_and_update_evidence_session_accepts_timezone_aware_exercise_date(client, db, approved_scenario):
+    """Regression for a real production bug found end-to-end on
+    breachreplay.com: exercise_date is a TIMESTAMP WITHOUT TIME ZONE
+    column, but the schema used to hand the parsed (tz-aware) Pydantic
+    datetime straight to the ORM. Any client sending a real
+    browser-shaped ISO string — exactly what JS's Date.toISOString()
+    produces, always 'Z'-suffixed — 500'd at INSERT time via asyncpg
+    ("can't subtract offset-naive and offset-aware datetimes"). Both
+    create and update must accept this without erroring."""
+    _, token, org = await _make_consultant_admin(db)
+    client_org = await _make_client_org(db, org)
+    headers = auth_headers(token)
+
+    create_resp = await client.post(
+        f"/api/v1/cmmc/client-orgs/{client_org.id}/evidence-sessions",
+        json={"title": "TZ Regression", "scenario_id": approved_scenario.id, "exercise_date": "2026-08-06T15:00:00Z"},
+        headers=headers,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    assert create_resp.json()["exercise_date"].startswith("2026-08-06T15:00:00")
+    session_id = create_resp.json()["id"]
+
+    # A non-UTC offset must be converted, not just have its offset dropped —
+    # 15:00+05:00 is 10:00 UTC, not 15:00.
+    patch_resp = await client.patch(
+        f"/api/v1/cmmc/evidence-sessions/{session_id}",
+        json={"exercise_date": "2026-08-06T15:00:00+05:00"},
+        headers=headers,
+    )
+    assert patch_resp.status_code == 200, patch_resp.text
+    assert patch_resp.json()["exercise_date"].startswith("2026-08-06T10:00:00")
+
+
 # ── designation validation ───────────────────────────────────────────────
 
 async def test_designate_already_designated_run_to_different_session_rejected(client, db, approved_scenario):

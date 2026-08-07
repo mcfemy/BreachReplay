@@ -60,6 +60,7 @@ from app.schemas.cmmc import (
     ClientOrgCreate,
     ClientOrgOut,
     ConsultingOrgCreate,
+    ConsultingOrgCreateOut,
     ConsultingOrgOut,
     DesignateRunsRequest,
     EvidenceSessionAggregateOut,
@@ -164,7 +165,7 @@ async def _issue_invite(
     send_cmmc_invite_email(email, org_name, role, invite_url)
 
 
-@admin_router.post("/consulting-orgs", response_model=ConsultingOrgOut, status_code=201)
+@admin_router.post("/consulting-orgs", response_model=ConsultingOrgCreateOut, status_code=201)
 async def create_consulting_org(
     payload: ConsultingOrgCreate,
     current_admin: User = Depends(require_admin),
@@ -187,7 +188,9 @@ async def create_consulting_org(
         invited_by_user_id=current_admin.id,
     )
     await db.commit()
-    return org
+    return ConsultingOrgCreateOut(
+        id=org.id, name=org.name, created_at=org.created_at, admin_email=payload.admin_email,
+    )
 
 
 @router.post("/consulting-orgs/{consulting_org_id}/invitations", response_model=MessageResponse)

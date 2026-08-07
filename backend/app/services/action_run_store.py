@@ -179,6 +179,18 @@ class ActionRunStore:
         score_breakdown = verb_engine.compute_score(run_state, outcome, live.cap_seconds)
 
         action_run = ActionRun(
+            # Deliberately the SAME id `run_id` has meant since POST
+            # /action-runs minted it (the live-store key, the /ws/run/{id}
+            # URL) — not ActionRun.id's own uuid4 default. Before this, the
+            # persisted row got a second, independently-generated id that
+            # only ever surfaced in the run.end WS event's action_run_id
+            # field, with nothing in the initial POST /action-runs response
+            # hinting a second id existed — a real trap (see
+            # app/api/routes/action_runs.py's response, which now returns
+            # both fields with the same value under their true names).
+            # Unifying them removes the trap structurally instead of just
+            # documenting it.
+            id=live.run_id,
             user_id=live.user_id,
             scenario_id=live.scenario_id,
             daily_challenge_id=live.daily_challenge_id,

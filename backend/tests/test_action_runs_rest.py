@@ -24,6 +24,14 @@ async def test_create_action_run_for_an_approved_scenario(client, test_user, app
     assert body["mode"] == "scenario"
     assert body["cap_seconds"] == 600
     assert isinstance(body["seed"], int)
+    # A real gap found end-to-end on breachreplay.com: the WS run_id and
+    # the eventual persisted ActionRun.id used to be two different,
+    # independently-generated values, with no hint in this response that
+    # a second id even existed — a caller (a real frontend, or a script)
+    # that reused run_id for later designation got a confusing "run not
+    # found". action_run_store.finalize() now persists the row under this
+    # exact id, so it can be returned here, honestly, up front.
+    assert body["action_run_id"] == body["run_id"]
 
     live = await action_run_store.get(body["run_id"])
     assert live is not None

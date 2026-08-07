@@ -62,7 +62,17 @@ async def create_action_run(
     await action_run_store.start_run(run_id, current_user.id, scenario.id, mode, compiled)
 
     return {
+        # The live-store key AND the WS connection id (/ws/run/{run_id}) —
+        # use this to play the run.
         "run_id": run_id,
+        # The ActionRun row's eventual primary key, for anything that
+        # references the FINISHED run afterward (CMMC evidence-session
+        # designation, GET /cmmc/client-orgs/{id}/runs, etc). Deliberately
+        # the SAME value as run_id (action_run_store.finalize() persists
+        # the row under this exact id) — returned under its own name here
+        # so a caller never has to discover the run.end WS event's
+        # action_run_id field is "the real id" the hard way.
+        "action_run_id": run_id,
         "scenario_id": scenario.id,
         "seed": seed,
         "mode": mode,
