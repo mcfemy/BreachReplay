@@ -522,3 +522,55 @@ are unaffected and still gitignored/unreferenced — not cleaned up as
 part of this fix, since removing committed-adjacent server state
 unilaterally is a separate, lower-stakes decision, not a durability
 question.
+
+## Proportionate Response — CONTAINED_AT_COST is unreachable on at least two flagship scenarios
+
+Discovered while building a demo CMMC evidence pack: tried to script a
+Colonial Pipeline run that lands on `contained_at_cost` specifically (to
+show a non-trivial-but-not-egregious operational-impact section) and
+found it's mathematically impossible given the actual scoring code, not
+just hard to hit by chance.
+
+The math (`app/services/verb_engine.py`): `GRACE_FLOOR_WRONG_ISOLATIONS
+= 1` (the first wrong isolation is always free — `contained` regardless
+of ratio), `OVERREACTED_COVERAGE_THRESHOLD = 0.6` (wrong_isolated /
+decoy_pool). `contained_at_cost` requires wrong_isolated > 1 (past the
+grace floor) AND coverage_ratio <= 0.6. For that band to exist at all,
+decoy_pool must be >= 4 (the smallest wrong_isolated past the grace
+floor is 2, and 2/4 = 0.5 is the first ratio that clears the floor
+without also exceeding the overreacted threshold).
+
+Checked empirically, not assumed: compiled Colonial Pipeline across
+1000 seeds — max decoy pool observed was **3** (2/3 = 0.667 > 0.6, so
+wrong_isolated=2 always lands on `overreacted`, never
+`contained_at_cost`). Checked SolarWinds across 500 seeds per the same
+method — max decoy pool **2**, same conclusion (2/2 = 1.0 > 0.6). Both
+scenarios jump straight from `contained` (<=1 mistake) to `overreacted`
+(>=2 mistakes) with no seed producing anything in between. The module's
+own docstring already flags Colonial/SolarWinds as having "effectively
+only one grace step" — this is that same fact confirmed to mean the
+middle tier doesn't just get *skipped often*, it is *structurally
+absent* on these two scenarios specifically.
+
+This matters because `contained_at_cost` exists precisely to distinguish
+"imprecise but reasonable" from "reckless" (see `SCORE_OUTCOME_BASE`'s
+own comments on why `overreacted` scores below
+`breached_spread_limited`) — a learner who makes a second honest mistake
+on a small-decoy-pool scenario gets graded as if they'd isolated most of
+the map, with no gentler middle rung available, purely as an artifact of
+that scenario's authored host count rather than their actual judgment.
+
+Not fixed here — flagged for Phase 3 tuning, per Femi's explicit
+instruction. Options to weigh then, none decided:
+- Scenario-aware thresholds (a per-scenario `OVERREACTED_COVERAGE_THRESHOLD`
+  or grace floor, authored alongside `collateral_weights`).
+- A grace floor that scales with decoy pool size instead of a flat 1
+  (e.g. `max(1, round(decoy_pool * some_fraction))`).
+- Accept that some scenarios are inherently pass/fail on proportionality
+  given their map size, and say so explicitly somewhere a player/assessor
+  can see it, rather than implying all five outcome states are always
+  reachable.
+
+Worth a broader sweep across the rest of the flagship scenario set
+before Phase 3 lands, not just these two — this was only checked because
+Colonial happened to be needed for a demo pack.
