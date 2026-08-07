@@ -194,6 +194,29 @@ async def test_pack_download_serves_issued_bytes_not_a_fresh_render(client, db, 
     assert hashlib.sha256(download1.content).hexdigest() == issued_hash
 
 
+async def test_pack_download_survives_non_ascii_session_title(client, db, approved_scenario):
+    """Regression for a real bug found generating a demo evidence pack:
+    a session titled with an em dash (or any character outside latin-1)
+    500'd the download route outright — Content-Disposition headers must
+    be latin-1, and the old filename derivation did nothing but replace
+    spaces. Both the ASCII-fallback and UTF-8 (RFC 5987) filename forms
+    must be present and correct."""
+    ctx = await _fully_signed_session(db, approved_scenario)
+    ctx["session"].title = "Q2 2026 Tabletop — OT/ICS Segment"
+    await db.commit()
+    await _dual_sign(client, ctx)
+    headers = auth_headers(ctx["consultant_token"])
+
+    resp = await client.post(f"{BASE}/{ctx['session'].id}/pack/issue", headers=headers)
+    assert resp.status_code == 201, resp.text
+
+    download = await client.get(f"{BASE}/{ctx['session'].id}/pack", headers=headers)
+    assert download.status_code == 200, download.text
+    disposition = download.headers["content-disposition"]
+    assert 'filename="BreachReplay-Evidence-Pack-Q2-2026-Tabletop-OT-ICS-Segment.pdf"' in disposition
+    assert "filename*=UTF-8''BreachReplay-Evidence-Pack-Q2%202026%20Tabletop%20%E2%80%94%20OT%2FICS%20Segment.pdf" in disposition
+
+
 # ── verification ─────────────────────────────────────────────────────────
 
 async def test_verify_known_good_pack_succeeds(client, db, approved_scenario):

@@ -38,6 +38,9 @@ write action, not just a scoped read.
 """
 from __future__ import annotations
 
+import re
+import urllib.parse
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import select
@@ -929,6 +932,24 @@ async def get_evidence_session_export_readiness(
 
 # ── Build-order item 6: evidence pack (PDF) ──────────────────────────────────
 
+def _pack_content_disposition(title: str) -> str:
+    """A real bug found generating a demo pack: session.title is free
+    text with no charset restriction (EvidenceSessionCreate.title just
+    caps length), but HTTP headers must be latin-1 — a title containing
+    an em dash, a curly quote, or anything else outside that range used
+    to 500 this whole route the moment `f'filename="{...}"'` tried to
+    encode it. Two filenames, RFC 5987 style: an ASCII-only one every
+    client can parse, plus filename* with the real UTF-8 title for
+    clients (effectively all modern browsers) that honor it."""
+    ascii_fallback = re.sub(r"[^A-Za-z0-9._-]", "-", title)
+    ascii_fallback = re.sub(r"-+", "-", ascii_fallback).strip("-") or "Evidence-Pack"
+    encoded_title = urllib.parse.quote(title, safe="")
+    return (
+        f'attachment; filename="BreachReplay-Evidence-Pack-{ascii_fallback}.pdf"; '
+        f"filename*=UTF-8''BreachReplay-Evidence-Pack-{encoded_title}.pdf"
+    )
+
+
 @router.get("/evidence-sessions/{evidence_session_id}/pack")
 async def download_evidence_session_pack(
     evidence_session_id: str,
@@ -955,12 +976,10 @@ async def download_evidence_session_pack(
     with open(issued.pdf_path, "rb") as f:
         pdf_bytes = f.read()
 
-    safe_title = session.title.replace(" ", "-")
-    filename = f"BreachReplay-Evidence-Pack-{safe_title}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": _pack_content_disposition(session.title)},
     )
 
 
