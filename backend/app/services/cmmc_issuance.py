@@ -59,7 +59,11 @@ async def issue_pack(
     document_id = str(uuid.uuid4())
     verify_url = f"{verify_url_base}/{document_id}"
 
-    payload = await build_pack_payload(db, session, consulting_org, client_org, scenario)
+    # Same document_id threaded into build_pack_payload as into
+    # render_certifiable_pdf below — previously these were two independent
+    # uuid4() calls, so the cover page (payload["document_id"]) and the
+    # footer/verify-URL/DB row (this document_id) showed different values.
+    payload = await build_pack_payload(db, session, consulting_org, client_org, scenario, document_id=document_id)
     pdf_bytes = await render_certifiable_pdf(payload, document_id=document_id, verify_url=verify_url)
 
     sha256_hash = hashlib.sha256(pdf_bytes).hexdigest()

@@ -217,6 +217,36 @@ async def test_pack_download_survives_non_ascii_session_title(client, db, approv
     assert "filename*=UTF-8''BreachReplay-Evidence-Pack-Q2%202026%20Tabletop%20%E2%80%94%20OT%2FICS%20Segment.pdf" in disposition
 
 
+async def test_issued_pack_cover_and_footer_show_the_same_document_id(client, db, approved_scenario):
+    """Regression for a real bug found reviewing a demo pack: build_pack_
+    payload used to mint its own uuid4() for payload["document_id"] (read
+    by the cover page), completely independent of the uuid4() issue_pack
+    mints for document_id/verify_url/IssuedEvidencePack.id (read by the
+    footer). Two different random IDs on the same physical document. Now
+    build_pack_payload accepts the real document_id and issue_pack passes
+    it through, so every page — cover included — must show the exact same
+    id as the one this test already knows is correct (issued["id"])."""
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    ctx = await _fully_signed_session(db, approved_scenario)
+    await _dual_sign(client, ctx)
+    headers = auth_headers(ctx["consultant_token"])
+
+    issue_resp = await client.post(f"{BASE}/{ctx['session'].id}/pack/issue", headers=headers)
+    assert issue_resp.status_code == 201, issue_resp.text
+    document_id = issue_resp.json()["id"]
+
+    download = await client.get(f"{BASE}/{ctx['session'].id}/pack", headers=headers)
+    assert download.status_code == 200
+
+    reader = PdfReader(BytesIO(download.content))
+    for i, page in enumerate(reader.pages):
+        page_text = " ".join((page.extract_text() or "").split())
+        assert document_id in page_text, f"page {i + 1} does not show the real document_id {document_id}"
+
+
 # ── verification ─────────────────────────────────────────────────────────
 
 async def test_verify_known_good_pack_succeeds(client, db, approved_scenario):

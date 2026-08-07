@@ -111,6 +111,8 @@ async def build_pack_payload(
     consulting_org: ConsultingOrg,
     client_org: ClientOrg,
     scenario: Scenario,
+    *,
+    document_id: str | None = None,
 ) -> dict:
     """Gathers everything generate_evidence_pack_pdf needs to render, from
     data already persisted by items 1-5 — no new instrumentation. Attacker
@@ -125,7 +127,15 @@ async def build_pack_payload(
     logo captured here is frozen into that pack forever, even if the
     org's logo is later replaced or removed. No special-casing needed —
     this is item 7's existing "compute once, freeze forever" discipline,
-    just fed a logo instead of session data."""
+    just fed a logo instead of session data.
+
+    `document_id`: the real, issuance-level id (minted once by
+    cmmc_issuance.issue_pack and reused for IssuedEvidencePack.id, the
+    footer, and the verify URL) must be threaded through here too, or the
+    cover page — which reads payload["document_id"] — shows a second,
+    unrelated UUID that matches nothing else on the document. Optional so
+    the pre-issuance /pack/view preview (which has no real document_id
+    yet) keeps minting its own placeholder, unchanged."""
     aggregate = await build_evidence_session_aggregate(db, session)
 
     runs_result = await db.execute(select(ActionRun).where(ActionRun.evidence_session_id == session.id))
@@ -158,7 +168,7 @@ async def build_pack_payload(
         })
 
     return {
-        "document_id": str(uuid.uuid4()),
+        "document_id": document_id or str(uuid.uuid4()),
         "consulting_org": {
             "name": consulting_org.name,
             "branding": consulting_org.branding,
@@ -215,13 +225,30 @@ def _fmt_dt(value) -> str:
     return value.strftime("%B %d, %Y %H:%M UTC")
 
 
+# Proportionate Response's 5 outcome states (app/services/verb_engine.py's
+# SCORE_OUTCOME_BASE keys, verbatim) — display labels only, the underlying
+# value stored/compared everywhere else is untouched.
+_OUTCOME_LABELS = {
+    "contained": "Contained",
+    "contained_at_cost": "Contained at Cost",
+    "overreacted": "Overreacted",
+    "breached_spread_limited": "Breached (Spread Limited)",
+    "breached": "Breached",
+}
+
+
+def _outcome_label(outcome: str) -> str:
+    return _OUTCOME_LABELS.get(outcome, outcome)
+
+
 _CSS = """
-  @page { size: A4; margin: 2.2cm 1.8cm; }
+  @page { size: A4; margin: 2.4cm 1.8cm 1.9cm; }
   * { box-sizing: border-box; }
   body {
     margin: 0; padding: 0; color: #1e293b;
     font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif;
-    font-size: 10pt; line-height: 1.5;
+    font-size: 10pt; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
   }
   /* Sections flow continuously — no forced page-break-before. A pack with
      little content (few participants, few lessons) should be short; only
@@ -230,47 +257,87 @@ _CSS = """
      out of room, driven by Chromium's normal layout, not by section
      count. break-inside: avoid keeps a table's header from being stranded
      alone at the bottom of a page, separated from its own rows. */
-  section { padding-top: 10px; margin-top: 6px; border-top: 1px solid #e2e8f0; }
+  section { padding-top: 16px; margin-top: 14px; border-top: 1px solid #e2e8f0; }
   section:first-child { padding-top: 0; margin-top: 0; border-top: none; }
-  h1 { font-size: 14pt; color: #0f172a; margin: 0 0 8px; padding-left: 12px; border-left: 4px solid #ef4444; }
-  p { margin: 0 0 6px; }
+  h1 {
+    font-size: 13.5pt; font-weight: 800; color: #0f172a; margin: 0 0 14px;
+    padding-left: 13px; border-left: 4px solid #ef4444;
+    letter-spacing: 0.01em;
+  }
+  p { margin: 0 0 7px; }
+  /* A left-accent callout, not a boxed-in border — reads as a deliberate
+     "note" convention (matches how the brand's red/navy accents are used
+     everywhere else) rather than a generic warning box. */
   .note {
-    font-size: 8.5pt; color: #64748b; font-style: italic;
-    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px;
-    padding: 6px 10px; margin: 6px 0 10px;
+    font-size: 8.5pt; color: #475569; font-style: italic; line-height: 1.5;
+    background: #f8fafc; border-left: 3px solid #cbd5e1; border-radius: 0 4px 4px 0;
+    padding: 7px 12px; margin: 8px 0 12px;
   }
   /* No break-inside:avoid on the table itself — a long timeline/lessons
      table should be allowed to split across pages between rows (its
      default behaviour, with <thead> repeating on each page) rather than
      being forced entirely onto its own page and wasting the space above
      it. Only individual rows are kept intact. */
-  table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 4px 0 10px; }
+  table {
+    width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed;
+    margin: 6px 0 14px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;
+  }
   tr { break-inside: avoid; page-break-inside: avoid; }
   th, td {
-    border: 1px solid #e2e8f0; padding: 4px 8px; font-size: 8.5pt;
-    text-align: left; vertical-align: top; word-wrap: break-word; overflow-wrap: break-word;
+    border-bottom: 1px solid #e2e8f0; border-right: 1px solid #eef2f6; padding: 6px 10px;
+    font-size: 8.5pt; text-align: left; vertical-align: top;
+    word-wrap: break-word; overflow-wrap: break-word;
   }
-  th { background: #1e293b; color: #f1f5f9; font-weight: 700; }
+  th:last-child, td:last-child { border-right: none; }
+  tr:last-child td { border-bottom: none; }
+  th {
+    background: #0f172a; color: #f1f5f9; font-weight: 700; font-size: 8pt;
+    letter-spacing: 0.03em; text-transform: uppercase; padding: 8px 10px;
+  }
   tr:nth-child(even) td { background: #f8fafc; }
-  .evidenced-yes { color: #15803d; font-weight: 700; }
-  .evidenced-no { color: #b91c1c; font-weight: 700; }
+  .badge {
+    display: inline-block; padding: 1px 10px; border-radius: 999px;
+    font-weight: 700; font-size: 7.5pt; letter-spacing: 0.02em;
+  }
+  .badge-yes { background: #dcfce7; color: #15803d; }
+  .badge-no { background: #fee2e2; color: #b91c1c; }
   .cover {
     page-break-before: avoid; page-break-after: always;
-    background: #0f172a; color: #f1f5f9; margin: -2.2cm -1.8cm; padding: 4cm 3cm;
-    min-height: 100vh;
+    background: #0f172a; color: #f1f5f9; margin: -2.4cm -1.8cm -1.9cm; padding: 4.4cm 3cm 3cm;
+    min-height: 100vh; position: relative;
   }
-  .cover .logo { font-size: 11pt; font-weight: 900; letter-spacing: 0.2em; color: #ef4444; text-transform: uppercase; margin-bottom: 24px; }
-  .cover h1 { border: none; padding: 0; color: #f1f5f9; font-size: 26pt; margin: 0 0 10px; }
-  .cover .subtitle { color: #cbd5e1; font-size: 12pt; margin-bottom: 28px; }
-  .cover .meta-row { color: #cbd5e1; font-size: 10pt; margin-bottom: 6px; }
-  .cover .meta-row b { color: #f1f5f9; }
+  /* A thin red rule along the top edge of the cover — a deliberate,
+     minimal brand mark, echoing the same red used for every section's
+     left-border accent throughout the document, not a new color. */
+  .cover::before {
+    content: ""; position: absolute; top: 0; left: 0; right: 0; height: 5px; background: #ef4444;
+  }
+  .cover .logo { font-size: 10.5pt; font-weight: 900; letter-spacing: 0.22em; color: #ef4444; text-transform: uppercase; margin-bottom: 28px; }
+  .cover h1 { border: none; padding: 0; color: #f1f5f9; font-size: 27pt; font-weight: 800; margin: 0 0 12px; letter-spacing: -0.01em; }
+  .cover .subtitle { color: #cbd5e1; font-size: 12pt; margin-bottom: 30px; }
+  .cover .meta-row { color: #cbd5e1; font-size: 10pt; margin-bottom: 7px; }
+  .cover .meta-row b { color: #f1f5f9; font-weight: 600; }
   .cover .cover-note {
-    margin-top: 32px; font-size: 9pt; color: #94a3b8; line-height: 1.6;
-    border-top: 1px solid #334155; padding-top: 16px;
+    margin-top: 36px; font-size: 9pt; color: #94a3b8; line-height: 1.65;
+    border-top: 1px solid #334155; padding-top: 18px;
   }
-  .cover .consultant-logo { max-height: 56px; max-width: 220px; margin-bottom: 18px; display: block; }
-  .cover .consultant-tagline { color: #94a3b8; font-size: 10pt; font-style: italic; margin-bottom: 28px; }
-  .subheading { font-size: 10.5pt; font-weight: 700; color: #0f172a; margin: 14px 0 6px; }
+  .cover .consultant-logo { max-height: 56px; max-width: 220px; margin-bottom: 20px; display: block; }
+  .cover .consultant-tagline { color: #94a3b8; font-size: 10pt; font-style: italic; margin-bottom: 30px; }
+  .subheading {
+    font-size: 10.5pt; font-weight: 700; color: #0f172a; margin: 18px 0 8px;
+    padding-left: 10px; border-left: 3px solid #cbd5e1;
+  }
+  .subheading:first-child { margin-top: 4px; }
+  .signature-block { display: flex; gap: 36px; margin-top: 10px; }
+  .signature-block .sig { flex: 1; }
+  .signature-block .sig .sig-label {
+    font-size: 7.5pt; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em;
+    margin-bottom: 22px;
+  }
+  .signature-block .sig .sig-name {
+    border-top: 1px solid #1e293b; padding-top: 6px; font-weight: 700; color: #0f172a; font-size: 9.5pt;
+  }
+  .signature-block .sig .sig-date { color: #64748b; font-size: 8.5pt; margin-top: 2px; }
   .download-bar {
     background: #1e293b; padding: 14px 20px; text-align: center;
     position: sticky; top: 0; z-index: 10;
@@ -332,7 +399,7 @@ def _exercise_summary_html(payload: dict) -> str:
 
 def _participants_html(payload: dict) -> str:
     rows = "".join(
-        f"<tr><td>{_esc(p['participant_name'])}</td><td>Client participant</td><td>{_esc(p['outcome'])}</td></tr>"
+        f"<tr><td>{_esc(p['participant_name'])}</td><td>Client participant</td><td>{_esc(_outcome_label(p['outcome']))}</td></tr>"
         for p in payload["aggregate"]["participants"]
     )
     return f"""
@@ -389,25 +456,41 @@ def _timeline_html(payload: dict) -> str:
 
 def _outcomes_html(payload: dict) -> str:
     dist = payload["aggregate"]["outcome_distribution"]
-    dist_str = ", ".join(f"{_esc(k)}: {v}" for k, v in dist.items())
+    dist_rows = "".join(
+        f"<tr><td>{_esc(_outcome_label(k))}</td><td>{v}</td></tr>" for k, v in dist.items()
+    )
     rows = "".join(
-        f"<tr><td>{_esc(p['participant_name'])}</td><td>{_esc(p['outcome'])}</td>"
-        f"<td>{p['total_score']} ({p['score_pct']}%)</td></tr>"
+        f"<tr><td>{_esc(p['participant_name'])}</td><td>{_esc(_outcome_label(p['outcome']))}</td>"
+        f"<td>{p['total_score']} pts <span style=\"color:#94a3b8;\">&middot; {p['score_pct']}% of ceiling</span></td></tr>"
         for p in payload["aggregate"]["participants"]
     )
     return f"""
 <section>
   <h1>Outcomes</h1>
-  <p>Session summary (distribution across {payload['aggregate']['participant_count']} participant(s)): {dist_str}</p>
+  <div class="subheading">Session Summary</div>
+  <p>Distribution across {payload['aggregate']['participant_count']} participant(s):</p>
+  <table>
+    <colgroup><col style="width:70%"><col style="width:30%"></colgroup>
+    <thead><tr><th>Outcome</th><th>Participants</th></tr></thead>
+    <tbody>{dist_rows}</tbody>
+  </table>
   <div class="note">
     No single session-level outcome is computed - a team's exercise produces several
     independently graded outcomes; the distribution above is the complete answer.
   </div>
+  <div class="subheading">Per-Participant Results</div>
   <table>
-    <colgroup><col style="width:40%"><col style="width:30%"><col style="width:30%"></colgroup>
+    <colgroup><col style="width:35%"><col style="width:30%"><col style="width:35%"></colgroup>
     <thead><tr><th>Participant</th><th>Outcome</th><th>Score</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
+  <div class="note">
+    Score is an absolute point total (base outcome value, plus evidence found, less penalties
+    and collateral). The percentage is that same participant's performance against their own
+    outcome's scoring ceiling (contained 100%, contained at cost 75%, overreacted 25%, breached
+    - spread limited 50%, breached 0%) - it is not a percentage of the point total, and is not
+    comparable across participants with different outcomes.
+  </div>
   {_operational_impact_html(payload)}
 </section>
 """
@@ -589,8 +672,8 @@ def _irp_linkage_html(payload: dict) -> str:
 def _control_mapping_html(payload: dict) -> str:
     rows = "".join(
         f"<tr><td>{_esc(row['control'])}</td><td>{_esc(row['claim'])}</td>"
-        f"<td class=\"{'evidenced-yes' if row['evidenced'] else 'evidenced-no'}\">"
-        f"{'Yes' if row['evidenced'] else 'No'}</td><td>{_esc(row['note'])}</td></tr>"
+        f"<td style=\"text-align:center;\"><span class=\"badge {'badge-yes' if row['evidenced'] else 'badge-no'}\">"
+        f"{'Yes' if row['evidenced'] else 'No'}</span></td><td>{_esc(row['note'])}</td></tr>"
         for row in payload["control_mapping"]
     )
     return f"""
@@ -607,12 +690,26 @@ def _control_mapping_html(payload: dict) -> str:
 
 
 def _attestation_html(payload: dict) -> str:
+    # signed_at/signed_by_name are read directly from the stored signoff
+    # record (app/services/cmmc_after_action.py's record_signoff), captured
+    # at the real moment each party signed — never substituted with the
+    # PDF's own render time.
     client = payload["client_signoff"]
     consultant = payload["consultant_signoff"]
     return f"""
   <div class="subheading">Attestation and Signatures</div>
-  <p><b>Client attestation (record accuracy):</b> {_esc(client['signed_by_name'])}, {_esc(_fmt_dt(client['signed_at']))}</p>
-  <p><b>Consultant attestation (facilitation):</b> {_esc(consultant['signed_by_name'])}, {_esc(_fmt_dt(consultant['signed_at']))}</p>
+  <div class="signature-block">
+    <div class="sig">
+      <div class="sig-label">Client Attestation &middot; Record Accuracy</div>
+      <div class="sig-name">{_esc(client['signed_by_name'])}</div>
+      <div class="sig-date">{_esc(_fmt_dt(client['signed_at']))}</div>
+    </div>
+    <div class="sig">
+      <div class="sig-label">Consultant Attestation &middot; Facilitation</div>
+      <div class="sig-name">{_esc(consultant['signed_by_name'])}</div>
+      <div class="sig-date">{_esc(_fmt_dt(consultant['signed_at']))}</div>
+    </div>
+  </div>
   <div class="note">
     This artifact was issued by BreachReplay for this session on this date. It does not
     itself claim the organization's declarations are true - see Control Mapping.
@@ -657,15 +754,35 @@ def render_evidence_pack_html(payload: dict, *, show_download_button: bool = Fal
 
 
 _DEFAULT_FOOTER_TEMPLATE = (
-    '<div style="width:100%;font-size:7.5pt;color:#94a3b8;'
-    'text-align:center;font-family:Arial,sans-serif;">'
+    '<div style="box-sizing:border-box;width:100%;font-size:7.5pt;color:#94a3b8;'
+    'text-align:center;font-family:Arial,sans-serif;border-top:1px solid #e2e8f0;'
+    'padding-top:5px;margin:0 1.8cm;">'
     "BreachReplay CMMC Evidence Pack &middot; "
     '<span class="pageNumber"></span> / <span class="totalPages"></span>'
     "</div>"
 )
 
+# A minimal running header on every page, including the cover — the same
+# subtle, uppercase, muted-gray treatment a printed compliance document
+# uses for its running head. Deliberately generic (no per-session data)
+# so it needs no extra plumbing through render_pdf_from_html's callers;
+# the cover/footer already carry the session- and issuance-specific
+# identifiers. Playwright's header/footer templates are their own
+# isolated mini-document (no inherited box-sizing reset), so width:100%
+# plus a horizontal margin needs box-sizing set explicitly here or the
+# rendered width overflows the print area.
+_HEADER_TEMPLATE = (
+    '<div style="box-sizing:border-box;width:100%;font-size:7pt;color:#94a3b8;text-align:right;'
+    'font-family:Arial,sans-serif;letter-spacing:0.05em;text-transform:uppercase;'
+    'margin:0 1.8cm;">'
+    "CMMC Evidence Pack"
+    "</div>"
+)
 
-async def render_pdf_from_html(html: str, *, footer_template: str = _DEFAULT_FOOTER_TEMPLATE) -> bytes:
+
+async def render_pdf_from_html(
+    html: str, *, footer_template: str = _DEFAULT_FOOTER_TEMPLATE, header_template: str = _HEADER_TEMPLATE,
+) -> bytes:
     """Playwright's ASYNC api, never the sync one — docker-compose.prod.yml
     runs the backend with --workers 1 (Live Arena's in-process singleton
     state requires it), so a blocking sync call during a ~1-3s render
@@ -689,9 +806,12 @@ async def render_pdf_from_html(html: str, *, footer_template: str = _DEFAULT_FOO
                 format="A4",
                 print_background=True,
                 display_header_footer=True,
-                header_template="<div></div>",
+                header_template=header_template,
                 footer_template=footer_template,
-                margin={"top": "2.2cm", "bottom": "1.6cm", "left": "1.8cm", "right": "1.8cm"},
+                # Must match _CSS's @page margin exactly — the cover's
+                # full-bleed background relies on its negative margin
+                # cancelling this precise value.
+                margin={"top": "2.4cm", "bottom": "1.9cm", "left": "1.8cm", "right": "1.8cm"},
             )
         finally:
             await browser.close()
@@ -720,8 +840,9 @@ async def generate_evidence_pack_pdf(payload: dict) -> bytes:
 
 def _certifiable_footer_template(document_id: str, verify_url: str) -> str:
     return (
-        '<div style="width:100%;font-size:7pt;color:#94a3b8;'
-        'text-align:center;font-family:Arial,sans-serif;padding:0 1.8cm;">'
+        '<div style="box-sizing:border-box;width:100%;font-size:7pt;color:#94a3b8;'
+        'text-align:center;font-family:Arial,sans-serif;border-top:1px solid #e2e8f0;'
+        'padding-top:5px;margin:0 1.8cm;">'
         f"BreachReplay CMMC Evidence Pack &middot; Document ID: {_esc(document_id)} "
         f"&middot; Verify at: {_esc(verify_url)} &middot; "
         '<span class="pageNumber"></span> / <span class="totalPages"></span>'
