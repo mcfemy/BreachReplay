@@ -3,7 +3,13 @@
 # Requires: OpenSSH (built into Windows 10+), Node.js
 
 param(
-    [string]$KeyFile = "breachreplay-key.pem",
+    # Absolute path, deliberately outside the repo working directory — the
+    # key used to live at repo-root as breachreplay-key.pem (gitignored,
+    # but still sitting in a folder OneDrive syncs/version-manages) until
+    # an accidental `rm` there destroyed the only local copy with no git
+    # history to fall back on. Recovered via OneDrive's own recycle bin;
+    # moved out permanently rather than back into the repo.
+    [string]$KeyFile = "$env:USERPROFILE\.ssh\breachreplay-key.pem",
     [string]$EC2User = "ec2-user",
     [string]$EC2Host = "" # filled in automatically from infra/ec2_ip.txt
 )
@@ -43,7 +49,15 @@ if (-not $EC2Host) {
 }
 
 $SSH_TARGET = "${EC2User}@${EC2Host}"
-$KEY = Join-Path $ROOT $KeyFile
+# Join-Path mangles an already-absolute second argument (concatenates
+# rather than treating it as rooted), so only join when $KeyFile is
+# relative — the historical repo-root-relative default no longer applies,
+# but a caller could still legitimately pass a relative -KeyFile.
+$KEY = if ([System.IO.Path]::IsPathRooted($KeyFile)) { $KeyFile } else { Join-Path $ROOT $KeyFile }
+if (-not (Test-Path $KEY)) {
+    Write-Error "SSH key not found at '$KEY'. Pass -KeyFile <path> if it's stored elsewhere."
+    exit 1
+}
 $SSH_OPTS = "-i `"$KEY`" -o StrictHostKeyChecking=no"
 
 Write-Host "==> Deploying to $SSH_TARGET" -ForegroundColor Cyan
