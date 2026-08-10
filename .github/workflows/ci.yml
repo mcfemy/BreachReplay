@@ -30,3 +30,26 @@ jobs:
       - name: Run tests
         run: pytest -q
         working-directory: backend
+
+      # Frontend suite runs in this SAME job, not a separate one — branch
+      # protection's required checks are locked to exactly ["review",
+      # "test"] (claude-review.yml's job + this job), and claude-review.yml
+      # already polls/trusts a check literally named "test" as independent
+      # evidence (see that file's header comment). Keeping both suites in
+      # one job means a frontend regression blocks merges through the
+      # existing gate with zero changes to branch protection or
+      # claude-review.yml — "the same way backend PRs run pytest."
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Run frontend tests
+        run: npm test
+        working-directory: frontend
