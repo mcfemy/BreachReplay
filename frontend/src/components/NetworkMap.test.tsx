@@ -17,6 +17,9 @@ describe("NetworkMap", () => {
     );
     expect(screen.getByText("CORP-WKS-22")).toBeInTheDocument();
     expect(screen.getByText("CORP-DC-01")).toBeInTheDocument();
+    // TEMP: verifying the CI gate blocks on a frontend test failure —
+    // reverted in the very next commit.
+    expect(true).toBe(false);
   });
 
   it("fires onNodeClick only for clickable nodes", async () => {
