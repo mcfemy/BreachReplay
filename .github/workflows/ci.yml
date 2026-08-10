@@ -27,6 +27,43 @@ jobs:
         run: pip install -r requirements.txt
         working-directory: backend
 
+      # requirements.txt installs playwright's Python bindings but not the
+      # headless browser binary they drive — a fresh runner has neither
+      # cached, so every CMMC evidence-pack PDF test (test_cmmc_branding.py/
+      # test_cmmc_evidence_pack.py/test_cmmc_signing.py, the HTML+Playwright
+      # rendering path) fails with "Executable doesn't exist" without this.
+      # Found while verifying frontend-test-infra's own PR: `test` had
+      # actually been red on every push to main since the CMMC PDF work
+      # landed (2026-08-07) for exactly this reason, silently, because
+      # branch protection's enforce_admins is off and admin pushes bypass
+      # required checks entirely.
+      - name: Install Playwright browser
+        run: playwright install --with-deps chromium
+        working-directory: backend
+
       - name: Run tests
         run: pytest -q
         working-directory: backend
+
+      # Frontend suite runs in this SAME job, not a separate one — branch
+      # protection's required checks are locked to exactly ["review",
+      # "test"] (claude-review.yml's job + this job), and claude-review.yml
+      # already polls/trusts a check literally named "test" as independent
+      # evidence (see that file's header comment). Keeping both suites in
+      # one job means a frontend regression blocks merges through the
+      # existing gate with zero changes to branch protection or
+      # claude-review.yml — "the same way backend PRs run pytest."
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Run frontend tests
+        run: npm test
+        working-directory: frontend

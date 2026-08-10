@@ -5,16 +5,30 @@ scope for the phase/item in progress when they were found. Not a general
 issue tracker — just the small set of things flagged mid-work worth not
 losing.
 
-## Phase 2.5 — CMMC evidence layer (queued after Phase 2)
+## Phase 2.5 — CMMC evidence layer — COMPLETE
 
-Follows the full game-overhaul Phase 2 (action console core loop). Not yet
-scoped in detail; queued here as a placeholder so it isn't lost between
-Phase 2's completion and its own kickoff. Revisit
-`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md` and this project's compliance-
-evidence-export precedent (`GET /admin/compliance-analytics`,
-`compliance_evidence` fields on `SimulationSession.debrief_report`) as the
-starting point for what a CMMC-flavored evidence layer needs to add on top
-of what Phase 2's `ActionRun`/`action_log` already captures.
+Shipped and production-verified 2026-08-07 (spec:
+`docs/PHASE_2_5_CMMC_EVIDENCE_SPEC_FINAL.md`). All 8 build-order items
+landed: multi-tenancy, consultant/client onboarding, `EvidenceSession`
+designation, notification matrix, after-action workflow (lessons/
+remediation/dual sign-off), PDF generation (HTML+Playwright), Ed25519
+signing/tamper-evidence, consultant branding. A full real end-to-end
+walkthrough against production (org bootstrap → invites → two scored
+gameplay runs → designation → notification matrix → lessons/remediation/
+IRP linkage → dual sign-off → issuance → download → public verification)
+found and fixed 4 real bugs, all shipped (`4c207e2`, `88bf357`,
+`b2e3d65`). No frontend UI exists for this layer, by design — it's API +
+server-rendered PDF only (spec §9: "No compliance language on the play
+surface").
+
+This section was left as a stale "not yet scoped" placeholder after the
+phase actually completed — corrected here so a future session reading
+this file top-to-bottom doesn't re-derive work that already shipped. See
+also STATE.md's Phase 2.5 section (same correction) and two related open
+items already logged below: "CMMC invitations have no audit trail" and
+the Phase 3 items noted in `docs/PHASE_2_5_CMMC_EVIDENCE_SPEC_FINAL.md`
+§10 (targeted `escalate`/notification proportionality) and in
+"Proportionate Response — CONTAINED_AT_COST is unreachable..." below.
 
 ## Decision-gate scenario completion never awards XP or checks achievements
 
@@ -57,18 +71,32 @@ earns in `verb_engine.py` — that's a gameplay-balance decision, not a UI
 one, and explicitly out of scope for Item 5. Revisit alongside Phase 5's
 broader tone pass.
 
-## Frontend test coverage — no runner configured
+## Frontend test coverage — no runner configured — FIXED
 
-The frontend (`frontend/`) has no test runner at all (`package.json` has
-no `test` script, no vitest/jest, confirmed while scoping Item 5). This
-means `claude-review.yml`'s automated reviewer — which only ever runs
-`cd backend && pytest -q` — is structurally blind to every frontend PR's
-actual UI/logic content; a green backend suite says nothing about whether
-a frontend change works. Item 5's own PR is the first real casualty of
-this (a large, genuinely new UI with zero automated coverage, verified
-only by manual play-through). Add a minimal vitest + React Testing
-Library setup before Phase 3-5 land more frontend work, so those PRs stop
-being reviewed blind.
+**Fixed on branch `frontend-test-infra`.** Added Vitest + React Testing
+Library (`frontend/vitest.config.ts` merges the real `vite.config.ts`;
+`frontend/src/test/setup.ts` registers `@testing-library/jest-dom/vitest`
+matchers + a jsdom `matchMedia` polyfill `NetworkMap.tsx` needs).
+
+An initial smoke-test layer, not full coverage — 11 tests across 6 files
+covering the app's major surfaces: `NetworkMap.test.tsx`,
+`ActionConsole.test.tsx`, `AppShell.test.tsx`, `DailyBreachPage.test.tsx`,
+`ScenarioLibraryPage.test.tsx`, `LandingPage.test.tsx`. Each renders
+without crashing and exercises one real interaction (a verb-chip tap
+calling `submitVerb`, the mobile nav drawer toggling, a scenario launch
+POSTing to `/action-runs`, etc.) with `axiosInstance`/`api`/`useRunSocket`
+mocked rather than hitting real network or WebSocket connections. No
+CMMC evidence-pack UI test — confirmed none exists (see the Phase 2.5
+entry above).
+
+Wired into `ci.yml`'s existing `test` job (frontend steps run after the
+existing pytest steps, same job — not a new one) rather than adding a
+new job + a new required branch-protection check: branch protection's
+required checks are locked to exactly `["review", "test"]`, and
+`claude-review.yml` already polls/trusts a check named `test` as
+independent evidence. This gets frontend coverage into the exact same
+gate backend PRs already go through with zero changes to
+`claude-review.yml` or branch-protection settings.
 
 ## AppShell's sidebar doesn't collapse on mobile — blocks phone playability
 

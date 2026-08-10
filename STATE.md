@@ -291,10 +291,41 @@ re-diagnosing this each time).
 
 ---
 
-## Phase 2.5 — CMMC evidence layer (next)
+## Phase 2.5 — CMMC evidence layer (complete — shipped and production-verified 2026-08-07)
 
-Not yet scoped — will be spec'd fresh before any code, per plan. See
-`docs/BACKLOG.md`'s Phase 2.5 entry for the starting-point pointers
-(the existing compliance-evidence-export precedent, what Phase 2's
-`ActionRun`/`action_log` already captures) gathered while it was still
-queued.
+This section previously said "not yet scoped" — stale. The phase was
+spec'd (`docs/PHASE_2_5_CMMC_EVIDENCE_SPEC_FINAL.md`), built, and shipped
+end to end. All 8 build-order items landed: multi-tenancy models,
+consultant/client onboarding + invitations, `EvidenceSession` designation
+from completed runs, notification matrix CRUD, after-action workflow
+(lessons/remediation/IRP linkage/dual sign-off), evidence pack PDF
+generation (HTML + Playwright/Chromium, not reportlab), Ed25519
+signing/tamper-evidence, and consultant branding (logo + tagline).
+
+A full real end-to-end walkthrough against production (real HTTP/WS, not
+internal calls) covering the entire consultant flow — org bootstrap,
+invites, two real scored gameplay runs, designation, notification
+matrix, lessons/remediation/IRP linkage, dual sign-off, issuance,
+download, public verification, byte-identical re-download — found and
+fixed 4 real bugs, all shipped: `exercise_date` 500ing on any
+timezone-aware ISO datetime, `POST /action-runs` returning a WS-only id
+that silently differed from the persisted `ActionRun.id`,
+`POST /admin/cmmc/consulting-orgs` not echoing `admin_email`, and the
+evidence-pack download route 500ing on any non-latin-1 character in a
+session title.
+
+**No frontend UI exists for this layer, by design** — spec §9: "No
+compliance language on the play surface." It's API + server-rendered PDF
+only.
+
+**Known, logged, unfixed gap** (see `docs/BACKLOG.md`): `contained_at_cost`
+is mathematically unreachable on Colonial Pipeline and SolarWinds
+specifically (decoy pools too small). Flagged for Phase 3 tuning.
+
+Production signing key is live (`key_id=prod-20260807`); the private key
+was generated inside the production container and handed to Femi once
+for offline backup, never stored in this repo or in agent memory.
+
+Local dev and production have **different** `Scenario` row ids for the
+same conceptual scenario — not shared seed data. Don't assume a
+`scenario_id` discovered in one environment works in the other.
