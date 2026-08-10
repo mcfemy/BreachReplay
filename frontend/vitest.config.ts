@@ -1,5 +1,5 @@
 import { defineConfig, mergeConfig } from "vitest/config";
-import viteConfig from "./vite.config";
+import viteConfig from "./vite.config.ts";
 
 // Merges the real vite.config.ts (so tests see the same @vitejs/plugin-react
 // setup the app itself builds with) rather than duplicating plugin config
