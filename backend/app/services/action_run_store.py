@@ -65,8 +65,8 @@ CAP_SECONDS_BY_MODE: dict[str, int] = {
 SWEEP_GRACE_SECONDS = 60
 
 # XP is score-derived and deliberately simple/provisional, matching
-# verb_engine's own ESCALATE_PENALTY/PRECISION_PENALTY framing — a real
-# balancing pass is a later item, not this one.
+# verb_engine's own UNWARRANTED_NOTIFICATION_PENALTY/PRECISION_PENALTY
+# framing — a real balancing pass is a later item, not this one.
 XP_PER_SCORE_POINT_DIVISOR = 10
 
 

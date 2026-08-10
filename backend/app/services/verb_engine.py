@@ -44,16 +44,32 @@ VERB_COSTS: dict[str, int] = {
 }
 
 # Verbs that operate against a specific target string (host id / ip / account
-# username). "escalate" and "scan_network" are the two verbs with no target.
-_TARGETED_VERBS = frozenset(VERB_COSTS) - {"escalate", "scan_network"}
+# username / notification party id). "scan_network" is the only verb left
+# with no target — Phase 3 made "escalate" targeted (a party id from the
+# scenario's notification_matrix), replacing the old free/untargeted button.
+_TARGETED_VERBS = frozenset(VERB_COSTS) - {"scan_network"}
 
 ESCALATE_FREEZE_SECONDS = 60
 
 # Scoring amounts are provisional pending Item 3/4's real scoring formula
 # (feeding xp_service.award_xp) — tracked here only as penalty *events* with
 # a numeric weight, not a final score.
-ESCALATE_PENALTY = 100
 PRECISION_PENALTY = 50
+
+# Phase 3 — Targeted Escalation & Notification Proportionality. Same
+# per-item scale as EVIDENCE_POINTS_PER_IOC (100) below: a correctly
+# warranted notification is worth as much as finding an IOC. Both penalty
+# directions apply per the spec — over-notifying an unwarranted party AND
+# under-notifying (never notifying) a warranted one both cost, not just one
+# direction. UNWARRANTED_NOTIFICATION_PENALTY is applied immediately in
+# apply_verb (known the instant the call is made, same as wrong_isolation/
+# wrong_block_ip); MISSED_NOTIFICATION_PENALTY can only be computed once
+# the run ends (a whole-run check — was every warranted party EVER
+# notified — same reason _collateral_hosts is a finalize-time check, not a
+# per-action one), so it's applied in compute_score, not here.
+NOTIFICATION_POINTS_PER_WARRANTED = 100
+UNWARRANTED_NOTIFICATION_PENALTY = 100
+MISSED_NOTIFICATION_PENALTY = 100
 
 _COMPROMISE_LEVELS = ("none", "foothold", "admin", "domain_admin")
 
@@ -71,7 +87,13 @@ class RunState:
     world: OrgState
     elapsed_seconds: int = 0
     attacker_clock_offset: int = 0
-    escalate_used: bool = False
+    # Phase 3 — replaces the old one-shot-ever `escalate_used: bool`. A
+    # scenario's notification_matrix has 5-6 parties; a player may
+    # legitimately need to notify several across a run, some warranted and
+    # some not, so escalate is now once-PER-PARTY rather than once-EVER —
+    # this set is what enforces that (each party's id can only enter it
+    # once; see apply_verb's escalate branch).
+    notified_party_ids: frozenset = field(default_factory=frozenset)
     revealed_host_ids: frozenset = field(default_factory=frozenset)
     discovered_ioc_keys: frozenset = field(default_factory=frozenset)  # {(host_id, rule_id)}
     penalties: tuple = ()
@@ -201,6 +223,42 @@ def _grace_check(run: "RunState") -> tuple[bool, float]:
     return within_grace, coverage_ratio
 
 
+# ── Phase 3: notification proportionality ────────────────────────────────────
+
+def _notification_summary(run: "RunState") -> tuple[list[dict], int, int]:
+    """(notifications, notification_points, notification_penalty) — scored
+    the same way _collateral_hosts/_grace_check score collateral: a
+    whole-run check against the scenario's authored `notification_matrix`,
+    not a per-action one, because "was every warranted party EVER
+    notified" can only be answered once the run ends (the same reason
+    collateral is a finalize-time check).
+
+    This function only ever scores the UNDER-notification direction
+    (a warranted party that never got notified) plus the reward for
+    getting a warranted notification right. The OVER-notification
+    direction (notifying an unwarranted party) is scored differently, on
+    purpose: it's knowable the instant the call is made, so it's applied
+    immediately in apply_verb's escalate branch as a normal `penalties`
+    entry — same pattern as wrong_isolation/wrong_block_ip — and already
+    flows into `penalty_total` below. Folding it into this function's
+    `notification_penalty` too would double-count it."""
+    notifications = []
+    notification_points = 0
+    notification_penalty = 0
+    for party in run.compiled.notification_matrix:
+        notified = party["id"] in run.notified_party_ids
+        warranted = bool(party["warranted"])
+        notifications.append({
+            "party_id": party["id"], "party_name": party["party_name"],
+            "warranted": warranted, "notified": notified,
+        })
+        if warranted and notified:
+            notification_points += NOTIFICATION_POINTS_PER_WARRANTED
+        elif warranted and not notified:
+            notification_penalty += MISSED_NOTIFICATION_PENALTY
+    return notifications, notification_points, notification_penalty
+
+
 def _set_host_isolated(world: OrgState, host_id: str) -> OrgState:
     if world.get_host(host_id) is None:
         return world
@@ -315,24 +373,46 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
         return VerbResult(run=run, delta={}, error=f"Verb {verb!r} requires a target")
 
     if verb == "escalate":
-        if run.escalate_used:
-            return VerbResult(run=run, delta={}, error="escalate already used this run")
+        party = next((p for p in run.compiled.notification_matrix if p["id"] == target), None)
+        if party is None:
+            return VerbResult(run=run, delta={}, error=f"Unknown notification party: {target!r}")
+        if target in run.notified_party_ids:
+            return VerbResult(run=run, delta={}, error=f"Party {target!r} already notified this run")
+
+        warranted = bool(party["warranted"])
         sequence_number = len(run.action_log)
+        new_penalties = run.penalties
+        if not warranted:
+            # Over-notification — known immediately, unlike the missed-
+            # warranted-party check below, which can only be evaluated once
+            # the run ends (compute_score).
+            new_penalties = new_penalties + (
+                {"type": "unwarranted_notification", "party_id": target, "amount": UNWARRANTED_NOTIFICATION_PENALTY},
+            )
         new_run = replace(
             run,
-            escalate_used=True,
+            notified_party_ids=run.notified_party_ids | {target},
             attacker_clock_offset=run.attacker_clock_offset + ESCALATE_FREEZE_SECONDS,
-            penalties=run.penalties + ({"type": "escalate_used", "amount": ESCALATE_PENALTY},),
+            penalties=new_penalties,
         )
         new_run = replace(
             new_run,
-            action_log=new_run.action_log + (_log_entry(
-                len(new_run.action_log), "escalate", None, new_run.elapsed_seconds, 0,
-            ),),
+            # `warranted` rides alongside the standard log-entry shape (same
+            # pattern block_ip/reset_creds use for their own extra
+            # `correct` flag) — this is what lets cmmc_evidence.py's
+            # aggregate finally answer "which declared obligation, if any,
+            # did this escalation satisfy" instead of just "an escalation
+            # occurred" (see that module's docstring, the exact gap this
+            # closes).
+            action_log=new_run.action_log + ({
+                **_log_entry(sequence_number, "escalate", target, new_run.elapsed_seconds, 0),
+                "warranted": warranted,
+            },),
         )
-        escalate_output = tool_output.render_escalate(run.compiled.seed, sequence_number)
+        escalate_output = tool_output.render_escalate(run.compiled.seed, sequence_number, party["party_name"])
         return VerbResult(run=new_run, delta={
-            "escalate_used": True, "frozen_seconds": ESCALATE_FREEZE_SECONDS, "tool_output": escalate_output,
+            "party_id": target, "party_name": party["party_name"], "warranted": warranted,
+            "frozen_seconds": ESCALATE_FREEZE_SECONDS, "tool_output": escalate_output,
         })
 
     world = run.world
@@ -518,7 +598,29 @@ def earned_state_snapshot(run: RunState) -> dict:
         "hosts": [_host_summary(h) for h in hosts],
         "revealed_iocs": revealed_iocs,
         "edges": _revealed_edges(run.compiled, run.revealed_host_ids),
+        # Phase 3 — same reconnect-gap discipline Item 3 already applied to
+        # hosts/revealed_iocs/edges above: without this, a reconnecting
+        # player's client-side "already notified" tracking would silently
+        # reset to empty even though the server still enforces once-per-
+        # party server-side, so a reconnect could tap an already-notified
+        # party and learn only from a rejection error instead of the
+        # picker correctly greying it out. Not leak-safety-sensitive like
+        # the others (a party id a player already notified isn't a spoiler
+        # — they picked it themselves).
+        "notified_party_ids": sorted(run.notified_party_ids),
     }
+
+
+def public_notification_parties(compiled: CompiledRun) -> list[dict]:
+    """The `{id, party_name}` pairs a player picks from when tapping
+    "Escalate" — deliberately excludes `warranted`/`basis`/`rationale`/
+    `source_reference`: those ARE the answer to the judgment call this
+    verb exists to test, so sending them up front would hand the player
+    the puzzle's solution the same way leaking an unrevealed IOC would.
+    Known from run start (this is a static per-scenario list, not
+    progressively earned like hosts/IOCs), so it's sent once in
+    run.resync, never gated behind fog-of-war."""
+    return [{"id": p["id"], "party_name": p["party_name"]} for p in compiled.notification_matrix]
 
 
 # ── Outcome + scoring (Phase 2, Item 3) ──────────────────────────────────────
@@ -529,8 +631,8 @@ def earned_state_snapshot(run: RunState) -> dict:
 
 _PARTIAL_CONTAINMENT_THRESHOLD = 0.5
 
-# Provisional, like ESCALATE_PENALTY/PRECISION_PENALTY above — a real
-# balancing pass is a later item, not this one.
+# Provisional, like UNWARRANTED_NOTIFICATION_PENALTY/PRECISION_PENALTY
+# above — a real balancing pass is a later item, not this one.
 #
 # `overreacted` (200) deliberately scores BELOW `breached_spread_limited`
 # (400), even though `overreacted` means the final target WAS stopped and
@@ -662,12 +764,21 @@ def compute_score(run: RunState, outcome: str, cap_seconds: Optional[int]) -> di
     collateral = _collateral_hosts(run)
     collateral_penalty = sum(weight for _hid, _hostname, weight in collateral)
 
+    # Phase 3 — notification proportionality: parallel to evidence_points,
+    # additive into total_score, never touching `outcome` (determine_outcome
+    # never reads notification data) or score_pct's ceiling below — a
+    # separate axis, not a second UI-surfaced score.
+    notifications, notification_points, notification_penalty = _notification_summary(run)
+
     speed_bonus = 0
     if outcome == "contained" and cap_seconds:
         speed_bonus = max(0, cap_seconds - run.elapsed_seconds) * SPEED_BONUS_PER_SECOND_SAVED
 
     outcome_base = SCORE_OUTCOME_BASE.get(outcome, 0)
-    total_score = max(0, outcome_base + evidence_points + speed_bonus - penalty_total - collateral_penalty)
+    total_score = max(0, (
+        outcome_base + evidence_points + speed_bonus + notification_points
+        - penalty_total - collateral_penalty - notification_penalty
+    ))
 
     evidence_ratio = (evidence_found / evidence_total) if evidence_total else 1.0
     if outcome == "contained" and not run.penalties and not collateral and evidence_ratio >= 1.0:
@@ -694,6 +805,9 @@ def compute_score(run: RunState, outcome: str, cap_seconds: Optional[int]) -> di
             for hid, hostname, weight in collateral
         ],
         "collateral_penalty": collateral_penalty,
+        "notifications": notifications,
+        "notification_points": notification_points,
+        "notification_penalty": notification_penalty,
         "total_score": total_score,
         "score_pct": score_pct,
     }

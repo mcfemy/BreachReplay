@@ -54,6 +54,20 @@ class Scenario(Base):
     collateral_weights: Mapped[dict] = mapped_column(
         JSONB().with_variant(JSON, "sqlite"), nullable=False, default=dict, server_default="{}",
     )
+    # Phase 3 — Targeted Escalation & Notification Proportionality. The
+    # scenario's own authored ground truth for which parties a warranted
+    # notification decision covers: [{id, party_name, warranted, authority,
+    # basis, channel, window, rationale, source_reference}, ...]. NOT the
+    # same thing as ClientOrg.notification_matrix (Phase 2.5 item 4) — that
+    # is the client org's own generically-declared contact policy, no
+    # incident-specific judgment. This is BreachReplay's own per-scenario
+    # "was notifying this party actually warranted" call, same authored-
+    # content precedent as collateral_weights/hidden_iocs above, not a
+    # client declaration. See migration 0038 for the SolarWinds reference
+    # content and docs/PHASE_2_5_CMMC_EVIDENCE_SPEC_FINAL.md section 10.
+    notification_matrix: Mapped[list] = mapped_column(
+        JSONB().with_variant(JSON, "sqlite"), nullable=False, default=list, server_default="[]",
+    )
 
     status: Mapped[str] = mapped_column(SAEnum("draft", "review", "approved", "rejected", "archived", name="scenario_status"), default="draft")
     # Structural guard against the daily-challenge picker (and anything else

@@ -260,6 +260,14 @@ class CompiledRun:
     # `{}` for scenarios with none authored (MGM) or bare test-dict
     # fixtures without the field at all.
     collateral_weights: dict = field(default_factory=dict)
+    # Phase 3 — Targeted Escalation & Notification Proportionality: the
+    # scenario's authored [{id, party_name, warranted, ...}, ...] list
+    # (Scenario.notification_matrix), carried through the same way
+    # collateral_weights is above — verb_engine's escalate handler reads
+    # this off the CompiledRun rather than needing its own DB access.
+    # `()` for scenarios with none authored yet or bare test-dict fixtures
+    # without the field at all.
+    notification_matrix: tuple = field(default_factory=tuple)
     # How many (already-compressed) attacker-clock seconds are pre-folded
     # into `world` above — see BREACH_HEAD_START_SECONDS. `world_state_at`
     # and verb_engine.new_run both need this exact value (not just the
@@ -571,6 +579,7 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
     world = _apply_stages_up_to(world, stages, breach_head_start_seconds)
 
     collateral_weights = _field(scenario, "collateral_weights") or {}
+    notification_matrix = tuple(_field(scenario, "notification_matrix") or ())
 
     return CompiledRun(
         scenario_id=scenario_id,
@@ -582,6 +591,7 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
         alert_lines=alert_lines,
         final_stage_id=final_stage_id,
         collateral_weights=collateral_weights,
+        notification_matrix=notification_matrix,
         breach_head_start_seconds=breach_head_start_seconds,
     )
 

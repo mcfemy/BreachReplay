@@ -202,12 +202,17 @@ def test_render_isolate_output_identical_for_any_host_state():
 # ── escalate / ServiceNow ─────────────────────────────────────────────────────
 
 def test_render_escalate_is_deterministic_per_seed_and_sequence():
-    a = tool_output.render_escalate(seed=11, sequence_number=2)
-    b = tool_output.render_escalate(seed=11, sequence_number=2)
+    a = tool_output.render_escalate(seed=11, sequence_number=2, party_name="CISA")
+    b = tool_output.render_escalate(seed=11, sequence_number=2, party_name="CISA")
     assert a == b
 
 
 def test_render_escalate_ticket_varies_by_sequence_number():
-    a = tool_output.render_escalate(seed=11, sequence_number=0)
-    b = tool_output.render_escalate(seed=11, sequence_number=1)
+    a = tool_output.render_escalate(seed=11, sequence_number=0, party_name="CISA")
+    b = tool_output.render_escalate(seed=11, sequence_number=1, party_name="CISA")
     assert a["output"] != b["output"]
+
+
+def test_render_escalate_includes_the_notified_party_name():
+    result = tool_output.render_escalate(seed=11, sequence_number=0, party_name="DC3 (DoD Cyber Crime Center)")
+    assert "DC3 (DoD Cyber Crime Center)" in result["output"]

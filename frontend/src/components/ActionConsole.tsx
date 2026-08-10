@@ -11,6 +11,7 @@ import {
   UNTARGETED_VERBS,
   HOST_TARGETED_VERBS,
   TEXT_TARGETED_VERBS,
+  PARTY_TARGETED_VERBS,
   OUTCOME_LABELS,
   type Verb,
   type HostSummary,
@@ -193,6 +194,20 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
           : { text: "No match for that input.", good: false },
       );
     }
+
+    // escalate (Phase 3) — same immediate-feedback pattern block_ip/
+    // reset_creds already get above: the player learns right away whether
+    // this specific notification was warranted, not only in the final
+    // debrief. Not a world-state leak (it's feedback on the player's OWN
+    // action, same category as block_ip's "Correct"/"No match"), unlike
+    // IOC content or attacker-stage state.
+    if (typeof delta.warranted === "boolean" && typeof delta.party_name === "string") {
+      setResultToast(
+        delta.warranted
+          ? { text: `Notified ${delta.party_name} — warranted.`, good: true }
+          : { text: `Notified ${delta.party_name} — not warranted.`, good: false },
+      );
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.lastDelta]);
 
@@ -346,12 +361,25 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   }
 
   function handleNodeClick(hostId: string) {
-    if (targetVerb) {
+    // Guarded to HOST_TARGETED_VERBS specifically (Phase 3) — the map
+    // stays visible and tappable while a text-target or party-target
+    // prompt is up (they render as siblings below it, not an overlay), so
+    // an unguarded `if (targetVerb)` here would let a stray map tap
+    // submit escalate (or block_ip/reset_creds) with a host id instead of
+    // its real target.
+    if (targetVerb && HOST_TARGETED_VERBS.includes(targetVerb)) {
       run.submitVerb(targetVerb, hostId);
       setTargetVerb(null);
       return;
     }
+    if (targetVerb) return;
     setSelectedHostId(hostId);
+  }
+
+  function submitPartyTarget(partyId: string) {
+    if (!targetVerb) return;
+    run.submitVerb(targetVerb, partyId);
+    setTargetVerb(null);
   }
 
   function submitTextTarget() {
@@ -500,6 +528,45 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
             {VERB_LABELS[targetVerb]} — tap a host on the map
           </p>
           <button onClick={() => setTargetVerb(null)} className="text-dim text-xs active:scale-95">Cancel</button>
+        </div>
+      )}
+
+      {/* Party-target picker (Phase 3 — escalate) — deliberately shows
+          only {id, party_name} (run.notificationParties, redacted
+          server-side, see verb_engine.public_notification_parties): never
+          `warranted`, or the picker would hand the player the judgment
+          call this verb exists to test. Already-notified parties
+          (run.notifiedPartyIds) are shown disabled rather than hidden —
+          confirms to the player what they've already done instead of
+          silently shrinking the list. */}
+      {targetVerb && PARTY_TARGETED_VERBS.includes(targetVerb) && (
+        <div className="shrink-0 border-t border-phosphor/40 bg-panel px-4 py-3">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-term text-phosphor uppercase tracking-widest">
+              {VERB_LABELS[targetVerb]} — who do you notify?
+            </p>
+            <button onClick={() => setTargetVerb(null)} className="text-dim text-xs active:scale-95">Cancel</button>
+          </div>
+          {run.notificationParties.length === 0 ? (
+            <p className="text-xs text-dim">No notification matrix authored for this scenario yet.</p>
+          ) : (
+            <div className="grid grid-cols-2 gap-1.5">
+              {run.notificationParties.map((party) => {
+                const alreadyNotified = run.notifiedPartyIds.includes(party.id);
+                return (
+                  <button
+                    key={party.id}
+                    onClick={() => submitPartyTarget(party.id)}
+                    disabled={alreadyNotified}
+                    className="px-3 py-2 rounded bg-void border border-dim/30 text-white text-xs font-bold text-left active:scale-95 disabled:opacity-40"
+                  >
+                    <span>{party.party_name}</span>
+                    {alreadyNotified && <span className="block text-[9px] font-normal text-dim mt-0.5">Already notified</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -673,6 +740,14 @@ function RunDebrief({
   const outcomeLabel = OUTCOME_LABELS[summary.outcome].toUpperCase();
   const outcomeColor = OUTCOME_COLOR[summary.outcome];
   const collateral = summary.score_breakdown.collateral ?? [];
+  // Phase 3 — two lines, same "show the mistake, not just the score"
+  // spirit as the collateral line above: who was actually notified
+  // (tagged warranted/not), and separately, which warranted party the
+  // run never notified at all. Both silent when empty, matching how the
+  // collateral line above renders nothing on a clean run.
+  const notifications = summary.score_breakdown.notifications ?? [];
+  const notified = notifications.filter((n) => n.notified);
+  const missedWarranted = notifications.filter((n) => n.warranted && !n.notified);
   return (
     <div className="flex flex-col h-full bg-void text-white items-center justify-center px-6 text-center">
       <p className="font-term text-xs uppercase tracking-[0.3em] text-dim mb-2">Run Complete</p>
@@ -694,6 +769,33 @@ function RunDebrief({
           </p>
           <p className="text-sm text-white">
             {collateral.map((h) => h.hostname).join(", ")}
+          </p>
+        </div>
+      )}
+
+      {/* Phase 3 — notification proportionality, same "name the specific
+          mistake" treatment as collateral above. Warranted notifications
+          read green (contain), unwarranted ones read the same bleed red
+          as overreacted collateral does — over-notifying is a real cost,
+          not a near-miss. */}
+      {notified.length > 0 && (
+        <div className="mb-6 max-w-sm">
+          <p className="font-term text-xs uppercase tracking-[0.2em] text-dim mb-1">Notifications Made</p>
+          <p className="text-sm">
+            {notified.map((n, i) => (
+              <span key={n.party_id}>
+                {i > 0 && ", "}
+                <span style={{ color: n.warranted ? colors.contain : colors.bleed }}>{n.party_name}</span>
+              </span>
+            ))}
+          </p>
+        </div>
+      )}
+      {missedWarranted.length > 0 && (
+        <div className="mb-6 max-w-sm">
+          <p className="font-term text-xs uppercase tracking-[0.2em] text-dim mb-1">Should Have Notified</p>
+          <p className="text-sm text-bleed">
+            {missedWarranted.map((n) => n.party_name).join(", ")}
           </p>
         </div>
       )}

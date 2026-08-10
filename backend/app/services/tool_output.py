@@ -210,10 +210,16 @@ def render_isolate(host: Host) -> dict:
     return {"tool": "EDR", "command": None, "output": output}
 
 
-def render_escalate(seed: int, sequence_number: int) -> dict:
+def render_escalate(seed: int, sequence_number: int, party_name: str) -> dict:
     """ServiceNow-style incident creation — fits the existing content's own
     "Help Desk"/"IT Helpdesk" source_system references. Ticket number is
-    deterministic (seed + sequence), not real-random."""
+    deterministic (seed + sequence), not real-random. `party_name` (Phase
+    3 — escalate is now targeted) rides along in the ticket text so the
+    player sees confirmation of WHO this notification went to, not just
+    that a generic ticket was filed."""
     ticket = _derive_rng(seed, f"tool-output-ticket:{sequence_number}").randint(100000, 999999)
-    output = f"INC{ticket} created. Priority: P1 — Critical. Category: Security Incident. Assigned: SOC Manager (on-call)."
+    output = (
+        f"INC{ticket} created. Priority: P1 — Critical. Category: Security Incident. "
+        f"Notify: {party_name}. Assigned: SOC Manager (on-call)."
+    )
     return {"tool": "ServiceNow", "command": None, "output": output}

@@ -22,14 +22,19 @@ export const VERB_COSTS = {
 
 export type Verb = keyof typeof VERB_COSTS;
 
-// The two verbs apply_verb accepts with no target at all.
-export const UNTARGETED_VERBS: Verb[] = ["scan_network", "escalate"];
+// The only verb apply_verb accepts with no target at all — Phase 3 moved
+// "escalate" out of this list (see PARTY_TARGETED_VERBS below).
+export const UNTARGETED_VERBS: Verb[] = ["scan_network"];
 // Verbs whose target is a host id — pick by tapping the map.
 export const HOST_TARGETED_VERBS: Verb[] = ["query_logs", "isolate", "image_disk", "interview_user"];
 // Verbs whose target is a free-text string the player read in a revealed
 // log/credential (never a host id) — block_ip's IP comes from a revealed
 // raw_log, reset_creds's username from a revealed interview_user credential.
 export const TEXT_TARGETED_VERBS: Verb[] = ["block_ip", "reset_creds"];
+// Phase 3 — "escalate"'s target is a party id picked from
+// RunSocketState.notificationParties, a third distinct targeting mode:
+// not a host, not free text, a fixed picklist known from run start.
+export const PARTY_TARGETED_VERBS: Verb[] = ["escalate"];
 
 // verb_engine._host_summary's shape. Never includes unpatched_cves/
 // edr_installed (image_disk-only forensics, kept separate below) or
@@ -67,6 +72,27 @@ export interface RevealedCredential {
 export interface RunEdge {
   source: string;
   target: string;
+}
+
+// verb_engine.public_notification_parties' shape — Phase 3. Deliberately
+// just {id, party_name}: `warranted`/`basis`/`rationale`/`source_reference`
+// are the answer to the judgment call escalate exists to test, so the
+// server never sends them ahead of time (same leak-safety discipline as
+// hidden_iocs — see that function's own docstring).
+export interface NotificationParty {
+  id: string;
+  party_name: string;
+}
+
+// One entry from a run.end summary's score_breakdown.notifications —
+// unlike NotificationParty above, this is post-run only (same
+// leak-safety boundary as CollateralHost below) and DOES carry
+// `warranted`, since the run is over and there's nothing left to spoil.
+export interface NotificationOutcome {
+  party_id: string;
+  party_name: string;
+  warranted: boolean;
+  notified: boolean;
 }
 
 // Diegetic tool output (verb_engine.py's tool_output module) — attached to
@@ -127,6 +153,13 @@ export interface ScoreBreakdown {
   penalties: { type: string; [key: string]: unknown }[];
   collateral: CollateralHost[];
   collateral_penalty: number;
+  // Phase 3 — parallel to evidence_points/evidence_found above, additive
+  // into total_score, never affecting `outcome` (see
+  // verb_engine.compute_score's docstring on why this is one axis, not a
+  // second UI-surfaced score).
+  notifications: NotificationOutcome[];
+  notification_points: number;
+  notification_penalty: number;
   total_score: number;
   score_pct: number;
 }
@@ -177,6 +210,8 @@ interface RunSocketState {
   revealedIocs: RevealedIoc[];
   credentialsByHost: Record<string, RevealedCredential[]>;
   edges: RunEdge[];
+  notificationParties: NotificationParty[];
+  notifiedPartyIds: string[];
   stagesFired: number;
   totalStages: number;
   isFinalReached: boolean;
@@ -195,6 +230,8 @@ const INITIAL_STATE: RunSocketState = {
   revealedIocs: [],
   credentialsByHost: {},
   edges: [],
+  notificationParties: [],
+  notifiedPartyIds: [],
   stagesFired: 0,
   totalStages: 0,
   isFinalReached: false,
@@ -255,9 +292,12 @@ export function useRunSocket(runId: string) {
       switch (msg.type) {
         case "run.resync":
           // build_run_resync_event: {elapsed_seconds, attacker_clock_seconds,
-          // cap_seconds, hosts, revealed_iocs, edges} — hosts/revealed_iocs/
-          // edges are everything this player has already earned (empty on a
-          // fresh run), restoring exactly what a reconnect should show.
+          // cap_seconds, hosts, revealed_iocs, edges, notification_parties}
+          // — hosts/revealed_iocs/edges are everything this player has
+          // already earned (empty on a fresh run), restoring exactly what a
+          // reconnect should show. notification_parties is different in
+          // kind: a static per-scenario list known from t=0, not
+          // progressively earned, so it's populated even on a fresh run.
           setState((s) => ({
             ...s,
             elapsedSeconds: msg.elapsed_seconds,
@@ -266,6 +306,8 @@ export function useRunSocket(runId: string) {
             hosts: msg.hosts as HostSummary[],
             revealedIocs: msg.revealed_iocs as RevealedIoc[],
             edges: msg.edges as RunEdge[],
+            notificationParties: (msg.notification_parties ?? []) as NotificationParty[],
+            notifiedPartyIds: (msg.notified_party_ids ?? []) as string[],
           }));
           break;
 
@@ -337,7 +379,22 @@ export function useRunSocket(runId: string) {
               // isolate
               return { ...s, hosts: upsertHost(s.hosts, delta.host_id as string, { isolated: true }), lastDelta: delta };
             }
-            // escalate_used: no host/IOC/edge change, nothing to merge.
+            if (typeof delta.party_id === "string") {
+              // escalate (Phase 3) — accumulates into notifiedPartyIds the
+              // same way scan_network accumulates into hosts, so the party
+              // picker can grey out/hide a party once notified (mirroring
+              // the server's own once-per-party rejection) instead of
+              // letting the player tap it again and learn only from an
+              // error string.
+              return {
+                ...s,
+                notifiedPartyIds: s.notifiedPartyIds.includes(delta.party_id)
+                  ? s.notifiedPartyIds
+                  : [...s.notifiedPartyIds, delta.party_id],
+                lastDelta: delta,
+              };
+            }
+            // No host/IOC/edge/party change — nothing to merge.
             return { ...s, lastDelta: delta };
           });
           break;

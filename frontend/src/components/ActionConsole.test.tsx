@@ -27,6 +27,8 @@ function baseRunState(overrides: Partial<ReturnType<typeof useRunSocket>> = {}) 
     revealedIocs: [],
     credentialsByHost: {},
     edges: [],
+    notificationParties: [],
+    notifiedPartyIds: [],
     stagesFired: 0,
     totalStages: 4,
     isFinalReached: false,
@@ -67,5 +69,42 @@ describe("ActionConsole", () => {
     render(<ActionConsole runId="run-1" />);
     await user.click(screen.getByText("Scan Network"));
     expect(submitVerb).toHaveBeenCalledWith("scan_network");
+  });
+
+  it("shows a party picker on Escalate, never the warranted answer", async () => {
+    vi.mocked(useRunSocket).mockReturnValue(
+      baseRunState({ notificationParties: [{ id: "cisa", party_name: "CISA" }] }),
+    );
+    const user = userEvent.setup();
+    render(<ActionConsole runId="run-1" />);
+    await user.click(screen.getByText("Escalate"));
+    expect(screen.getByText("CISA")).toBeInTheDocument();
+    // The picker must never render "warranted" content — that's the
+    // player's own judgment call, not something the UI hands them.
+    expect(screen.queryByText(/warranted/i)).not.toBeInTheDocument();
+  });
+
+  it("submits escalate with the tapped party's id", async () => {
+    vi.mocked(useRunSocket).mockReturnValue(
+      baseRunState({ notificationParties: [{ id: "cisa", party_name: "CISA" }] }),
+    );
+    const user = userEvent.setup();
+    render(<ActionConsole runId="run-1" />);
+    await user.click(screen.getByText("Escalate"));
+    await user.click(screen.getByText("CISA"));
+    expect(submitVerb).toHaveBeenCalledWith("escalate", "cisa");
+  });
+
+  it("disables an already-notified party in the picker", async () => {
+    vi.mocked(useRunSocket).mockReturnValue(
+      baseRunState({
+        notificationParties: [{ id: "cisa", party_name: "CISA" }],
+        notifiedPartyIds: ["cisa"],
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ActionConsole runId="run-1" />);
+    await user.click(screen.getByText("Escalate"));
+    expect(screen.getByText("CISA").closest("button")).toBeDisabled();
   });
 });
