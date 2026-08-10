@@ -27,6 +27,20 @@ jobs:
         run: pip install -r requirements.txt
         working-directory: backend
 
+      # requirements.txt installs playwright's Python bindings but not the
+      # headless browser binary they drive — a fresh runner has neither
+      # cached, so every CMMC evidence-pack PDF test (test_cmmc_branding.py/
+      # test_cmmc_evidence_pack.py/test_cmmc_signing.py, the HTML+Playwright
+      # rendering path) fails with "Executable doesn't exist" without this.
+      # Found while verifying frontend-test-infra's own PR: `test` had
+      # actually been red on every push to main since the CMMC PDF work
+      # landed (2026-08-07) for exactly this reason, silently, because
+      # branch protection's enforce_admins is off and admin pushes bypass
+      # required checks entirely.
+      - name: Install Playwright browser
+        run: playwright install --with-deps chromium
+        working-directory: backend
+
       - name: Run tests
         run: pytest -q
         working-directory: backend
