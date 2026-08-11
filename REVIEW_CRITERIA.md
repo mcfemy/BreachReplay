@@ -189,7 +189,7 @@ must fail the job loudly whenever it completes without pushing a branch —
 indistinguishable-from-idle outcome.
 
 **(m) Turn budget scales to the diff, not a flat maximum.** `--max-turns`
-is computed per-PR from the diff's total changed lines (15 by default, 50
+is computed per-PR from the diff's total changed lines (25 by default, 50
 only past ~400 changed lines), not hardcoded to 50 for every review
 regardless of size. Two runaway reviews on PR #5 burned real money running
 up against a flat 50-turn cap and produced nothing — a small PR has no
@@ -197,7 +197,13 @@ business being given the same budget as a 400+ line one. If the review
 genuinely needs more turns than its tier allows and hits the cap, that's
 still a `REVIEW ERRORED` outcome per (j) — the fix is to reconsider the
 threshold or split the PR, not to raise the ceiling back to a flat maximum
-"just in case."
+"just in case." (Raised from 15 to 25 after PR #27: a migration +
+seed-content diff under 400 lines still needed to cross-reference
+surrounding mechanism code, genuinely completed with a correct verdict at
+17 turns, and was still failed by claude-code-action's own turn-count
+guard — which fires on the raw count regardless of `is_error`, so it
+cannot tell a real success just past the cap apart from a runaway. 15 was
+too tight a margin for this tier.)
 
 **(n) The reviewer only runs on paths where its blocking criteria can
 actually be violated.** Every blocking criterion above lives in a small,

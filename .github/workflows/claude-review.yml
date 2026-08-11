@@ -15,9 +15,17 @@ name: Claude PR Review
 #     directly. Red CI blocks the PR with zero Claude turns spent. This is
 #     also why the Python setup/dependency-install steps are gone — they
 #     existed only to support a test run that no longer happens here.
-#   - --max-turns scales to the diff size (15 default, 50 only past ~400
+#   - --max-turns scales to the diff size (25 default, 50 only past ~400
 #     changed lines) instead of a flat 50 for every PR — two runaway
 #     reviews on PR #5 burned real money producing nothing before this.
+#     (Raised from 15 to 25 after PR #27: a migration + seed-content diff
+#     under 400 changed lines still needed to cross-reference surrounding
+#     mechanism code, genuinely completed and posted a correct verdict at
+#     17 turns, and was still failed outright by claude-code-action's own
+#     "exceeded --max-turns" guard — which fires on turn COUNT regardless
+#     of is_error, so a real success past the cap is indistinguishable
+#     from a runaway. 15 was too tight a margin for this tier; 25 gives
+#     real headroom without jumping all the way to the 50-turn tier's cost.)
 #   - The review is SKIPPED ENTIRELY unless the diff touches one of the
 #     small set of paths where REVIEW_CRITERIA.md's blocking criteria
 #     (leak safety, determinism, org-tabletop isolation, playability) can
@@ -132,7 +140,7 @@ jobs:
             esac
           done <<< "$CHANGED_FILES"
 
-          MAX_TURNS=15
+          MAX_TURNS=25
           if [ "$CHANGED_LINES" -gt 400 ]; then MAX_TURNS=50; fi
 
           echo "Changed files:"
