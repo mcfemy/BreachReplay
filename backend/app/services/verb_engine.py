@@ -44,10 +44,15 @@ VERB_COSTS: dict[str, int] = {
 }
 
 # Verbs that operate against a specific target string (host id / ip / account
-# username / notification party id). "scan_network" is the only verb left
-# with no target — Phase 3 made "escalate" targeted (a party id from the
-# scenario's notification_matrix), replacing the old free/untargeted button.
-_TARGETED_VERBS = frozenset(VERB_COSTS) - {"scan_network"}
+# username / notification party id). "scan_network" is the only verb
+# that's NEVER targeted; "escalate" is conditionally targeted (a party id,
+# only on a scenario with an authored notification_matrix — the fallback
+# for a matrix-less scenario is untargeted, matching pre-Phase-3
+# behavior), so it's deliberately excluded from this blanket "requires a
+# target" set too — its own branch in apply_verb validates target
+# requirement itself, since that's runtime-dependent, not a static
+# per-verb property this frozenset can express.
+_TARGETED_VERBS = frozenset(VERB_COSTS) - {"scan_network", "escalate"}
 
 ESCALATE_FREEZE_SECONDS = 60
 
@@ -87,13 +92,24 @@ class RunState:
     world: OrgState
     elapsed_seconds: int = 0
     attacker_clock_offset: int = 0
-    # Phase 3 — replaces the old one-shot-ever `escalate_used: bool`. A
-    # scenario's notification_matrix has 5-6 parties; a player may
-    # legitimately need to notify several across a run, some warranted and
-    # some not, so escalate is now once-PER-PARTY rather than once-EVER —
-    # this set is what enforces that (each party's id can only enter it
-    # once; see apply_verb's escalate branch).
+    # Phase 3 — for a scenario WITH an authored notification_matrix,
+    # replaces the old one-shot-ever `escalate_used: bool`: a 5-6-party
+    # matrix means a player may legitimately need to notify several
+    # parties across a run, some warranted and some not, so escalate is
+    # once-PER-PARTY rather than once-EVER — this set is what enforces
+    # that (each party's id can only enter it once; see apply_verb's
+    # escalate branch).
     notified_party_ids: frozenset = field(default_factory=frozenset)
+    # Fallback flag for any scenario with NO authored notification_matrix
+    # yet (found in review on PR #25 — SolarWinds was the only scenario
+    # given a matrix, and escalate was a hard-erroring dead verb, with no
+    # 60s clock-freeze, on the other four). On those scenarios escalate
+    # behaves exactly as it did before Phase 3: untargeted, one-shot per
+    # run, 60s freeze, no penalty. The two flags are never both "live" for
+    # the same scenario — `notified_party_ids` for a matrix-authored one,
+    # this bool for a matrix-less one — see apply_verb's escalate branch
+    # for the exact fork.
+    escalate_used: bool = False
     revealed_host_ids: frozenset = field(default_factory=frozenset)
     discovered_ioc_keys: frozenset = field(default_factory=frozenset)  # {(host_id, rule_id)}
     penalties: tuple = ()
@@ -373,6 +389,33 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
         return VerbResult(run=run, delta={}, error=f"Verb {verb!r} requires a target")
 
     if verb == "escalate":
+        if not run.compiled.notification_matrix:
+            # Fallback (found in review on PR #25) — no notification_matrix
+            # authored for this scenario yet. Rather than a hard-erroring
+            # dead verb with no clock-freeze, behaves exactly as escalate
+            # did before Phase 3: untargeted (`target` is ignored even if a
+            # caller passes one), one-shot per run, 60s freeze, no penalty.
+            if run.escalate_used:
+                return VerbResult(run=run, delta={}, error="escalate already used this run")
+            sequence_number = len(run.action_log)
+            new_run = replace(
+                run,
+                escalate_used=True,
+                attacker_clock_offset=run.attacker_clock_offset + ESCALATE_FREEZE_SECONDS,
+            )
+            new_run = replace(
+                new_run,
+                action_log=new_run.action_log + (_log_entry(
+                    sequence_number, "escalate", None, new_run.elapsed_seconds, 0,
+                ),),
+            )
+            escalate_output = tool_output.render_escalate(run.compiled.seed, sequence_number, None)
+            return VerbResult(run=new_run, delta={
+                "escalate_used": True, "frozen_seconds": ESCALATE_FREEZE_SECONDS, "tool_output": escalate_output,
+            })
+
+        if not target:
+            return VerbResult(run=run, delta={}, error="Verb 'escalate' requires a target")
         party = next((p for p in run.compiled.notification_matrix if p["id"] == target), None)
         if party is None:
             return VerbResult(run=run, delta={}, error=f"Unknown notification party: {target!r}")

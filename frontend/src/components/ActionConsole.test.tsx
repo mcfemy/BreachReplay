@@ -95,6 +95,20 @@ describe("ActionConsole", () => {
     expect(submitVerb).toHaveBeenCalledWith("escalate", "cisa");
   });
 
+  it("submits escalate immediately, no picker, on a scenario with no notification matrix", async () => {
+    // baseRunState()'s default notificationParties is already [] — the
+    // matrix-less-scenario case (verb_engine's own fallback path on PR
+    // #25's review finding: escalate must not become a dead verb, or the
+    // picker a dead end, on a scenario nobody's authored a matrix for yet).
+    const user = userEvent.setup();
+    render(<ActionConsole runId="run-1" />);
+    await user.click(screen.getByText("Escalate"));
+    expect(submitVerb).toHaveBeenCalledWith("escalate");
+    // No picker opened — nothing besides the verb chip bar itself should
+    // show "who do you notify?".
+    expect(screen.queryByText(/who do you notify/i)).not.toBeInTheDocument();
+  });
+
   it("disables an already-notified party in the picker", async () => {
     vi.mocked(useRunSocket).mockReturnValue(
       baseRunState({

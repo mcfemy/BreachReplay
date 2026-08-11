@@ -59,6 +59,18 @@ def _compiled(seed=7):
     return action_engine.compile_scenario(_SCENARIO, seed=seed)
 
 
+# Phase 3 review finding (PR #25): a scenario with no authored
+# notification_matrix must not turn escalate into a hard-erroring dead
+# verb — same fixture as _SCENARIO, minus the matrix, so it exercises the
+# real "matrix-less scenario" path rather than an artificial empty-dict
+# stand-in.
+_SCENARIO_NO_MATRIX = {k: v for k, v in _SCENARIO.items() if k != "notification_matrix"}
+
+
+def _compiled_no_matrix(seed=7):
+    return action_engine.compile_scenario(_SCENARIO_NO_MATRIX, seed=seed)
+
+
 def _run_clock_past(run, target_clock_seconds):
     """Test helper: spend scan_network calls (free of side effects on any
     specific host) until the attacker clock has passed target_clock_seconds."""
@@ -214,6 +226,65 @@ def test_escalate_freezes_the_attacker_clock_by_a_permanent_60s_offset():
     run = verb_engine.apply_verb(run, "isolate", compiled.world.hosts[0].id).run  # 20s
     assert run.elapsed_seconds == 35
     assert verb_engine.attacker_clock_seconds(run) == 0  # max(0, 35 - 60)
+
+
+# ── Phase 3 review finding (PR #25): matrix-less scenario fallback ──────────
+#
+# A scenario with no authored notification_matrix must not turn escalate
+# into a hard-erroring dead verb with no clock-freeze — it falls back to
+# exactly the pre-Phase-3 behavior: untargeted, one-shot per run, 60s
+# freeze, no penalty.
+
+def test_escalate_on_a_matrix_less_scenario_is_untargeted_and_freezes_the_clock():
+    compiled = _compiled_no_matrix()
+    run = verb_engine.new_run(compiled)
+    result = verb_engine.apply_verb(run, "escalate")  # no target at all
+    assert result.error is None
+    assert result.run.attacker_clock_offset == verb_engine.ESCALATE_FREEZE_SECONDS
+    assert result.run.elapsed_seconds == 0  # escalate still costs 0s
+    assert not result.run.penalties  # no penalty on the fallback path
+    assert result.delta == {
+        "escalate_used": True,
+        "frozen_seconds": verb_engine.ESCALATE_FREEZE_SECONDS,
+        "tool_output": result.delta["tool_output"],
+    }
+    # Exact pre-Phase-3 text — not a "Notify: None" regression.
+    assert "Notify:" not in result.delta["tool_output"]["output"]
+
+
+def test_escalate_on_a_matrix_less_scenario_ignores_a_target_if_one_is_passed():
+    """The fallback must behave identically whether or not a caller
+    passes a target — a stray target string is not an error, just
+    ignored, matching pre-Phase-3 escalate having no target concept at all."""
+    compiled = _compiled_no_matrix()
+    run = verb_engine.new_run(compiled)
+    result = verb_engine.apply_verb(run, "escalate", "some-stray-target")
+    assert result.error is None
+    assert result.run.attacker_clock_offset == verb_engine.ESCALATE_FREEZE_SECONDS
+
+
+def test_escalate_on_a_matrix_less_scenario_is_rejected_on_second_use():
+    compiled = _compiled_no_matrix()
+    run = verb_engine.new_run(compiled)
+    first = verb_engine.apply_verb(run, "escalate")
+    assert first.error is None
+    second = verb_engine.apply_verb(first.run, "escalate")
+    assert second.error == "escalate already used this run"
+    assert second.run == first.run
+
+
+def test_compute_score_on_a_matrix_less_scenario_has_zero_notification_impact():
+    compiled = _compiled_no_matrix()
+    run = verb_engine.apply_verb(verb_engine.new_run(compiled), "escalate").run
+    breakdown = verb_engine.compute_score(run, "contained", cap_seconds=480)
+    assert breakdown["notifications"] == []
+    assert breakdown["notification_points"] == 0
+    assert breakdown["notification_penalty"] == 0
+
+
+def test_public_notification_parties_is_empty_on_a_matrix_less_scenario():
+    compiled = _compiled_no_matrix()
+    assert verb_engine.public_notification_parties(compiled) == []
 
 
 def test_query_logs_reveals_only_iocs_bound_to_that_host():

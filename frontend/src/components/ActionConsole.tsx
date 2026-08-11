@@ -355,6 +355,15 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
       run.submitVerb(verb);
       return;
     }
+    // Fallback for a scenario with no authored notification matrix yet
+    // (found in review on PR #25) — verb_engine's own apply_verb falls
+    // back to escalate's pre-Phase-3 untargeted behavior in this exact
+    // case, so the UI must match it: submit immediately instead of
+    // opening a party picker with nothing in it.
+    if (PARTY_TARGETED_VERBS.includes(verb) && run.notificationParties.length === 0) {
+      run.submitVerb(verb);
+      return;
+    }
     setSelectedHostId(null);
     setTextInput("");
     setTargetVerb(verb);
@@ -531,7 +540,10 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
         </div>
       )}
 
-      {/* Party-target picker (Phase 3 — escalate) — deliberately shows
+      {/* Party-target picker (Phase 3 — escalate) — only ever reachable
+          when run.notificationParties is non-empty (handleChipTap submits
+          immediately, matching verb_engine's own matrix-less fallback,
+          otherwise — see that function's comment). Deliberately shows
           only {id, party_name} (run.notificationParties, redacted
           server-side, see verb_engine.public_notification_parties): never
           `warranted`, or the picker would hand the player the judgment
@@ -547,26 +559,22 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
             </p>
             <button onClick={() => setTargetVerb(null)} className="text-dim text-xs active:scale-95">Cancel</button>
           </div>
-          {run.notificationParties.length === 0 ? (
-            <p className="text-xs text-dim">No notification matrix authored for this scenario yet.</p>
-          ) : (
-            <div className="grid grid-cols-2 gap-1.5">
-              {run.notificationParties.map((party) => {
-                const alreadyNotified = run.notifiedPartyIds.includes(party.id);
-                return (
-                  <button
-                    key={party.id}
-                    onClick={() => submitPartyTarget(party.id)}
-                    disabled={alreadyNotified}
-                    className="px-3 py-2 rounded bg-void border border-dim/30 text-white text-xs font-bold text-left active:scale-95 disabled:opacity-40"
-                  >
-                    <span>{party.party_name}</span>
-                    {alreadyNotified && <span className="block text-[9px] font-normal text-dim mt-0.5">Already notified</span>}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          <div className="grid grid-cols-2 gap-1.5">
+            {run.notificationParties.map((party) => {
+              const alreadyNotified = run.notifiedPartyIds.includes(party.id);
+              return (
+                <button
+                  key={party.id}
+                  onClick={() => submitPartyTarget(party.id)}
+                  disabled={alreadyNotified}
+                  className="px-3 py-2 rounded bg-void border border-dim/30 text-white text-xs font-bold text-left active:scale-95 disabled:opacity-40"
+                >
+                  <span>{party.party_name}</span>
+                  {alreadyNotified && <span className="block text-[9px] font-normal text-dim mt-0.5">Already notified</span>}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
