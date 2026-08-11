@@ -61,6 +61,17 @@ ESCALATE_FREEZE_SECONDS = 60
 # a numeric weight, not a final score.
 PRECISION_PENALTY = 50
 
+# The pre-Phase-3 flat escalate penalty — kept alive specifically for the
+# matrix-less fallback path (apply_verb's escalate branch), which must
+# match pre-Phase-3 behavior exactly, penalty included (confirmed in
+# review on PR #25 against `bf2687d`, the commit immediately before this
+# branch: escalate always applied this penalty). On a matrix-authored
+# scenario this constant is UNUSED — that path scores warranted/
+# unwarranted per party instead (UNWARRANTED_NOTIFICATION_PENALTY /
+# MISSED_NOTIFICATION_PENALTY below), a deliberate, real behavior
+# difference between the two paths, not an oversight.
+ESCALATE_PENALTY = 100
+
 # Phase 3 — Targeted Escalation & Notification Proportionality. Same
 # per-item scale as EVIDENCE_POINTS_PER_IOC (100) below: a correctly
 # warranted notification is worth as much as finding an IOC. Both penalty
@@ -104,12 +115,25 @@ class RunState:
     # yet (found in review on PR #25 — SolarWinds was the only scenario
     # given a matrix, and escalate was a hard-erroring dead verb, with no
     # 60s clock-freeze, on the other four). On those scenarios escalate
-    # behaves exactly as it did before Phase 3: untargeted, one-shot per
-    # run, 60s freeze, no penalty. The two flags are never both "live" for
-    # the same scenario — `notified_party_ids` for a matrix-authored one,
-    # this bool for a matrix-less one — see apply_verb's escalate branch
-    # for the exact fork.
+    # behaves exactly as it did before Phase 3, penalty included:
+    # untargeted, one-shot per run, 60s freeze, ESCALATE_PENALTY. The two
+    # flags are never both "live" for the same scenario —
+    # `notified_party_ids` for a matrix-authored one, this bool for a
+    # matrix-less one — see apply_verb's escalate branch for the exact
+    # fork.
     escalate_used: bool = False
+    # A second round of review on PR #25: making escalate once-per-PARTY
+    # let the 60s freeze stack once per successful call — a matrix with N
+    # warranted parties could
+    # freeze the attacker clock N*60s at zero time cost, pushing the final
+    # stage's trigger permanently out of reach. Escalate itself STAYS
+    # once-per-party (repeat notifications are still scored per party,
+    # per spec §10) — only the clock-freeze SIDE EFFECT is capped to one
+    # application per run, matching spec §4's "one-time" framing for the
+    # freeze specifically. Matrix-less scenarios don't need this flag:
+    # `escalate_used` already caps the entire verb (freeze included) to
+    # once per run there.
+    escalate_freeze_used: bool = False
     revealed_host_ids: frozenset = field(default_factory=frozenset)
     discovered_ioc_keys: frozenset = field(default_factory=frozenset)  # {(host_id, rule_id)}
     penalties: tuple = ()
@@ -393,8 +417,9 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
             # Fallback (found in review on PR #25) — no notification_matrix
             # authored for this scenario yet. Rather than a hard-erroring
             # dead verb with no clock-freeze, behaves exactly as escalate
-            # did before Phase 3: untargeted (`target` is ignored even if a
-            # caller passes one), one-shot per run, 60s freeze, no penalty.
+            # did before Phase 3, penalty included: untargeted (`target` is
+            # ignored even if a caller passes one), one-shot per run, 60s
+            # freeze, ESCALATE_PENALTY.
             if run.escalate_used:
                 return VerbResult(run=run, delta={}, error="escalate already used this run")
             sequence_number = len(run.action_log)
@@ -402,6 +427,7 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
                 run,
                 escalate_used=True,
                 attacker_clock_offset=run.attacker_clock_offset + ESCALATE_FREEZE_SECONDS,
+                penalties=run.penalties + ({"type": "escalate_used", "amount": ESCALATE_PENALTY},),
             )
             new_run = replace(
                 new_run,
@@ -432,10 +458,20 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
             new_penalties = new_penalties + (
                 {"type": "unwarranted_notification", "party_id": target, "amount": UNWARRANTED_NOTIFICATION_PENALTY},
             )
+        # The 60s freeze is a one-time-per-RUN bonus (spec §4's "one-time"
+        # framing), capped independent of how many parties get notified —
+        # escalate itself stays once-per-PARTY for cost/scoring purposes
+        # (repeat notifications are still individually scored per §10),
+        # only this side effect is capped. Second-round review finding on
+        # PR #25: without this cap, a matrix with N warranted parties let
+        # a player freeze the attacker clock N*60s at zero time cost,
+        # pushing the final stage's trigger permanently out of reach.
+        freeze_seconds_applied = 0 if run.escalate_freeze_used else ESCALATE_FREEZE_SECONDS
         new_run = replace(
             run,
             notified_party_ids=run.notified_party_ids | {target},
-            attacker_clock_offset=run.attacker_clock_offset + ESCALATE_FREEZE_SECONDS,
+            attacker_clock_offset=run.attacker_clock_offset + freeze_seconds_applied,
+            escalate_freeze_used=True,
             penalties=new_penalties,
         )
         new_run = replace(
@@ -455,7 +491,10 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
         escalate_output = tool_output.render_escalate(run.compiled.seed, sequence_number, party["party_name"])
         return VerbResult(run=new_run, delta={
             "party_id": target, "party_name": party["party_name"], "warranted": warranted,
-            "frozen_seconds": ESCALATE_FREEZE_SECONDS, "tool_output": escalate_output,
+            # Reflects what THIS call actually did — 0 on every notification
+            # after the run's first (the freeze cap above), not a claim
+            # that this call froze the clock when it didn't.
+            "frozen_seconds": freeze_seconds_applied, "tool_output": escalate_output,
         })
 
     world = run.world

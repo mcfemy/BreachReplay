@@ -187,6 +187,32 @@ def test_escalate_is_once_per_party_not_once_per_run():
     assert second.run.notified_party_ids == frozenset({"cisa", "pr"})
 
 
+def test_escalate_clock_freeze_does_not_stack_across_multiple_parties():
+    """Second-round review finding on PR #25: escalate stays once-per-
+    PARTY (repeat notifications are still individually scored), but the
+    60s clock-freeze side effect must apply at most once per RUN —
+    without this cap, a matrix with N warranted parties let a player
+    freeze the attacker clock N*60s at zero time cost."""
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+
+    first = verb_engine.apply_verb(run, "escalate", "cisa")
+    assert first.error is None
+    assert first.run.attacker_clock_offset == verb_engine.ESCALATE_FREEZE_SECONDS
+    assert first.delta["frozen_seconds"] == verb_engine.ESCALATE_FREEZE_SECONDS
+
+    second = verb_engine.apply_verb(first.run, "escalate", "pr")
+    assert second.error is None
+    # Still exactly ONE freeze's worth, not two.
+    assert second.run.attacker_clock_offset == verb_engine.ESCALATE_FREEZE_SECONDS
+    # This call's own delta honestly reports that IT didn't freeze
+    # anything — not a stale claim of another 60s.
+    assert second.delta["frozen_seconds"] == 0
+    # Notification itself is still fully scored per party regardless of
+    # the freeze cap — "pr" is unwarranted and still penalizes.
+    assert any(p["type"] == "unwarranted_notification" for p in second.run.penalties)
+
+
 def test_escalate_rejects_a_party_not_in_the_scenarios_matrix():
     compiled = _compiled()
     run = verb_engine.new_run(compiled)
@@ -235,14 +261,18 @@ def test_escalate_freezes_the_attacker_clock_by_a_permanent_60s_offset():
 # exactly the pre-Phase-3 behavior: untargeted, one-shot per run, 60s
 # freeze, no penalty.
 
-def test_escalate_on_a_matrix_less_scenario_is_untargeted_and_freezes_the_clock():
+def test_escalate_on_a_matrix_less_scenario_is_untargeted_freezes_the_clock_and_penalizes():
+    """Second-round review finding on PR #25: the fallback must match
+    pre-Phase-3 behavior EXACTLY, penalty included — confirmed against
+    `bf2687d` (main immediately before this branch), where escalate always
+    applied ESCALATE_PENALTY unconditionally."""
     compiled = _compiled_no_matrix()
     run = verb_engine.new_run(compiled)
     result = verb_engine.apply_verb(run, "escalate")  # no target at all
     assert result.error is None
     assert result.run.attacker_clock_offset == verb_engine.ESCALATE_FREEZE_SECONDS
     assert result.run.elapsed_seconds == 0  # escalate still costs 0s
-    assert not result.run.penalties  # no penalty on the fallback path
+    assert result.run.penalties == ({"type": "escalate_used", "amount": verb_engine.ESCALATE_PENALTY},)
     assert result.delta == {
         "escalate_used": True,
         "frozen_seconds": verb_engine.ESCALATE_FREEZE_SECONDS,
