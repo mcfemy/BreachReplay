@@ -128,6 +128,29 @@ DECISION_GATE_ARCHETYPES: dict[str, dict] = {
         "segment_count_range": [3, 3],
         "security_maturity": "medium",
     },
+    "hospitality_resort": {
+        # MGM Grand's follow-up to the Colonial/SolarWinds fix above.
+        # MGM only harvests 1 literal hostname (BACKUP-VEEAM-01) — unlike
+        # Colonial/SolarWinds, its padding-ratio floor is trivially small
+        # (ceil(1*0.2)=1) and never the binding constraint. What pins its
+        # decoy pool is that _attack_path_host_ids is a CONSTANT 5 hosts
+        # regardless of total_hosts (confirmed empirically, 200 seeds),
+        # so decoy_pool = total_hosts - 5 directly. Under the old
+        # small_healthcare fallback ([8,10]), a roll of 8 gives decoy_pool
+        # 3 — 32% of a 1000-seed sample landed there, below the 4-decoy
+        # floor determine_outcome()/_grace_check() need for
+        # CONTAINED_AT_COST. [9,12]'s lower bound guarantees decoy_pool
+        # >= 4 on every seed (roll-5 ranges 4-7) — re-verified empirically
+        # the same way, not just via this formula. No industry_vertical
+        # collision risk: "hospitality" is authored by MGM only (grepped
+        # seed.py), so this mapping can't affect other content.
+        "industry_vertical": "hospitality",
+        "difficulty": "advanced",
+        "size": "medium",
+        "host_count_range": [9, 12],
+        "segment_count_range": [3, 3],
+        "security_maturity": "medium",
+    },
 }
 
 
