@@ -466,9 +466,23 @@ jobs:
           # to the "no verdict" branch below instead of resurrecting an
           # unrelated commit's stale answer.
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          # `gh pr view --jq` takes exactly one value — the query string.
+          # `gh` does not forward extra flags (--arg and its value) into
+          # its jq evaluation; the old form above passed --arg/marker/the
+          # query as three EXTRA positional arguments to `gh pr view`,
+          # which only accepts one (the PR number) — "accepts at most 1
+          # arg(s), received 4", crashing this step under `set -e`
+          # regardless of what verdict was actually posted. Found the hard
+          # way: it silently crashed on every run of PR #25's review (3 for
+          # 3), and every time the real verdict happened to be CHANGES
+          # REQUESTED anyway, so the crash's exit 1 coincidentally matched
+          # the correct outcome — until the 3rd round was genuinely
+          # APPROVED and the crash produced a false failure instead.
+          # HEAD_SHA is a git commit SHA (hex only, from GitHub's own
+          # event payload) — safe to interpolate directly into the jq
+          # string literal with no escaping/injection concern.
           reviewed_comment=$(gh pr view "$PR" --json comments \
-            --jq --arg marker "REVIEWED COMMIT: $HEAD_SHA" \
-            '[.comments[] | select(.body | startswith($marker))] | last // empty | .body // empty')
+            --jq "[.comments[] | select(.body | startswith(\"REVIEWED COMMIT: $HEAD_SHA\"))] | last // empty | .body // empty")
 
           if [ -z "$reviewed_comment" ]; then
             echo "No review comment found for this exact commit ($HEAD_SHA) — treating as a dead/incomplete review."
