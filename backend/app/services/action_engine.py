@@ -153,6 +153,7 @@ _INDUSTRY_TO_ARCHETYPE: dict[str, str] = {
     "critical_infrastructure": "energy_utility_flagship",
     "healthcare": "small_healthcare",
     "technology": "technology_saas",
+    "hospitality": "hospitality_resort",
 }
 _DEFAULT_ARCHETYPE_KEY = "small_healthcare"
 

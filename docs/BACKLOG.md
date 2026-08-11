@@ -551,7 +551,7 @@ part of this fix, since removing committed-adjacent server state
 unilaterally is a separate, lower-stakes decision, not a durability
 question.
 
-## Proportionate Response — CONTAINED_AT_COST is unreachable on at least two flagship scenarios — FIXED for Colonial/SolarWinds
+## Proportionate Response — CONTAINED_AT_COST is unreachable on at least two flagship scenarios — FIXED for all five flagship scenarios
 
 Discovered while building a demo CMMC evidence pack: tried to script a
 Colonial Pipeline run that lands on `contained_at_cost` specifically (to
@@ -626,24 +626,33 @@ Re-verified empirically post-fix, 1000 seeds each, using the exact
 | Log4Shell | {7:262, 8:228, 9:262, 10:248} | 1000/1000 (already was) |
 | NHS WannaCry | {8:1000} | 1000/1000 (already was, untouched) |
 
-**Known follow-up, explicitly deferred (not implemented):** MGM Resorts
-is *partially* affected by the same structural issue — it also falls
-back to `small_healthcare` (`hospitality` isn't in
-`_INDUSTRY_TO_ARCHETYPE`), and with ~5 harvested hosts against
-`small_healthcare`'s `[8,10]` range, its decoy pool distribution is
-{3:320, 4:327, 5:353} — **32% of seeds (1000-seed sample) still land
-below the reachability floor.** Not fixed in this pass: `small_healthcare`
-is a shared bucket (MGM plus any future default-fallback scenario), so
-nudging its range risks affecting content this investigation didn't
-scope. Femi's call: hold off, flag as a known gap, revisit deliberately
-rather than as a drive-by of this fix.
+**MGM Resorts follow-up — also FIXED**, same pattern. MGM was different
+from Colonial/SolarWinds in one respect worth recording: it only
+harvests **1** literal hostname (`BACKUP-VEEAM-01`), so the padding-ratio
+floor (`ceil(1*0.2)=1`) was never the binding constraint the way it was
+for Colonial/SolarWinds. What actually pinned MGM's decoy pool was that
+`_attack_path_host_ids` resolves to a **constant 5 hosts** regardless of
+`total_hosts` (confirmed empirically across 200 seeds — role-based attack
+targeting, not tied to the 1 harvested hostname), so `decoy_pool =
+total_hosts - 5` directly. Under `small_healthcare`'s `[8,10]` range, a
+roll of 8 gives `decoy_pool=3` — 32% of a 1000-seed sample landed there.
+
+Fixed the same way as Colonial/SolarWinds: a new `hospitality_resort`
+entry in `DECISION_GATE_ARCHETYPES` (`host_count_range=[9,12]`), mapped
+from `industry_vertical: "hospitality"` (confirmed via grep to be
+authored by MGM only — no collision risk with other content).
+`ORG_ARCHETYPES` itself remains untouched — re-verified byte-identical to
+its original two entries (`small_healthcare`, `energy_utility`) after
+this change too. Re-verified empirically, 1000 seeds: MGM now reaches
+`CONTAINED_AT_COST` on **1000/1000** seeds (was 680/1000). All five
+flagship scenarios are now fully reachable.
 
 Original three options considered (kept for record — (1) is what
-shipped for Colonial/SolarWinds; (2) and (3) remain on the table for the
-MGM follow-up or any future scenario that hits this same ceiling):
+shipped for all five scenarios; (2) and (3) remain on the table for any
+future scenario that hits this same ceiling):
 1. **Content fix** — raise the archetype's `host_count_range` (or give
    the scenario its own archetype) so the roll term dominates the
-   padding floor. Shipped for Colonial/SolarWinds above.
+   padding floor. Shipped for Colonial/SolarWinds/MGM above.
 2. A grace floor and/or `OVERREACTED_COVERAGE_THRESHOLD` that scale with
    decoy pool size instead of flat constants — algebra worked during
    this investigation shows floor-scaling alone can't fix a pool of 2-3
@@ -653,5 +662,6 @@ MGM follow-up or any future scenario that hits this same ceiling):
    shared by every scenario. Not pursued once (1) proved sufficient.
 3. Accept that some scenarios are inherently pass/fail on proportionality
    given their map size, and say so explicitly somewhere a player/assessor
-   can see it. Not needed for Colonial/SolarWinds now that (1) fixed
-   them; still the fallback if MGM's follow-up isn't picked up.
+   can see it. Not needed — (1) fixed all five flagship scenarios; still
+   the fallback approach if a future scenario hits this same ceiling and
+   a dedicated archetype isn't a good fit.
