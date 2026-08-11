@@ -551,7 +551,7 @@ part of this fix, since removing committed-adjacent server state
 unilaterally is a separate, lower-stakes decision, not a durability
 question.
 
-## Proportionate Response — CONTAINED_AT_COST is unreachable on at least two flagship scenarios
+## Proportionate Response — CONTAINED_AT_COST is unreachable on at least two flagship scenarios — FIXED for Colonial/SolarWinds
 
 Discovered while building a demo CMMC evidence pack: tried to script a
 Colonial Pipeline run that lands on `contained_at_cost` specifically (to
@@ -568,37 +568,90 @@ decoy_pool must be >= 4 (the smallest wrong_isolated past the grace
 floor is 2, and 2/4 = 0.5 is the first ratio that clears the floor
 without also exceeding the overreacted threshold).
 
-Checked empirically, not assumed: compiled Colonial Pipeline across
-1000 seeds — max decoy pool observed was **3** (2/3 = 0.667 > 0.6, so
-wrong_isolated=2 always lands on `overreacted`, never
-`contained_at_cost`). Checked SolarWinds across 500 seeds per the same
-method — max decoy pool **2**, same conclusion (2/2 = 1.0 > 0.6). Both
-scenarios jump straight from `contained` (<=1 mistake) to `overreacted`
-(>=2 mistakes) with no seed producing anything in between. The module's
-own docstring already flags Colonial/SolarWinds as having "effectively
-only one grace step" — this is that same fact confirmed to mean the
-middle tier doesn't just get *skipped often*, it is *structurally
-absent* on these two scenarios specifically.
+**Root cause traced to `host_harvest.build_host_plan`** (not the scoring
+constants themselves): `decoy_count = max(ceil(harvested*PADDING_RATIO),
+archetype_roll - harvested)`. Colonial's `energy_utility` archetype had
+`host_count_range=[12,15]` and SolarWinds fell back to
+`small_healthcare`'s `[8,10]` — in both cases the archetype-roll term's
+ceiling sat so close to the scenario's own harvested-host count that the
+padding-ratio floor term almost always won, pinning the decoy pool below
+4 on effectively every seed, regardless of the scoring thresholds.
 
-This matters because `contained_at_cost` exists precisely to distinguish
-"imprecise but reasonable" from "reckless" (see `SCORE_OUTCOME_BASE`'s
-own comments on why `overreacted` scores below
-`breached_spread_limited`) — a learner who makes a second honest mistake
-on a small-decoy-pool scenario gets graded as if they'd isolated most of
-the map, with no gentler middle rung available, purely as an artifact of
-that scenario's authored host count rather than their actual judgment.
+**Fix (Option A from the list below — content, not scoring):**
+- First attempt was simpler than what shipped: just raise
+  `energy_utility.host_count_range` directly. Reverted immediately —
+  `ORG_ARCHETYPES` is Arena mode's own live archetype universe
+  (`arena_matchmaking_service.py`'s `secrets.choice(list(ORG_ARCHETYPES
+  .keys()))` for real match archetype selection, plus admin/arena API
+  validation and every Arena AI-difficulty test sweep), not just a
+  decision-gate sizing knob. Bumping it broke
+  `test_difficulty_produces_measurably_different_outcomes_same_seed`
+  (hard bot's win rate fell below easy's on the bigger map within the
+  fixed step cap) — a real Arena balance regression, not a test
+  artifact, and it would have silently widened production Arena's
+  matchmaking pool with an untuned map size.
+- Shipped instead: a **separate** `DECISION_GATE_ARCHETYPES` dict
+  (`org_simulation.py`), consulted only by
+  `action_engine.compile_scenario` via a private merged lookup
+  (`_COMPILE_SCENARIO_ARCHETYPES = {**ORG_ARCHETYPES,
+  **DECISION_GATE_ARCHETYPES}`) — `ORG_ARCHETYPES` itself stays
+  byte-identical to its original two entries, so Arena's matchmaking,
+  API validation, and test sweeps never see the new keys.
+  - `energy_utility_flagship` (`host_count_range=[16,20]`) — what
+    Colonial Pipeline's `industry_vertical: "energy"` now maps to,
+    giving the archetype-roll term real headroom over its 7 harvested
+    hosts.
+  - `technology_saas` (`host_count_range=[12,15]`) — what
+    `industry_vertical: "technology"` now maps to, instead of
+    SolarWinds/Log4Shell silently falling back to `small_healthcare`.
+    That fallback had a side-effect bug too: it pulled in
+    `small_healthcare`'s `"healthcare"` industry_vertical for
+    `_SEGMENT_NAME_POOLS` purposes, giving tech companies a "clinical"
+    network segment. `technology_saas` has no authored segment-name pool
+    yet, so it correctly falls through to `_SEGMENT_NAME_POOLS["default"]`
+    (`["corp", "dmz", "server"]`).
+  - Log4Shell also carries `industry_vertical: "technology"` and picks
+    up `technology_saas` as a side effect of the new mapping — checked,
+    not a regression: its decoy pool moves from a constant 6 (old
+    archetype) to 7-10 (new), strictly better, never worse.
 
-Not fixed here — flagged for Phase 3 tuning, per Femi's explicit
-instruction. Options to weigh then, none decided:
-- Scenario-aware thresholds (a per-scenario `OVERREACTED_COVERAGE_THRESHOLD`
-  or grace floor, authored alongside `collateral_weights`).
-- A grace floor that scales with decoy pool size instead of a flat 1
-  (e.g. `max(1, round(decoy_pool * some_fraction))`).
-- Accept that some scenarios are inherently pass/fail on proportionality
-  given their map size, and say so explicitly somewhere a player/assessor
-  can see it, rather than implying all five outcome states are always
-  reachable.
+Re-verified empirically post-fix, 1000 seeds each, using the exact
+`decoy_pool = total_hosts - attack_path_hosts` computation
+`determine_outcome` actually uses:
 
-Worth a broader sweep across the rest of the flagship scenario set
-before Phase 3 lands, not just these two — this was only checked because
-Colonial happened to be needed for a demo pack.
+| Scenario | decoy_pool distribution (1000 seeds) | `contained_at_cost` reachable |
+|---|---|---|
+| Colonial Pipeline | {4:201, 5:182, 6:202, 7:193, 8:222} | **1000/1000** |
+| SolarWinds | {4:262, 5:228, 6:262, 7:248} | **1000/1000** |
+| Log4Shell | {7:262, 8:228, 9:262, 10:248} | 1000/1000 (already was) |
+| NHS WannaCry | {8:1000} | 1000/1000 (already was, untouched) |
+
+**Known follow-up, explicitly deferred (not implemented):** MGM Resorts
+is *partially* affected by the same structural issue — it also falls
+back to `small_healthcare` (`hospitality` isn't in
+`_INDUSTRY_TO_ARCHETYPE`), and with ~5 harvested hosts against
+`small_healthcare`'s `[8,10]` range, its decoy pool distribution is
+{3:320, 4:327, 5:353} — **32% of seeds (1000-seed sample) still land
+below the reachability floor.** Not fixed in this pass: `small_healthcare`
+is a shared bucket (MGM plus any future default-fallback scenario), so
+nudging its range risks affecting content this investigation didn't
+scope. Femi's call: hold off, flag as a known gap, revisit deliberately
+rather than as a drive-by of this fix.
+
+Original three options considered (kept for record — (1) is what
+shipped for Colonial/SolarWinds; (2) and (3) remain on the table for the
+MGM follow-up or any future scenario that hits this same ceiling):
+1. **Content fix** — raise the archetype's `host_count_range` (or give
+   the scenario its own archetype) so the roll term dominates the
+   padding floor. Shipped for Colonial/SolarWinds above.
+2. A grace floor and/or `OVERREACTED_COVERAGE_THRESHOLD` that scale with
+   decoy pool size instead of flat constants — algebra worked during
+   this investigation shows floor-scaling alone can't fix a pool of 2-3
+   (the only wrong_isolated value past any nonzero floor already implies
+   ≥67% coverage), so this would need both constants to become
+   pool-size-aware together — a bigger, riskier change to scoring math
+   shared by every scenario. Not pursued once (1) proved sufficient.
+3. Accept that some scenarios are inherently pass/fail on proportionality
+   given their map size, and say so explicitly somewhere a player/assessor
+   can see it. Not needed for Colonial/SolarWinds now that (1) fixed
+   them; still the fallback if MGM's follow-up isn't picked up.

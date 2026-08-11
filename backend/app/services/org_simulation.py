@@ -59,6 +59,15 @@ from typing import Literal, Optional
 # vocabulary consistent with the existing Scenario.industry_vertical /
 # difficulty fields so arena mode reuses the same industry/difficulty
 # language as the authored scenario library.
+#
+# ORG_ARCHETYPES is Arena mode's own archetype universe — real production
+# code enumerates it directly (arena_matchmaking_service.py's
+# `secrets.choice(list(ORG_ARCHETYPES.keys()))` for live match archetype
+# selection; admin.py/arena.py's request validation), and the whole test
+# suite's `@pytest.mark.parametrize("archetype_key",
+# list(ORG_ARCHETYPES.keys()))` sweeps assume every key here is a
+# PvP/AI-difficulty-balanced Arena archetype. Never add a decision-gate-
+# only entry here — see DECISION_GATE_ARCHETYPES below for that.
 ORG_ARCHETYPES: dict[str, dict] = {
     "small_healthcare": {
         "industry_vertical": "healthcare",
@@ -70,6 +79,49 @@ ORG_ARCHETYPES: dict[str, dict] = {
     },
     "energy_utility": {
         "industry_vertical": "energy",
+        "difficulty": "advanced",
+        "size": "large",
+        "host_count_range": [12, 15],
+        "segment_count_range": [3, 3],
+        "security_maturity": "medium",
+    },
+}
+
+# Decision-gate-only archetypes: consulted by
+# action_engine.compile_scenario via _INDUSTRY_TO_ARCHETYPE, NEVER by
+# Arena mode (matchmaking, admin/arena API validation, or the Arena test
+# sweeps above only ever see ORG_ARCHETYPES). Kept in a separate dict
+# specifically so a decision-gate sizing tweak can never silently change
+# Arena's live matchmaking pool or its AI-difficulty balance.
+#
+# Added to fix CONTAINED_AT_COST unreachability (docs/BACKLOG.md
+# "Proportionate Response"): host_harvest.build_host_plan's elastic decoy
+# formula (decoy_count = max(ceil(harvested*0.2), archetype_roll-harvested))
+# needs a host_count_range ceiling comfortably above the scenario's own
+# harvested-host count, or the padding-ratio floor wins on every seed and
+# pins the decoy pool below the 4-decoy floor determine_outcome()/
+# _grace_check() need to ever reach CONTAINED_AT_COST. Colonial Pipeline
+# (7 harvested hosts) and SolarWinds (4 harvested hosts) were both pinned
+# this way under ORG_ARCHETYPES' energy_utility/small_healthcare ranges.
+DECISION_GATE_ARCHETYPES: dict[str, dict] = {
+    "energy_utility_flagship": {
+        "industry_vertical": "energy",
+        "difficulty": "advanced",
+        "size": "large",
+        "host_count_range": [16, 20],
+        "segment_count_range": [3, 3],
+        "security_maturity": "medium",
+    },
+    "technology_saas": {
+        # Dedicated bucket for supply-chain-compromise-style scenarios
+        # (SolarWinds, Log4Shell) instead of both falling back to
+        # small_healthcare, which was also silently pulling in
+        # small_healthcare's own "healthcare" industry_vertical for
+        # segment-name purposes (_SEGMENT_NAME_POOLS), giving tech
+        # companies a "clinical" network segment. This archetype falls
+        # through to _SEGMENT_NAME_POOLS["default"] (["corp", "dmz",
+        # "server"]) since no "technology" pool is authored yet.
+        "industry_vertical": "technology",
         "difficulty": "advanced",
         "size": "large",
         "host_count_range": [12, 15],

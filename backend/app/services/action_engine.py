@@ -35,12 +35,19 @@ from typing import Optional, Union
 
 from app.services import host_harvest
 from app.services.org_simulation import (
+    DECISION_GATE_ARCHETYPES,
     ORG_ARCHETYPES,
     Host,
     OrgState,
     _SEGMENT_NAME_POOLS,
     generate_org_state,
 )
+
+# compile_scenario's own archetype lookup, separate from the ORG_ARCHETYPES
+# dict Arena mode's matchmaking/API/tests enumerate directly — see
+# org_simulation.py's DECISION_GATE_ARCHETYPES docstring for why the two
+# must never merge into one shared dict.
+_COMPILE_SCENARIO_ARCHETYPES: dict[str, dict] = {**ORG_ARCHETYPES, **DECISION_GATE_ARCHETYPES}
 
 ScenarioLike = Union[dict, object]  # ORM Scenario instance, or a plain dict with the same field names
 
@@ -128,15 +135,24 @@ def _parse_trigger_seconds(timestamp: str, compression_ratio: float = 1.0) -> in
     return _compress_seconds(raw_seconds, compression_ratio)
 
 
-# industry_vertical -> ORG_ARCHETYPES key. Scenario.industry_vertical values
-# not listed here (finance, government, technology, retail, ...) fall back to
-# _DEFAULT_ARCHETYPE_KEY rather than raising — ORG_ARCHETYPES only has two
-# entries today (Arena Phase A); this mapping widens gracefully as more
-# archetypes are added without action_engine.py needing a matching change.
+# industry_vertical -> _COMPILE_SCENARIO_ARCHETYPES key (ORG_ARCHETYPES
+# plus DECISION_GATE_ARCHETYPES). Scenario.industry_vertical values not
+# listed here (finance, government, retail, ...) fall back to
+# _DEFAULT_ARCHETYPE_KEY rather than raising; this mapping widens
+# gracefully as more archetypes are added without action_engine.py
+# needing a matching change. New entries should target
+# DECISION_GATE_ARCHETYPES unless the vertical is meant to also be a real
+# Arena-mode archetype (see that dict's docstring in org_simulation.py).
 _INDUSTRY_TO_ARCHETYPE: dict[str, str] = {
-    "energy": "energy_utility",
-    "critical_infrastructure": "energy_utility",
+    # energy_utility_flagship, not energy_utility — Arena mode selects
+    # "energy_utility" directly by archetype_key with its own size
+    # balance; decision-gate content (Colonial Pipeline) needs a bigger
+    # host_count_range for decoy-pool headroom (see org_simulation.py's
+    # ORG_ARCHETYPES comments) and must not share that knob with Arena.
+    "energy": "energy_utility_flagship",
+    "critical_infrastructure": "energy_utility_flagship",
     "healthcare": "small_healthcare",
+    "technology": "technology_saas",
 }
 _DEFAULT_ARCHETYPE_KEY = "small_healthcare"
 
@@ -495,7 +511,7 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
     """
     scenario_id = str(_field(scenario, "id", ""))
     archetype_key = _archetype_key_for_scenario(_field(scenario, "industry_vertical"))
-    archetype = ORG_ARCHETYPES[archetype_key]
+    archetype = _COMPILE_SCENARIO_ARCHETYPES[archetype_key]
 
     # The archetype-side term of host_harvest's elastic host-count formula
     # (max(archetype_roll, harvested+decoys)) needs its own seeded roll,

@@ -160,10 +160,12 @@ def test_industry_vertical_selects_the_matching_archetype():
     healthcare_run = action_engine.compile_scenario(
         dict(_SCENARIO, industry_vertical="healthcare", id="test-healthcare"), seed=1
     )
-    # energy_utility's host_count_range [12,15] and small_healthcare's [8,10]
-    # are disjoint (backend/app/services/org_simulation.py ORG_ARCHETYPES),
-    # so this is a stable, non-flaky signal that the archetype mapping fired.
-    assert 12 <= len(energy_run.world.hosts) <= 15
+    # energy_utility_flagship's host_count_range [16,20] (the archetype
+    # "energy" industry_vertical maps to for decision-gate content — see
+    # _INDUSTRY_TO_ARCHETYPE) and small_healthcare's [8,10] are disjoint
+    # (backend/app/services/org_simulation.py ORG_ARCHETYPES), so this is
+    # a stable, non-flaky signal that the archetype mapping fired.
+    assert 16 <= len(energy_run.world.hosts) <= 20
     assert 8 <= len(healthcare_run.world.hosts) <= 10
 
 
