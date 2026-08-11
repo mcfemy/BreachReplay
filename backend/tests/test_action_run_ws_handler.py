@@ -62,7 +62,7 @@ class FakeWebSocket:
         self.closed_code = code
 
 
-async def _make_scenario(decision_tree=None, hidden_iocs=None) -> "Scenario":
+async def _make_scenario(decision_tree=None, hidden_iocs=None, notification_matrix=None) -> "Scenario":
     from app.db.session import AsyncSessionLocal
     from app.models.scenario import Scenario
 
@@ -85,6 +85,7 @@ async def _make_scenario(decision_tree=None, hidden_iocs=None) -> "Scenario":
             decision_tree=decision_tree if decision_tree is not None else _FAST_DECISION_TREE,
             alert_sequence=[],
             hidden_iocs=hidden_iocs or [],
+            notification_matrix=notification_matrix or [],
         )
         db.add(scenario)
         await db.commit()
@@ -142,6 +143,32 @@ async def test_fresh_connect_sends_a_run_resync_event_at_zero(request):
     assert ws.sent[0]["hosts"] == []
     assert ws.sent[0]["revealed_iocs"] == []
     assert ws.sent[0]["edges"] == []
+    assert ws.sent[0]["notification_parties"] == []
+
+
+async def test_run_resync_sends_notification_parties_redacted():
+    """Phase 3 end-to-end through the real WS handler: notification_parties
+    is present from t=0 (unlike hosts/IOCs, it's not fog-of-war gated —
+    the party LIST is known from the start), but never carries `warranted`
+    or any of the matrix's other authored fields — the player must make
+    that judgment call themselves."""
+    from tests.conftest import ensure_test_user_row
+    await ensure_test_user_row("action-run-owner-notif")
+    scenario = await _make_scenario(notification_matrix=[
+        {"id": "cisa", "party_name": "CISA", "warranted": True,
+         "authority": "CISA", "basis": "test", "channel": "test", "window": "test",
+         "rationale": "test", "source_reference": "test"},
+    ])
+    run_id, _ = await _start_live_run(scenario, "action-run-owner-notif")
+
+    ws = FakeWebSocket(incoming=[])
+    await action_run_ws_handler(ws, run_id, "action-run-owner-notif")
+
+    parties = ws.sent[0]["notification_parties"]
+    assert parties == [{"id": "cisa", "party_name": "CISA"}]
+    assert "warranted" not in parties[0]
+    assert "basis" not in parties[0]
+    assert "rationale" not in parties[0]
 
 
 async def test_action_submit_returns_state_delta_and_clock_tick():
@@ -425,6 +452,33 @@ async def test_resync_after_scan_and_query_returns_exactly_the_earned_subset():
     assert queried_placement.rule_id in resynced_rule_ids
     for other in other_placements:
         assert other.rule_id not in resynced_rule_ids  # never leak an undiscovered host's IOC
+
+    async with action_run_store._lock:
+        action_run_store._runs.pop(run_id, None)
+
+
+async def test_notified_party_ids_survive_reconnect():
+    """Same reconnect-gap class Item 3 already fixed for hosts/IOCs,
+    applied to Phase 3's own state: a reconnecting player must see which
+    parties they already notified, not just clocks and an empty picker —
+    otherwise they'd tap an already-notified party again and learn only
+    from the server's rejection error."""
+    from tests.conftest import ensure_test_user_row
+    await ensure_test_user_row("action-run-owner-notif-2")
+    scenario = await _make_scenario(notification_matrix=[
+        {"id": "cisa", "party_name": "CISA", "warranted": True,
+         "authority": "CISA", "basis": "test", "channel": "test", "window": "test",
+         "rationale": "test", "source_reference": "test"},
+    ])
+    run_id, _ = await _start_live_run(scenario, "action-run-owner-notif-2")
+
+    await action_run_store.apply_verb(run_id, "escalate", "cisa")
+
+    ws = FakeWebSocket(incoming=[])
+    await action_run_ws_handler(ws, run_id, "action-run-owner-notif-2")
+
+    resync = ws.sent[0]
+    assert resync["notified_party_ids"] == ["cisa"]
 
     async with action_run_store._lock:
         action_run_store._runs.pop(run_id, None)

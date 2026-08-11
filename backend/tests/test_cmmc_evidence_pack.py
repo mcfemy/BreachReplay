@@ -6,9 +6,12 @@ GET /cmmc/evidence-sessions/{id}/pack (+ /pack/view) routes.
 Per Femi's approved design: dual sign-off is a hard, structural gate on
 generation (not a convention); the pack is scoped the same way item 5's
 reads are (both consultant_admin and client_participant of the session's
-own client org); and the three known persistence gaps (tool_output,
-IOC identities, escalate targets) are marked "not evidenced by this
-exercise" via a structural control-mapping table, never padded.
+own client org); and known persistence gaps (tool_output, IOC identities)
+are marked "not evidenced by this exercise" via a structural
+control-mapping table, never padded. Escalate targets were a third such
+gap until Phase 3 (Targeted Escalation & Notification Proportionality)
+closed it — see cmmc_pdf.py's build_control_mapping for the current claim
+and test_verb_engine.py for the escalate/scoring behavior itself.
 
 Rendering pivoted mid-item from reportlab to HTML + Playwright/Chromium
 after visual review found real defects (overlapping/overflowing table
@@ -222,7 +225,11 @@ async def test_pack_pdf_text_contains_honesty_notes(client, db, approved_scenari
 
     assert "is not persisted and is not evidenced by this exercise" in full_text
     assert "only aggregate counts are recorded" in full_text
-    assert "mapping between escalation events" in full_text
+    # Phase 3 — the notifications section's honesty note changed wording
+    # (escalate targets/warranted status are now evidenced against the
+    # SCENARIO's own authored matrix), but still explicitly disclaims any
+    # automated mapping to the org's own declared matrix above it.
+    assert "not an automated check against the organization's own declared notification matrix" in full_text
     assert "Investigative actions substantiated by captured tool output" in full_text
     assert "NIST SP 800-171 3.6.3" in full_text
 

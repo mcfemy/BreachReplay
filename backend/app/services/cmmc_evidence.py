@@ -183,11 +183,14 @@ async def build_evidence_session_aggregate(db: AsyncSession, session: EvidenceSe
       elapsed_seconds (see inline comment below for why this is an honest
       reconstruction, not a guess).
     - `escalations` is the same pooling applied to just the escalate verb
-      — "notification decisions, pooled" in the only form the data model
-      actually supports today: that an escalation happened, who triggered
-      it, and roughly when. NOT who was notified — verb_engine's escalate
-      carries no target detail, a gap item 1's plan already flagged and
-      this doesn't re-solve.
+      — "notification decisions, pooled": that an escalation happened, who
+      triggered it, roughly when, WHICH party it targeted (`target`), and
+      (Phase 3 — this was the gap item 1's original plan flagged and left
+      unresolved: escalate used to carry no target detail at all) whether
+      that party was warranted per the scenario's own authored
+      `notification_matrix` (`warranted`). `warranted` is `None` for any
+      pre-Phase-3 historical row whose `action_log` entries predate this
+      field.
     """
     result = await db.execute(select(ActionRun).where(ActionRun.evidence_session_id == session.id))
     runs = list(result.scalars().all())
@@ -237,6 +240,9 @@ async def build_evidence_session_aggregate(db: AsyncSession, session: EvidenceSe
                 "sequence_number": entry["sequence_number"],
                 "verb": entry["verb"],
                 "target": entry.get("target"),
+                # Phase 3 — present (a real bool) only on "escalate" entries;
+                # `None` for every other verb, which don't carry it at all.
+                "warranted": entry.get("warranted"),
                 "elapsed_seconds_in_run": entry["elapsed_seconds"],
                 "estimated_timestamp": run_start + timedelta(seconds=entry["elapsed_seconds"]),
             })

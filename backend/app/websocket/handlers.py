@@ -1555,6 +1555,8 @@ async def action_run_ws_handler(websocket: WebSocket, run_id: str, user_id: str)
             verb_engine.attacker_clock_seconds(live.run_state),
             live.cap_seconds,
             snapshot["hosts"], snapshot["revealed_iocs"], snapshot["edges"],
+            verb_engine.public_notification_parties(live.run_state.compiled),
+            snapshot["notified_party_ids"],
         ))
 
         while True:

@@ -28,9 +28,14 @@ immediately instead of silently breaking item 7's hash verification.
 
 Two deliberate honesty mechanisms, both reported and approved before item
 6 was first written, unchanged by this rendering pivot:
-- §8 Notifications renders the declared matrix and the escalation log as
-  two SEPARATE tables, never joined — a merged table would visually imply
-  a mapping the data doesn't support.
+- §8 Notifications renders the organization's declared matrix, the
+  scenario's own authored notification matrix (Phase 3), and the
+  escalation log as three SEPARATE tables, never joined into one — a
+  merged table would visually imply a mapping the data doesn't support.
+  Phase 3 lets each escalation show which scenario-authored party it
+  targeted and whether that was warranted per the SCENARIO's ground
+  truth; it still never claims that maps onto the organization's own
+  declared obligations above — see _notifications_html.
 - §11 Control mapping is a real `evidenced` column, not prose — see
   build_control_mapping's docstring for the exact claims and why only
   control 3.6.3 is mapped in this build.
@@ -98,9 +103,23 @@ def build_control_mapping() -> list[dict]:
         },
         {
             "control": "3.6.3",
+            # Phase 3 — genuinely, fully True now: every escalation carries
+            # WHICH party, WHEN (elapsed run time), and whether it was
+            # warranted per THIS SCENARIO's own authored ground truth (see
+            # the Notifications section's third table). Kept as its own
+            # claim, separate from the one below, rather than flipping that
+            # one's meaning — this evidences the scenario's ground truth,
+            # not the organization's own declared policy, and those are
+            # deliberately not the same claim.
+            "claim": "Notification decisions evidenced by party targeted, timing, and warranted-per-scenario-matrix status",
+            "evidenced": True,
+            "note": "Every logged escalation is attributed to a specific party, timestamped, and checked against this scenario's own authored notification matrix.",
+        },
+        {
+            "control": "3.6.3",
             "claim": "Notifications made per the organization's declared obligations",
             "evidenced": False,
-            "note": "That an escalation occurred is evidenced; which declared obligation it satisfied, if any, is not.",
+            "note": "Which party was notified and whether it was warranted per this scenario's own ground truth is now evidenced (see above) — but that is BreachReplay's authored judgment for this fictional incident, not an automated check against the organization's own declared notification matrix at the top of the Notifications section. The mapping between the two is still not evidenced by this exercise.",
         },
     ]
 
@@ -193,6 +212,14 @@ async def build_pack_payload(
         "lessons_learned": session.lessons_learned,
         "remediation_items": session.remediation_items,
         "notification_matrix": client_org.notification_matrix,
+        # Phase 3 — the SCENARIO's own authored ground truth (which parties
+        # exist, which are actually warranted given this incident's facts,
+        # each with a real citation). Deliberately a separate key from
+        # client_org.notification_matrix above, not merged — same "never
+        # imply a mapping the data doesn't support" discipline this
+        # module's own header comment already holds itself to. See
+        # _notifications_html for how the two are kept visually distinct.
+        "scenario_notification_matrix": scenario.notification_matrix,
         "irp_reference": client_org.irp_reference,
         "client_signoff": session.client_signoff,
         "consultant_signoff": session.consultant_signoff,
@@ -557,25 +584,51 @@ def _notifications_html(payload: dict) -> str:
     else:
         matrix_html = "<p>No notification matrix has been declared for this client org.</p>"
 
+    # Phase 3 — the scenario's OWN authored ground truth, a distinct thing
+    # from client_org's declared matrix above (see build_pack_payload's
+    # comment). Rendered as its own table, own heading, never merged with
+    # the declared matrix — same discipline this module's header comment
+    # already applies to the declared-matrix/escalation-log split.
+    scenario_matrix = payload["scenario_notification_matrix"]
+    if scenario_matrix:
+        scenario_rows = "".join(
+            f"<tr><td>{_esc(e['party_name'])}</td>"
+            f"<td>{'Warranted' if e['warranted'] else 'Not warranted'}</td>"
+            f"<td>{_esc(e['basis'])}</td><td>{_esc(e['source_reference'])}</td></tr>"
+            for e in scenario_matrix
+        )
+        scenario_matrix_html = f"""
+  <table>
+    <colgroup><col style="width:25%"><col style="width:15%"><col style="width:35%"><col style="width:25%"></colgroup>
+    <thead><tr><th>Party</th><th>This scenario's call</th><th>Basis</th><th>Source</th></tr></thead>
+    <tbody>{scenario_rows}</tbody>
+  </table>
+"""
+    else:
+        scenario_matrix_html = "<p>This scenario has no authored notification matrix yet.</p>"
+
     escalations = payload["aggregate"]["escalations"]
     n = len(escalations)
     if n:
         esc_rows = "".join(
-            f"<tr><td>{_esc(e['participant_name'])}</td><td>{e['elapsed_seconds_in_run']}s</td></tr>"
+            f"<tr><td>{_esc(e['participant_name'])}</td>"
+            f"<td>{_esc(e.get('target') or '—')}</td>"
+            f"<td>{_warranted_label(e.get('warranted'))}</td>"
+            f"<td>{e['elapsed_seconds_in_run']}s</td></tr>"
             for e in escalations
         )
         esc_html = f"""
   <table>
-    <colgroup><col style="width:50%"><col style="width:50%"></colgroup>
-    <thead><tr><th>Participant</th><th>Elapsed time from exercise start</th></tr></thead>
+    <colgroup><col style="width:30%"><col style="width:25%"><col style="width:20%"><col style="width:25%"></colgroup>
+    <thead><tr><th>Participant</th><th>Party notified</th><th>Warranted?</th><th>Elapsed time from exercise start</th></tr></thead>
     <tbody>{esc_rows}</tbody>
   </table>
   <div class="note">
-    {n} escalation(s) occurred during this exercise (logged above: who, and elapsed time from
-    exercise start). This exercise does not evidence which declared authority, channel, or
-    obligation - if any - each escalation was directed to. The mapping between escalation
-    events and the organization's declared notification matrix above is not evidenced by
-    this exercise.
+    {n} escalation(s) occurred during this exercise. "Warranted?" is evaluated against THIS
+    SCENARIO's own authored notification matrix above (BreachReplay's ground-truth judgment for
+    this incident's facts) — it is not an automated check against the organization's own
+    declared notification matrix at the top of this section. The two are shown separately on
+    purpose; a merged table would visually imply a mapping this exercise doesn't verify.
   </div>
 """
     else:
@@ -583,11 +636,23 @@ def _notifications_html(payload: dict) -> str:
 
     return f"""
   <div class="subheading">Notifications</div>
-  <p>Declared notification matrix</p>
+  <p>Declared notification matrix (organization's own policy)</p>
   {matrix_html}
+  <p>This scenario's authored notification matrix (BreachReplay's ground truth)</p>
+  {scenario_matrix_html}
   <p>Escalations logged during this exercise</p>
   {esc_html}
 """
+
+
+def _warranted_label(warranted) -> str:
+    """`warranted` is a real bool on any Phase-3 escalation, `None` on any
+    pre-Phase-3 historical row whose action_log predates this field, and
+    never anything else — three states, three distinct labels, no silent
+    coercion of `None` into "No"."""
+    if warranted is None:
+        return "Not evaluated"
+    return "Yes" if warranted else "No"
 
 
 def _lessons_remediation_html(payload: dict) -> str:

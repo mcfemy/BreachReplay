@@ -27,6 +27,8 @@ function baseRunState(overrides: Partial<ReturnType<typeof useRunSocket>> = {}) 
     revealedIocs: [],
     credentialsByHost: {},
     edges: [],
+    notificationParties: [],
+    notifiedPartyIds: [],
     stagesFired: 0,
     totalStages: 4,
     isFinalReached: false,
@@ -67,5 +69,56 @@ describe("ActionConsole", () => {
     render(<ActionConsole runId="run-1" />);
     await user.click(screen.getByText("Scan Network"));
     expect(submitVerb).toHaveBeenCalledWith("scan_network");
+  });
+
+  it("shows a party picker on Escalate, never the warranted answer", async () => {
+    vi.mocked(useRunSocket).mockReturnValue(
+      baseRunState({ notificationParties: [{ id: "cisa", party_name: "CISA" }] }),
+    );
+    const user = userEvent.setup();
+    render(<ActionConsole runId="run-1" />);
+    await user.click(screen.getByText("Escalate"));
+    expect(screen.getByText("CISA")).toBeInTheDocument();
+    // The picker must never render "warranted" content — that's the
+    // player's own judgment call, not something the UI hands them.
+    expect(screen.queryByText(/warranted/i)).not.toBeInTheDocument();
+  });
+
+  it("submits escalate with the tapped party's id", async () => {
+    vi.mocked(useRunSocket).mockReturnValue(
+      baseRunState({ notificationParties: [{ id: "cisa", party_name: "CISA" }] }),
+    );
+    const user = userEvent.setup();
+    render(<ActionConsole runId="run-1" />);
+    await user.click(screen.getByText("Escalate"));
+    await user.click(screen.getByText("CISA"));
+    expect(submitVerb).toHaveBeenCalledWith("escalate", "cisa");
+  });
+
+  it("submits escalate immediately, no picker, on a scenario with no notification matrix", async () => {
+    // baseRunState()'s default notificationParties is already [] — the
+    // matrix-less-scenario case (verb_engine's own fallback path on PR
+    // #25's review finding: escalate must not become a dead verb, or the
+    // picker a dead end, on a scenario nobody's authored a matrix for yet).
+    const user = userEvent.setup();
+    render(<ActionConsole runId="run-1" />);
+    await user.click(screen.getByText("Escalate"));
+    expect(submitVerb).toHaveBeenCalledWith("escalate");
+    // No picker opened — nothing besides the verb chip bar itself should
+    // show "who do you notify?".
+    expect(screen.queryByText(/who do you notify/i)).not.toBeInTheDocument();
+  });
+
+  it("disables an already-notified party in the picker", async () => {
+    vi.mocked(useRunSocket).mockReturnValue(
+      baseRunState({
+        notificationParties: [{ id: "cisa", party_name: "CISA" }],
+        notifiedPartyIds: ["cisa"],
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ActionConsole runId="run-1" />);
+    await user.click(screen.getByText("Escalate"));
+    expect(screen.getByText("CISA").closest("button")).toBeDisabled();
   });
 });

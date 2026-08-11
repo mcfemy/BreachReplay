@@ -364,14 +364,21 @@ def build_investigation_result_event(field: str, value: str, matches: list) -> d
 
 def build_run_resync_event(
     elapsed_seconds: int, attacker_clock_seconds: int, cap_seconds: int,
-    hosts: list, revealed_iocs: list, edges: list,
+    hosts: list, revealed_iocs: list, edges: list, notification_parties: list,
+    notified_party_ids: list,
 ) -> dict:
     """Sent once, right after connect — covers both a fresh run's t=0 state
     and a reconnect resuming a live run. `hosts`/`revealed_iocs`/`edges`
     (from `verb_engine.earned_state_snapshot`) carry everything this
     player has already earned, so a reconnect actually restores what they
     were looking at instead of just a clock baseline with an empty map —
-    all three are `[]` for a fresh, untouched run."""
+    all three are `[]` for a fresh, untouched run. `notified_party_ids`
+    (also from `earned_state_snapshot`) is the same reconnect-gap fix
+    applied to Phase 3's own state. `notification_parties` (Phase 3,
+    `verb_engine.public_notification_parties`) is different in kind from
+    all four: a static per-scenario list known from t=0, not progressively
+    earned — always present, even on a fresh run, and already redacted to
+    `{id, party_name}` (no `warranted`)."""
     return {
         "type": "run.resync",
         "elapsed_seconds": elapsed_seconds,
@@ -380,6 +387,8 @@ def build_run_resync_event(
         "hosts": hosts,
         "revealed_iocs": revealed_iocs,
         "edges": edges,
+        "notification_parties": notification_parties,
+        "notified_party_ids": notified_party_ids,
         "server_time": datetime.utcnow().isoformat(),
     }
 

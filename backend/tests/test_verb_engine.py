@@ -42,11 +42,33 @@ _SCENARIO = {
          "source_system": "IAM", "rule_id": "IAM-018", "description": "svc_backup added to privileged group",
          "raw_log": "event=4728 member=svc_backup"},
     ],
+    # Phase 3 — one warranted, one not, so tests can exercise both scoring
+    # directions without needing a second fixture.
+    "notification_matrix": [
+        {"id": "cisa", "party_name": "CISA", "warranted": True,
+         "authority": "CISA", "basis": "test basis", "channel": "test channel", "window": "test window",
+         "rationale": "test", "source_reference": "test-source"},
+        {"id": "pr", "party_name": "PR/Comms", "warranted": False,
+         "authority": "PR/Comms", "basis": "test basis", "channel": "test channel", "window": "test window",
+         "rationale": "test", "source_reference": "test-source"},
+    ],
 }
 
 
 def _compiled(seed=7):
     return action_engine.compile_scenario(_SCENARIO, seed=seed)
+
+
+# Phase 3 review finding (PR #25): a scenario with no authored
+# notification_matrix must not turn escalate into a hard-erroring dead
+# verb — same fixture as _SCENARIO, minus the matrix, so it exercises the
+# real "matrix-less scenario" path rather than an artificial empty-dict
+# stand-in.
+_SCENARIO_NO_MATRIX = {k: v for k, v in _SCENARIO.items() if k != "notification_matrix"}
+
+
+def _compiled_no_matrix(seed=7):
+    return action_engine.compile_scenario(_SCENARIO_NO_MATRIX, seed=seed)
 
 
 def _run_clock_past(run, target_clock_seconds):
@@ -71,7 +93,7 @@ def test_every_verb_advances_elapsed_seconds_by_its_exact_spec_cost():
         "interview_user": (60, compiled.world.hosts[3 % len(compiled.world.hosts)].id),
         "block_ip": (15, "10.0.0.1"),  # deliberately wrong — cost still applies
         "reset_creds": (40, cred.username),
-        "escalate": (0, None),
+        "escalate": (0, "cisa"),
     }
     assert expected_costs.keys() == verb_engine.VERB_COSTS.keys()
 
@@ -134,27 +156,94 @@ def test_correct_isolation_records_no_precision_penalty():
     assert not any(p["type"] == "wrong_isolation" for p in result.run.penalties)
 
 
-def test_escalate_is_rejected_on_second_use():
+def test_escalate_is_rejected_on_reuse_of_the_same_party():
     compiled = _compiled()
     run = verb_engine.new_run(compiled)
 
-    first = verb_engine.apply_verb(run, "escalate")
+    first = verb_engine.apply_verb(run, "escalate", "cisa")
     assert first.error is None
-    assert first.run.escalate_used is True
+    assert first.run.notified_party_ids == frozenset({"cisa"})
     assert first.run.attacker_clock_offset == verb_engine.ESCALATE_FREEZE_SECONDS
     assert first.run.elapsed_seconds == 0  # escalate costs 0s
 
-    second = verb_engine.apply_verb(first.run, "escalate")
-    assert second.error == "escalate already used this run"
+    second = verb_engine.apply_verb(first.run, "escalate", "cisa")
+    assert second.error == "Party 'cisa' already notified this run"
     # Rejected call must leave the run completely unchanged.
     assert second.run == first.run
     assert second.run.attacker_clock_offset == verb_engine.ESCALATE_FREEZE_SECONDS
 
 
+def test_escalate_is_once_per_party_not_once_per_run():
+    """The load-bearing behavior change from the old escalate_used flag —
+    a scenario's notification_matrix has multiple parties, and a player
+    must be able to notify several across one run."""
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+
+    first = verb_engine.apply_verb(run, "escalate", "cisa")
+    assert first.error is None
+    second = verb_engine.apply_verb(first.run, "escalate", "pr")
+    assert second.error is None
+    assert second.run.notified_party_ids == frozenset({"cisa", "pr"})
+
+
+def test_escalate_clock_freeze_does_not_stack_across_multiple_parties():
+    """Second-round review finding on PR #25: escalate stays once-per-
+    PARTY (repeat notifications are still individually scored), but the
+    60s clock-freeze side effect must apply at most once per RUN —
+    without this cap, a matrix with N warranted parties let a player
+    freeze the attacker clock N*60s at zero time cost."""
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+
+    first = verb_engine.apply_verb(run, "escalate", "cisa")
+    assert first.error is None
+    assert first.run.attacker_clock_offset == verb_engine.ESCALATE_FREEZE_SECONDS
+    assert first.delta["frozen_seconds"] == verb_engine.ESCALATE_FREEZE_SECONDS
+
+    second = verb_engine.apply_verb(first.run, "escalate", "pr")
+    assert second.error is None
+    # Still exactly ONE freeze's worth, not two.
+    assert second.run.attacker_clock_offset == verb_engine.ESCALATE_FREEZE_SECONDS
+    # This call's own delta honestly reports that IT didn't freeze
+    # anything — not a stale claim of another 60s.
+    assert second.delta["frozen_seconds"] == 0
+    # Notification itself is still fully scored per party regardless of
+    # the freeze cap — "pr" is unwarranted and still penalizes.
+    assert any(p["type"] == "unwarranted_notification" for p in second.run.penalties)
+
+
+def test_escalate_rejects_a_party_not_in_the_scenarios_matrix():
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+    result = verb_engine.apply_verb(run, "escalate", "not-a-real-party")
+    assert result.error == "Unknown notification party: 'not-a-real-party'"
+    assert result.run == run  # rejected call leaves the run unchanged
+
+
+def test_escalate_penalizes_notifying_an_unwarranted_party_immediately():
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+    result = verb_engine.apply_verb(run, "escalate", "pr")  # "pr" is warranted=False in the fixture
+    assert result.error is None
+    assert result.delta["warranted"] is False
+    penalty_types = [p["type"] for p in result.run.penalties]
+    assert "unwarranted_notification" in penalty_types
+
+
+def test_escalate_does_not_penalize_notifying_a_warranted_party():
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+    result = verb_engine.apply_verb(run, "escalate", "cisa")  # "cisa" is warranted=True
+    assert result.error is None
+    assert result.delta["warranted"] is True
+    assert not result.run.penalties
+
+
 def test_escalate_freezes_the_attacker_clock_by_a_permanent_60s_offset():
     compiled = _compiled()
     run = verb_engine.new_run(compiled)
-    run = verb_engine.apply_verb(run, "escalate").run
+    run = verb_engine.apply_verb(run, "escalate", "cisa").run
     assert verb_engine.attacker_clock_seconds(run) == 0
 
     # 40s of real elapsed time later, the attacker clock is still behind by
@@ -163,6 +252,69 @@ def test_escalate_freezes_the_attacker_clock_by_a_permanent_60s_offset():
     run = verb_engine.apply_verb(run, "isolate", compiled.world.hosts[0].id).run  # 20s
     assert run.elapsed_seconds == 35
     assert verb_engine.attacker_clock_seconds(run) == 0  # max(0, 35 - 60)
+
+
+# ── Phase 3 review finding (PR #25): matrix-less scenario fallback ──────────
+#
+# A scenario with no authored notification_matrix must not turn escalate
+# into a hard-erroring dead verb with no clock-freeze — it falls back to
+# exactly the pre-Phase-3 behavior: untargeted, one-shot per run, 60s
+# freeze, no penalty.
+
+def test_escalate_on_a_matrix_less_scenario_is_untargeted_freezes_the_clock_and_penalizes():
+    """Second-round review finding on PR #25: the fallback must match
+    pre-Phase-3 behavior EXACTLY, penalty included — confirmed against
+    `bf2687d` (main immediately before this branch), where escalate always
+    applied ESCALATE_PENALTY unconditionally."""
+    compiled = _compiled_no_matrix()
+    run = verb_engine.new_run(compiled)
+    result = verb_engine.apply_verb(run, "escalate")  # no target at all
+    assert result.error is None
+    assert result.run.attacker_clock_offset == verb_engine.ESCALATE_FREEZE_SECONDS
+    assert result.run.elapsed_seconds == 0  # escalate still costs 0s
+    assert result.run.penalties == ({"type": "escalate_used", "amount": verb_engine.ESCALATE_PENALTY},)
+    assert result.delta == {
+        "escalate_used": True,
+        "frozen_seconds": verb_engine.ESCALATE_FREEZE_SECONDS,
+        "tool_output": result.delta["tool_output"],
+    }
+    # Exact pre-Phase-3 text — not a "Notify: None" regression.
+    assert "Notify:" not in result.delta["tool_output"]["output"]
+
+
+def test_escalate_on_a_matrix_less_scenario_ignores_a_target_if_one_is_passed():
+    """The fallback must behave identically whether or not a caller
+    passes a target — a stray target string is not an error, just
+    ignored, matching pre-Phase-3 escalate having no target concept at all."""
+    compiled = _compiled_no_matrix()
+    run = verb_engine.new_run(compiled)
+    result = verb_engine.apply_verb(run, "escalate", "some-stray-target")
+    assert result.error is None
+    assert result.run.attacker_clock_offset == verb_engine.ESCALATE_FREEZE_SECONDS
+
+
+def test_escalate_on_a_matrix_less_scenario_is_rejected_on_second_use():
+    compiled = _compiled_no_matrix()
+    run = verb_engine.new_run(compiled)
+    first = verb_engine.apply_verb(run, "escalate")
+    assert first.error is None
+    second = verb_engine.apply_verb(first.run, "escalate")
+    assert second.error == "escalate already used this run"
+    assert second.run == first.run
+
+
+def test_compute_score_on_a_matrix_less_scenario_has_zero_notification_impact():
+    compiled = _compiled_no_matrix()
+    run = verb_engine.apply_verb(verb_engine.new_run(compiled), "escalate").run
+    breakdown = verb_engine.compute_score(run, "contained", cap_seconds=480)
+    assert breakdown["notifications"] == []
+    assert breakdown["notification_points"] == 0
+    assert breakdown["notification_penalty"] == 0
+
+
+def test_public_notification_parties_is_empty_on_a_matrix_less_scenario():
+    compiled = _compiled_no_matrix()
+    assert verb_engine.public_notification_parties(compiled) == []
 
 
 def test_query_logs_reveals_only_iocs_bound_to_that_host():
@@ -400,7 +552,7 @@ def test_no_verb_response_ever_leaks_unrevealed_hidden_state():
         ("image_disk", host_b),
         ("block_ip", "not-a-real-ip"),
         ("reset_creds", "not-a-real-account"),
-        ("escalate", None),
+        ("escalate", "cisa"),
     ]
 
     all_ioc_text = [p.description for p in compiled.ioc_placements] + [p.raw_log for p in compiled.ioc_placements]
@@ -632,6 +784,100 @@ def test_compute_score_breached_awards_no_speed_bonus():
     assert breakdown["outcome_base"] == 0
 
 
+# ── Phase 3: notification proportionality scoring ───────────────────────────
+#
+# Fixture's notification_matrix (see _SCENARIO above): "cisa" warranted=True,
+# "pr" warranted=False.
+
+def test_compute_score_awards_notification_points_for_a_warranted_notification():
+    compiled = _compiled()
+    run = verb_engine.apply_verb(verb_engine.new_run(compiled), "escalate", "cisa").run
+    breakdown = verb_engine.compute_score(run, "contained", cap_seconds=480)
+    assert breakdown["notification_points"] == verb_engine.NOTIFICATION_POINTS_PER_WARRANTED
+    assert breakdown["notification_penalty"] == 0
+    notif = next(n for n in breakdown["notifications"] if n["party_id"] == "cisa")
+    assert notif == {"party_id": "cisa", "party_name": "CISA", "warranted": True, "notified": True}
+
+
+def test_compute_score_penalizes_never_notifying_a_warranted_party():
+    """The under-notification direction — a whole-run check (mirrors
+    _collateral_hosts): notification_penalty must reflect a warranted
+    party that was NEVER notified, even though no single action can be
+    pinpointed as "the" mistake."""
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)  # never calls escalate at all
+    breakdown = verb_engine.compute_score(run, "contained", cap_seconds=480)
+    assert breakdown["notification_penalty"] == verb_engine.MISSED_NOTIFICATION_PENALTY
+    assert breakdown["notification_points"] == 0
+    notif = next(n for n in breakdown["notifications"] if n["party_id"] == "cisa")
+    assert notif["warranted"] is True
+    assert notif["notified"] is False
+
+
+def test_compute_score_unwarranted_notification_penalty_is_not_double_counted():
+    """Over-notification is applied immediately in apply_verb (a normal
+    `penalties` entry, same as wrong_isolation) and must NOT also appear
+    in notification_penalty — that field is deliberately scoped to the
+    under-notification direction only (see _notification_summary's
+    docstring), to avoid subtracting the same penalty from total_score
+    twice."""
+    compiled = _compiled()
+    run = verb_engine.apply_verb(verb_engine.new_run(compiled), "escalate", "pr").run  # "pr" is unwarranted
+    breakdown = verb_engine.compute_score(run, "contained", cap_seconds=480)
+    assert breakdown["penalty_total"] == verb_engine.UNWARRANTED_NOTIFICATION_PENALTY
+    # The missed-cisa penalty still applies (cisa was warranted, never
+    # notified) — notification_penalty is exactly that, not the
+    # unwarranted "pr" penalty too.
+    assert breakdown["notification_penalty"] == verb_engine.MISSED_NOTIFICATION_PENALTY
+    assert breakdown["notification_points"] == 0
+
+
+def test_compute_score_notification_points_and_penalty_are_additive_into_total_score():
+    compiled = _compiled()
+    warranted_run = verb_engine.apply_verb(verb_engine.new_run(compiled), "escalate", "cisa").run
+    baseline_run = verb_engine.new_run(compiled)
+
+    warranted_breakdown = verb_engine.compute_score(warranted_run, "contained", cap_seconds=480)
+    baseline_breakdown = verb_engine.compute_score(baseline_run, "contained", cap_seconds=480)
+
+    # Notifying the warranted party earns NOTIFICATION_POINTS_PER_WARRANTED
+    # and avoids MISSED_NOTIFICATION_PENALTY — a swing of exactly that sum
+    # in total_score, holding every other axis (evidence, collateral,
+    # outcome) constant between the two runs.
+    expected_swing = verb_engine.NOTIFICATION_POINTS_PER_WARRANTED + verb_engine.MISSED_NOTIFICATION_PENALTY
+    assert warranted_breakdown["total_score"] - baseline_breakdown["total_score"] == expected_swing
+
+
+def test_public_notification_parties_never_leaks_warranted_or_citations():
+    """The player must make the judgment call themselves — sending
+    `warranted` (or `basis`/`rationale`/`source_reference`) up front would
+    hand them the puzzle's answer, the same leak class as an unrevealed
+    IOC's raw_log appearing in a delta it shouldn't."""
+    compiled = _compiled()
+    parties = verb_engine.public_notification_parties(compiled)
+    assert parties == [
+        {"id": "cisa", "party_name": "CISA"},
+        {"id": "pr", "party_name": "PR/Comms"},
+    ]
+    for p in parties:
+        assert set(p.keys()) == {"id", "party_name"}
+
+
+def test_notification_scoring_never_changes_outcome():
+    """The spec's own "parallel score, don't touch existing outcomes"
+    requirement — determine_outcome must be identical whether or not any
+    notification was ever made."""
+    compiled = _compiled()
+    final = _final_stage(compiled)
+    no_escalate_run = verb_engine.new_run(compiled)
+    no_escalate_run = _run_clock_past(no_escalate_run, final.trigger_seconds)
+
+    escalated_run = verb_engine.apply_verb(verb_engine.new_run(compiled), "escalate", "pr").run  # unwarranted, on purpose
+    escalated_run = _run_clock_past(escalated_run, final.trigger_seconds)
+
+    assert verb_engine.determine_outcome(no_escalate_run) == verb_engine.determine_outcome(escalated_run)
+
+
 # ── Phase 2 acceptance re-verification (spec section 4 checklist) ──────────────
 #
 # Added during acceptance re-verification after compression_ratio scaling and
@@ -716,7 +962,7 @@ def test_no_leak_on_initial_resync_despite_a_pre_fired_world():
 
     run = verb_engine.new_run(compiled)
     snapshot = verb_engine.earned_state_snapshot(run)
-    assert snapshot == {"hosts": [], "revealed_iocs": [], "edges": []}
+    assert snapshot == {"hosts": [], "revealed_iocs": [], "edges": [], "notified_party_ids": []}
 
 
 def test_five_seeded_runs_win_or_lose_by_strategy_not_luck():
@@ -835,7 +1081,7 @@ def test_tool_output_is_deterministic_across_independent_replays():
             result = verb_engine.apply_verb(run, "isolate", host.id)
             outputs.append(result.delta["tool_output"])
             run = result.run
-        result = verb_engine.apply_verb(run, "escalate")
+        result = verb_engine.apply_verb(run, "escalate", "cisa")
         outputs.append(result.delta["tool_output"])
         return outputs
 
