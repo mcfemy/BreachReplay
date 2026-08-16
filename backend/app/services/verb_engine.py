@@ -138,6 +138,13 @@ class RunState:
     discovered_ioc_keys: frozenset = field(default_factory=frozenset)  # {(host_id, rule_id)}
     penalties: tuple = ()
     action_log: tuple = ()
+    # Technique Dossier — every stage.mitre_technique whose trigger has
+    # fired (_advance_stages), regardless of whether the player contained
+    # it correctly. Deliberately NOT gated on penalties/outcome: dossier
+    # progress tracks exposure to a technique, not mastery of it (that's
+    # mastery_service's job, over a different data source). Threaded
+    # through to action_run_store.finalize() for persistence.
+    encountered_technique_ids: frozenset = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True)
@@ -339,19 +346,31 @@ def _revealed_edges(compiled: CompiledRun, revealed_host_ids: frozenset) -> list
     ]
 
 
-def _advance_stages(compiled: CompiledRun, world: OrgState, from_clock: int, to_clock: int) -> OrgState:
+def _advance_stages(
+    compiled: CompiledRun, world: OrgState, from_clock: int, to_clock: int,
+) -> tuple[OrgState, frozenset]:
     """Apply every stage whose trigger_seconds falls in (from_clock,
     to_clock] against `world`, respecting CURRENT isolation — an isolated
     host never gets compromised further, matching org_simulation's "no
     remediation, only containment" philosophy. Mirrors
     action_engine.world_state_at's loop, but scoped to a window and folded
     onto a live `world` (which may already carry defender verb effects)
-    instead of always starting fresh from compiled.world."""
+    instead of always starting fresh from compiled.world.
+
+    Returns `(world, newly_fired_technique_ids)` — the second element is
+    every `stage.mitre_technique` (deduped, None dropped) belonging to a
+    stage that fired in this window, REGARDLESS of `compromises_host_ids`
+    or isolation outcome: a stage "firing" is what the Technique Dossier
+    means by "encountered", independent of whether it actually advanced
+    any host's compromise_level."""
+    newly_fired_technique_ids: set = set()
     if to_clock <= from_clock:
-        return world
+        return world, frozenset()
     for stage in compiled.stages:
         if not (from_clock < stage.trigger_seconds <= to_clock):
             continue
+        if stage.mitre_technique:
+            newly_fired_technique_ids.add(stage.mitre_technique)
         for host_id in stage.compromises_host_ids:
             host = world.get_host(host_id)
             if host is None or host.isolated:
@@ -368,7 +387,7 @@ def _advance_stages(compiled: CompiledRun, world: OrgState, from_clock: int, to_
                 hosts=new_hosts, segments=world.segments, credentials=world.credentials,
                 detection_rules=world.detection_rules, global_flags=world.global_flags,
             )
-    return world
+    return world, frozenset(newly_fired_technique_ids)
 
 
 def _reveal_iocs_for_host(
@@ -649,8 +668,12 @@ def apply_verb(run: RunState, verb: str, target: Optional[str] = None) -> VerbRe
         penalties=penalties,
     )
     new_clock = attacker_clock_seconds(interim)
-    advanced_world = _advance_stages(run.compiled, interim.world, old_clock, new_clock)
-    final_run = replace(interim, world=advanced_world)
+    advanced_world, newly_fired_technique_ids = _advance_stages(run.compiled, interim.world, old_clock, new_clock)
+    final_run = replace(
+        interim,
+        world=advanced_world,
+        encountered_technique_ids=interim.encountered_technique_ids | newly_fired_technique_ids,
+    )
     final_run = replace(
         final_run,
         action_log=final_run.action_log + (_log_entry(

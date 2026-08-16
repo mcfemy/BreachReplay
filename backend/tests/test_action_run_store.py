@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from app.models.action_run import ActionRun
 from app.models.scenario import Scenario
+from app.models.technique_encounter import TechniqueEncounter
 from app.models.user import User
 from app.services import action_engine
 from app.services.action_run_store import ActionRunStore, CAP_SECONDS_BY_MODE, SWEEP_GRACE_SECONDS
@@ -50,6 +51,37 @@ async def fast_scenario(db):
         # compression_ratio defaults to 8.0 at the DB level, which would
         # otherwise compress +2m to 15s and fire the gate far earlier than
         # these tests assume.
+        compression_ratio=1.0,
+        alert_sequence=[],
+    )
+    db.add(scenario)
+    await db.flush()
+    return scenario
+
+
+# A teaser-cap-appropriate variant of _FAST_DECISION_TREE: teaser mode caps
+# runs at 90s (CAP_SECONDS_BY_MODE["teaser"]), so _FAST_DECISION_TREE's
+# +2m/120s gate can never fire before a teaser run is force-ended by the
+# cap. +75s falls inside the second scan_network step's window (45s, 90s]
+# — reached via the same "burn clock with scan_network" pattern as
+# _play_until_over — and clears the 90s cap boundary with room to spare.
+_FAST_TEASER_DECISION_TREE = [
+    {"id": "gate-001", "trigger_timestamp": "+75s", "mitre_technique": "T1078",
+     "context_summary": "Suspicious VPN activity.", "options": [], "correct_index": 0,
+     "consequence_if_wrong": "Missed.", "rationale": "Correlate anomalies.", "nist_control_ref": "DE.AE-2"},
+]
+
+
+@pytest.fixture
+async def fast_teaser_scenario(db):
+    scenario = Scenario(
+        title="Fast Teaser Test Scenario",
+        source_type="manual",
+        source_reference="TEST-FAST-TEASER-001",
+        difficulty="practitioner",
+        industry_vertical="energy",
+        status="approved",
+        decision_tree=_FAST_TEASER_DECISION_TREE,
         compression_ratio=1.0,
         alert_sequence=[],
     )
@@ -266,3 +298,87 @@ async def test_finalize_awards_zero_xp_and_no_achievements_for_an_overreacted_ru
 
     await db.refresh(test_user["user"])
     assert test_user["user"].xp_total == 0
+
+
+# ── Technique Dossier: TechniqueEncounter persistence (finalize) ────────────
+#
+# fast_scenario's single gate (+2m/120s) is tagged mitre_technique=T1078 and
+# is also the scenario's only (hence final) stage — burning clock time with
+# scan_network until the run is over is enough to fire it, exactly like the
+# achievement tests above. The teaser-mode test below uses
+# fast_teaser_scenario instead (+75s gate) since teaser mode's 90s cap would
+# force-end the run before fast_scenario's +2m/120s gate ever fires.
+
+async def _play_until_over(store, run_id):
+    is_over = False
+    while not is_over:
+        result, is_over = await store.apply_verb(run_id, "scan_network", None)
+        assert result.error is None
+    return is_over
+
+
+async def test_finalize_persists_a_technique_encounter_row_for_an_authenticated_run(db, store, fast_scenario, test_user):
+    compiled = action_engine.compile_scenario(fast_scenario, seed=1)
+    run_id = _new_run_id()
+    await store.start_run(run_id, test_user["user"].id, fast_scenario.id, "scenario", compiled)
+    await _play_until_over(store, run_id)
+
+    live = await store.get(run_id)
+    assert "T1078" in live.run_state.encountered_technique_ids  # sanity: the fixture's gate actually fired
+
+    await store.finalize(db, run_id)
+
+    result = await db.execute(
+        select(TechniqueEncounter).where(TechniqueEncounter.user_id == test_user["user"].id)
+    )
+    rows = result.scalars().all()
+    assert len(rows) == 1
+    assert rows[0].technique_id == "T1078"
+    assert rows[0].encounter_count == 1
+
+
+async def test_finalize_does_not_persist_technique_encounters_for_an_unauthenticated_teaser_run(db, store, fast_teaser_scenario):
+    """Mirrors test_finalize_skips_xp_and_achievements_for_a_teaser_mode_run_with_no_user
+    — ActionRun.user_id is nullable for teaser runs, and dossier progress
+    must not try to persist against a null user_id (TechniqueEncounter.user_id
+    is NOT nullable).
+
+    Uses fast_teaser_scenario (gate at +75s), not fast_scenario (gate at
+    +2m/120s) — teaser mode's 90s cap (CAP_SECONDS_BY_MODE["teaser"]) would
+    force-end the run before fast_scenario's gate ever fires, which would
+    make the "gate fires regardless of auth" assertion below fail for a
+    reason unrelated to what this test is actually checking."""
+    compiled = action_engine.compile_scenario(fast_teaser_scenario, seed=1)
+    run_id = _new_run_id()
+    await store.start_run(run_id, None, fast_teaser_scenario.id, "teaser", compiled)
+    await _play_until_over(store, run_id)
+
+    live = await store.get(run_id)
+    assert "T1078" in live.run_state.encountered_technique_ids  # the gate fires regardless of auth
+
+    await store.finalize(db, run_id)
+
+    result = await db.execute(select(TechniqueEncounter))
+    assert result.scalars().all() == []
+
+
+async def test_finalize_increments_encounter_count_on_repeat_exposure_across_separate_runs(db, store, fast_scenario, test_user):
+    compiled = action_engine.compile_scenario(fast_scenario, seed=1)
+
+    first_run_id = _new_run_id()
+    await store.start_run(first_run_id, test_user["user"].id, fast_scenario.id, "scenario", compiled)
+    await _play_until_over(store, first_run_id)
+    await store.finalize(db, first_run_id)
+
+    second_run_id = _new_run_id()
+    await store.start_run(second_run_id, test_user["user"].id, fast_scenario.id, "scenario", compiled)
+    await _play_until_over(store, second_run_id)
+    await store.finalize(db, second_run_id)
+
+    result = await db.execute(
+        select(TechniqueEncounter).where(TechniqueEncounter.user_id == test_user["user"].id)
+    )
+    rows = result.scalars().all()
+    assert len(rows) == 1  # same (user_id, technique_id) rolled up, not a second row
+    assert rows[0].encounter_count == 2
+    assert rows[0].last_encountered_at >= rows[0].first_encountered_at

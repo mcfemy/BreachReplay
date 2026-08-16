@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.routes import auth, scenarios, sessions, admin, ingestion, slack, billing, daily, redteam, profile, certs, orgs, teams, siem, mastery, learning, arena, teaser, action_runs
+from app.api.routes import auth, scenarios, sessions, admin, ingestion, slack, billing, daily, redteam, profile, certs, orgs, teams, siem, mastery, learning, arena, teaser, action_runs, dossier
 from app.api.routes import saml
 from app.api.routes import cmmc
 
@@ -28,3 +28,4 @@ api_router.include_router(learning.router)
 api_router.include_router(arena.router)
 api_router.include_router(teaser.router)
 api_router.include_router(action_runs.router)
+api_router.include_router(dossier.router)
