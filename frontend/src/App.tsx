@@ -25,6 +25,7 @@ const ArenaMatchPage = lazy(() => import("./pages/ArenaMatchPage"));
 const ArenaDebriefPage = lazy(() => import("./pages/ArenaDebriefPage"));
 const ArenaLeaderboardPage = lazy(() => import("./pages/ArenaLeaderboardPage"));
 const LeaderboardPage = lazy(() => import("./pages/LeaderboardPage"));
+const DossierPage = lazy(() => import("./pages/DossierPage"));
 const CertificatePage = lazy(() => import("./pages/CertificatePage"));
 const PublicReplayPage = lazy(() => import("./pages/PublicReplayPage"));
 const GlobalIndexPage = lazy(() => import("./pages/GlobalIndexPage"));
@@ -98,6 +99,7 @@ export default function App() {
               <Route path="/arena/match/:matchId/debrief" element={<ArenaDebriefPage />} />
               <Route path="/arena/leaderboard" element={<ArenaLeaderboardPage />} />
               <Route path="/leaderboard" element={<LeaderboardPage />} />
+              <Route path="/dossier" element={<DossierPage />} />
               <Route path="/settings" element={<UserProfilePage />} />
               <Route path="/org-upload" element={<OrgUploadPage />} />
               <Route path="/teams" element={<TeamsPage />} />

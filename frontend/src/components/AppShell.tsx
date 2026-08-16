@@ -9,6 +9,7 @@ const NAV = [
   { to: "/redteam", label: "Red Team", icon: "🔴", desc: "Play attacker" },
   { to: "/arena", label: "Arena", icon: "⚔️", desc: "Live PvP / vs AI" },
   { to: "/leaderboard", label: "Leaderboard", icon: "🏆", desc: "Global XP ranking" },
+  { to: "/dossier", label: "Dossier", icon: "📖", desc: "Techniques encountered" },
   { to: "/teams", label: "Teams", icon: "👥", desc: "Org team mode" },
   { to: "/org-upload", label: "Org Upload", icon: "🏢", desc: "Private scenarios" },
   { to: "/settings", label: "My Certs", icon: "🎓", desc: "Credentials & profile" },
