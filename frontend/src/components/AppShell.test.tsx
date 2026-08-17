@@ -28,6 +28,7 @@ describe("AppShell", () => {
         role: "user",
         organization_id: null,
         has_seen_console_intro: true,
+        seen_verb_coachmarks: [],
       },
     });
   });

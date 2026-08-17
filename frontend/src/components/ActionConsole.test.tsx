@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import ActionConsole from "./ActionConsole";
 import { useAuthStore } from "../store/auth";
 import { useRunSocket } from "../lib/useRunSocket";
+import { axiosInstance } from "../lib/api";
 
 // Real WebSocket is out of scope for a smoke test — mock the hook's return
 // value directly, same shape ActionConsole.tsx destructures off `run`.
@@ -14,7 +15,20 @@ vi.mock("../lib/useRunSocket", async (importOriginal) => {
   return { ...actual, useRunSocket: vi.fn() };
 });
 
+vi.mock("../lib/api", () => ({
+  axiosInstance: { patch: vi.fn() },
+  API_BASE: "http://test.invalid",
+}));
+
 const submitVerb = vi.fn();
+
+// All 8 verbs "already seen" — the default fixture for every test below
+// EXCEPT the coachmark-specific ones, so the existing tap-behavior tests
+// don't get intercepted by a first-use coachmark they aren't testing for.
+const ALL_VERBS_SEEN = [
+  "scan_network", "query_logs", "isolate", "image_disk",
+  "interview_user", "block_ip", "reset_creds", "escalate",
+];
 
 function baseRunState(overrides: Partial<ReturnType<typeof useRunSocket>> = {}) {
   return {
@@ -44,6 +58,7 @@ function baseRunState(overrides: Partial<ReturnType<typeof useRunSocket>> = {}) 
 describe("ActionConsole", () => {
   beforeEach(() => {
     submitVerb.mockClear();
+    vi.mocked(axiosInstance.patch).mockReset();
     useAuthStore.setState({
       user: {
         id: "u1",
@@ -52,6 +67,7 @@ describe("ActionConsole", () => {
         role: "user",
         organization_id: null,
         has_seen_console_intro: true, // skip the pre-brief overlay
+        seen_verb_coachmarks: ALL_VERBS_SEEN,
       },
     });
     vi.mocked(useRunSocket).mockReturnValue(baseRunState());
@@ -120,5 +136,74 @@ describe("ActionConsole", () => {
     render(<ActionConsole runId="run-1" />);
     await user.click(screen.getByText("Escalate"));
     expect(screen.getByText("CISA").closest("button")).toBeDisabled();
+  });
+
+  describe("per-verb coachmarks", () => {
+    it("shows a coachmark with the verb's own targeting-mode text on first use, and doesn't submit yet", async () => {
+      useAuthStore.setState({
+        user: {
+          id: "u1",
+          email: "responder@example.com",
+          full_name: "Test Responder",
+          role: "user",
+          organization_id: null,
+          has_seen_console_intro: true,
+          seen_verb_coachmarks: [], // nothing seen yet
+        },
+      });
+      const user = userEvent.setup();
+      render(<ActionConsole runId="run-1" />);
+
+      // query_logs is host-targeted — its coachmark must say "tap a host",
+      // not block_ip/reset_creds' "type a value" or escalate's "pick who".
+      await user.click(screen.getByText("Query Logs"));
+      const tooltip = screen.getByRole("tooltip");
+      expect(tooltip).toHaveTextContent("Pulls log data from a host. May reveal indicators of compromise.");
+      expect(tooltip).toHaveTextContent("Tap a host on the map to target it.");
+
+      // Neither the verb's submit nor its target-select UI has fired yet —
+      // the coachmark intercepts the tap until dismissed.
+      expect(submitVerb).not.toHaveBeenCalled();
+      expect(screen.queryByText(/tap a host on the map$/i)).not.toBeInTheDocument();
+    });
+
+    it("persists the dismissed verb via PATCH /auth/me and then proceeds with the original tap", async () => {
+      useAuthStore.setState({
+        user: {
+          id: "u1",
+          email: "responder@example.com",
+          full_name: "Test Responder",
+          role: "user",
+          organization_id: null,
+          has_seen_console_intro: true,
+          seen_verb_coachmarks: [],
+        },
+      });
+      vi.mocked(axiosInstance.patch).mockResolvedValue({
+        data: { seen_verb_coachmarks: ["scan_network"] },
+      });
+      const user = userEvent.setup();
+      render(<ActionConsole runId="run-1" />);
+
+      await user.click(screen.getByText("Scan Network"));
+      expect(submitVerb).not.toHaveBeenCalled();
+
+      await user.click(screen.getByText("Got it"));
+      expect(axiosInstance.patch).toHaveBeenCalledWith("/auth/me", {
+        seen_verb_coachmarks: ["scan_network"],
+      });
+      // scan_network is untargeted — dismissing its coachmark submits it
+      // immediately, same as an already-seen verb would.
+      expect(submitVerb).toHaveBeenCalledWith("scan_network");
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    });
+
+    it("never re-shows a coachmark for a verb already in seen_verb_coachmarks", async () => {
+      const user = userEvent.setup();
+      render(<ActionConsole runId="run-1" />); // default fixture: ALL_VERBS_SEEN
+      await user.click(screen.getByText("Scan Network"));
+      expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+      expect(submitVerb).toHaveBeenCalledWith("scan_network");
+    });
   });
 });

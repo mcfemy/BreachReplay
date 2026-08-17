@@ -3,6 +3,15 @@ from typing import Optional
 from datetime import datetime
 import re
 
+# BREACHREPLAY_GAME_OVERHAUL_SPEC.md section 4's 8 verbs, verbatim — mirrors
+# backend/app/services/verb_engine.py's VERB_COSTS keys. Duplicated here
+# (schemas layer has no dependency on services) rather than imported, purely
+# to validate UserUpdateRequest.seen_verb_coachmarks against real verb names.
+_VALID_COACHMARK_VERBS = frozenset({
+    "scan_network", "query_logs", "isolate", "image_disk",
+    "interview_user", "block_ip", "reset_creds", "escalate",
+})
+
 _PASSWORD_RE = re.compile(
     r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};\':"\\|,.<>\/?]).{8,128}$'
 )
@@ -59,6 +68,7 @@ class UserOut(BaseModel):
     organization_id: Optional[str]
     mfa_enabled: bool = False
     has_seen_console_intro: bool = False
+    seen_verb_coachmarks: list[str] = Field(default_factory=list)
     created_at: datetime
 
 
@@ -104,6 +114,17 @@ class UserUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     full_name: Optional[str] = Field(default=None, max_length=100)
     has_seen_console_intro: Optional[bool] = None
+    # Full-replace, same contract as has_seen_console_intro above — the
+    # client always sends the complete updated array (it already holds the
+    # current one from /auth/me), not a single verb to append.
+    seen_verb_coachmarks: Optional[list[str]] = Field(default=None, max_length=8)
+
+    @field_validator("seen_verb_coachmarks")
+    @classmethod
+    def validate_coachmark_verbs(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is not None and not set(v).issubset(_VALID_COACHMARK_VERBS):
+            raise ValueError("seen_verb_coachmarks contains an unknown verb")
+        return v
 
 
 class MessageResponse(BaseModel):

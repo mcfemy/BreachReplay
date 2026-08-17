@@ -676,18 +676,23 @@ function PublicProfileSection() {
 }
 
 // Replays the guided first-run (ActionConsole.tsx's ConsolePreBrief + the
-// three in-run beats) — normally a once-ever-per-account thing gated by
-// User.has_seen_console_intro, this is the escape hatch for QA/testing and
-// for anyone who wants to see it again.
+// per-verb Coachmark tooltips) — normally a once-ever-per-account thing
+// gated by User.has_seen_console_intro / seen_verb_coachmarks, this is the
+// escape hatch for QA/testing and for anyone who wants to see it again.
 function ConsoleTutorialSection() {
   const updateUser = useAuthStore((s) => s.updateUser);
   const [feedback, setFeedback] = useState<string | null>(null);
 
   const replayMutation = useMutation({
     mutationFn: () =>
-      axiosInstance.patch("/auth/me", { has_seen_console_intro: false }).then((r) => r.data),
+      axiosInstance
+        .patch("/auth/me", { has_seen_console_intro: false, seen_verb_coachmarks: [] })
+        .then((r) => r.data),
     onSuccess: (data) => {
-      updateUser({ has_seen_console_intro: data.has_seen_console_intro });
+      updateUser({
+        has_seen_console_intro: data.has_seen_console_intro,
+        seen_verb_coachmarks: data.seen_verb_coachmarks,
+      });
       setFeedback("Done — it'll show on your next run.");
     },
     onError: () => setFeedback("Failed to reset. Try again."),
@@ -697,7 +702,7 @@ function ConsoleTutorialSection() {
     <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
       <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-1">Console Tutorial</h2>
       <p className="text-[9px] text-gray-600 mb-4">
-        Replay the guided first-run (handover briefing + in-run tips) the next time you start a simulation.
+        Replay the guided first-run (handover briefing + all 8 verb coachmarks) the next time you start a simulation.
       </p>
       <div className="flex items-center gap-3">
         <button
