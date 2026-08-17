@@ -1089,3 +1089,80 @@ def test_tool_output_is_deterministic_across_independent_replays():
     outputs_b = _play(_CORE_LOOP_SEED)
     assert outputs_a == outputs_b
     assert all(o["output"] for o in outputs_a), "every rendered tool_output must have real content"
+
+
+# ── Technique Dossier: encountered_technique_ids ─────────────────────────────
+#
+# _advance_stages tags every stage that fires with its (possibly None)
+# mitre_technique, folded into RunState.encountered_technique_ids by
+# apply_verb — independent of compromises_host_ids/isolation outcome, since
+# the Technique Dossier tracks EXPOSURE to a technique, not whether the
+# player contained it correctly (that's mastery_service's separate job, over
+# a different data source). _SCENARIO's decision_tree tags gate-001/T1078
+# (+4m), gate-002/T1003 (+8m), and gate-012/T1565.001 (+49m, the final stage).
+
+def test_encountered_technique_ids_starts_empty():
+    compiled = _compiled()
+    run = verb_engine.new_run(compiled)
+    assert run.encountered_technique_ids == frozenset()
+
+
+def test_encountered_technique_ids_captures_the_stages_technique_once_its_trigger_fires():
+    compiled = _compiled()
+    gate_001 = next(s for s in compiled.stages if s.mitre_technique == "T1078")
+    run = verb_engine.new_run(compiled)
+    assert "T1078" not in run.encountered_technique_ids  # not yet fired
+
+    run = _run_clock_past(run, gate_001.trigger_seconds)
+    assert "T1078" in run.encountered_technique_ids
+
+
+def test_encountered_technique_ids_fires_even_when_the_stage_is_correctly_contained():
+    """The load-bearing distinction from mastery: a stage whose target was
+    isolated BEFORE its trigger fired (a clean, correct containment) still
+    counts as encountered — dossier progress tracks exposure to a
+    technique, not success against it."""
+    compiled = _compiled()
+    gate_001 = next(s for s in compiled.stages if s.mitre_technique == "T1078")
+    run = verb_engine.new_run(compiled)
+    for host_id in gate_001.compromises_host_ids:
+        run = verb_engine.apply_verb(run, "isolate", host_id).run
+    run = _run_clock_past(run, gate_001.trigger_seconds)
+
+    assert "T1078" in run.encountered_technique_ids
+    # Confirm containment genuinely worked (not a vacuous check).
+    for host_id in gate_001.compromises_host_ids:
+        assert run.world.get_host(host_id).compromise_level == "none"
+
+
+def test_encountered_technique_ids_accumulates_across_multiple_stages():
+    compiled = _compiled()
+    gate_012 = next(s for s in compiled.stages if s.mitre_technique == "T1565.001")
+    run = verb_engine.new_run(compiled)
+    run = _run_clock_past(run, gate_012.trigger_seconds)
+    assert {"T1078", "T1003", "T1565.001"} <= run.encountered_technique_ids
+
+
+def test_encountered_technique_ids_is_not_lost_by_later_apply_verb_calls():
+    compiled = _compiled()
+    gate_001 = next(s for s in compiled.stages if s.mitre_technique == "T1078")
+    run = verb_engine.new_run(compiled)
+    run = _run_clock_past(run, gate_001.trigger_seconds)
+    assert "T1078" in run.encountered_technique_ids
+
+    run = verb_engine.apply_verb(run, "scan_network").run
+    assert "T1078" in run.encountered_technique_ids
+
+
+def test_pressure_stages_never_contribute_a_technique_id():
+    """Pressure-injection stages always compile with mitre_technique=None
+    (action_engine._build_stages) — confirms _advance_stages' `if
+    stage.mitre_technique` guard actually drops them rather than polluting
+    encountered_technique_ids with a None entry."""
+    compiled = _compiled()
+    pressure_stages = [s for s in compiled.stages if s.kind == "pressure"]
+    assert pressure_stages, "fixture must have a pressure stage or this test proves nothing"
+
+    run = verb_engine.new_run(compiled)
+    run = _run_clock_past(run, max(s.trigger_seconds for s in pressure_stages))
+    assert None not in run.encountered_technique_ids

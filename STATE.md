@@ -329,3 +329,39 @@ for offline backup, never stored in this repo or in agent memory.
 Local dev and production have **different** `Scenario` row ids for the
 same conceptual scenario — not shared seed data. Don't assume a
 `scenario_id` discovered in one environment works in the other.
+
+---
+
+## Phase 3 — in progress
+
+The written spec's Phase 3 (`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md` §5)
+is "Juice pass + share cards." The two items below shipped under the
+"Phase 3" label before that spec section documented them — added
+retroactively to §5 as 3(a)/3(b) rather than left untraceable. Neither
+touches `mastery_service.py`, `/mastery/me`, or Org Tabletop mode.
+
+- **3(a) — Targeted escalation & notification proportionality**
+  (migration `0038_scenario_notification_matrix`) — `scenarios.
+  notification_matrix`: per-scenario authored ground truth for which
+  parties a warranted notification decision covers, so `escalate` can
+  finally be scored on proportionality (over-notifying a party the
+  incident doesn't warrant now has a cost), mirroring how Proportionate
+  Response already scores over-aggressive containment. Grounded in the
+  CMMC evidence-pack bar (Carter Schoenberg, Lead CMMC Certified
+  Assessor) logged as a Phase 3 follow-up in
+  `docs/PHASE_2_5_CMMC_EVIDENCE_SPEC_FINAL.md` §10. SolarWinds is the
+  only scenario with a real authored matrix so far; the other 4 flagship
+  scenarios are logged in `docs/BACKLOG.md`.
+
+- **3(b) — Technique Dossier** (PR #31, PR #32) — cross-run tracking of
+  which real-world MITRE techniques a player has encountered via the
+  Action Console, for post-run debrief and player retention/skill-
+  building (the same instinct behind `mastery_service`'s decision-gate
+  accuracy tracking, extended to cover Action Console stage triggers,
+  which `mastery_service` never did). Write side: `TechniqueEncounter`
+  rollup rows (migration `0039_technique_encounters`), authenticated
+  runs only. Read side: `GET /dossier/me`. Surfaced in the run-end
+  debrief (`RunDebrief`, every run regardless of auth) and on a new
+  standalone `/dossier` page — all 30 techniques grouped by tactic, a
+  fill counter, full content for encountered techniques, locked
+  placeholders for the rest.

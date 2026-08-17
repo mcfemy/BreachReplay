@@ -175,6 +175,26 @@ Phases 1 and 2 are independent enough to build in either order, but ship 1 first
 - [ ] Share card renders correctly for win, loss, and partial outcomes; opens to the public run page; page loads with zero auth.
 - [ ] Daily emoji grid pastes cleanly into WhatsApp/iMessage/Slack.
 
+### Phase 3(a) — Targeted escalation & notification proportionality (shipped, migration `0038`)
+
+Not part of the juice-pass build items above — added here after the fact because it shipped under the "Phase 3" label with no corresponding entry in this spec, making it untraceable to written scope. Documenting what was actually built, not retrofitting acceptance criteria to match.
+
+**Why:** logged as a Phase 3 follow-up in `docs/PHASE_2_5_CMMC_EVIDENCE_SPEC_FINAL.md` §10, itself grounded in the CMMC evidence-pack bar set by Carter Schoenberg (Lead CMMC Certified Assessor, VP Assessment & Compliance, SoundWay Consulting) during the Phase 2.5 evidence-layer work: *"an escalation path should very much be in play because otherwise people may be notified that shouldn't be."* The old `escalate` verb was untargeted and free — no way to over-notify, so the notification evidence in a CMMC pack was a checkbox, not a real signal. §10 explicitly deferred the fix to Phase 3.
+
+**What shipped:** `scenarios.notification_matrix` (migration `0038_scenario_notification_matrix`) — each scenario's own authored ground truth for which parties a warranted notification decision covers (id/party/warranted/authority/basis/channel/window/rationale/source_reference), reusing the same field shape as `ClientOrg.notification_matrix` (Phase 2.5 item 4) without conflating the two: that one is a client org's generic contact policy, this one is BreachReplay's per-incident "was notifying this party actually warranted" judgment. `escalate` now costs proportionally to whether the chosen party was actually warranted, mirroring how Proportionate Response already applies collateral cost to over-aggressive containment. SolarWinds is the only scenario carrying a real authored matrix so far (6 parties, CISA ED-21-01/DFARS 252.204-7012/SEC-disclosure grounded); the other 4 flagship scenarios are logged in `docs/BACKLOG.md` as follow-up, each needing its own regulator-appropriate party list.
+
+### Phase 3(b) — Technique Dossier (shipped, PRs #31/#32)
+
+Also not part of the original juice-pass build items — same gap as 3(a) above: real, shipped Phase 3 work with no written spec entry until now.
+
+**Why:** post-run debrief and cross-run mastery tracking for player retention and skill-building — the same "show the player what they actually learned" instinct behind `mastery_service.compute_user_mastery` (decision-gate/Red Team accuracy), but for the Action Console's own stage-trigger technique tags, which `mastery_service` never covered. Giving a player a running, cross-run record of which real-world attacker techniques they've now handled (tied to the actual incident it's drawn from) is a retention hook: a reason to come back and fill in the rest of the dossier, not just chase XP.
+
+**What shipped:**
+- **Write side** (PR #31): `verb_engine.RunState.encountered_technique_ids` tags every stage whose trigger fires in `_advance_stages` with its `mitre_technique`, regardless of containment success. `action_run_store.finalize` persists these as `TechniqueEncounter` rollup rows (`technique_encounters` table, migration `0039_technique_encounters`) — authenticated runs only, since `ActionRun.user_id` is nullable for teaser mode.
+- **Read side** (PR #31): `GET /dossier/me` (`dossier_service.compute_user_dossier`) joins a user's `TechniqueEncounter` rows against the static 30-technique `TECHNIQUE_DOSSIER` content (`technique_dossier.py`), shaped after `mastery_service.compute_user_mastery` but backed by a separate table/source — `mastery_service.py`, `/mastery/me`, and Org Tabletop mode are untouched by any of this.
+- **Run-end debrief surfacing** (PR #32): `techniques_encountered` added to the `run.end` payload (name/description only) and rendered inline in `RunDebrief` — fires for every run regardless of auth, so even a teaser player sees what they encountered even though nothing persists for them.
+- **Standalone dossier page** (PR #32): `/dossier` (`DossierPage.tsx`) — all 30 techniques grouped by tactic, a visible fill counter ("N/30 entries"), full content (description/incident narrative/source reference) for encountered techniques, locked/no-content cards for the rest. Nav entry added to `AppShell`.
+
 ---
 
 ## 6. Phase 4 — Ghost racing
