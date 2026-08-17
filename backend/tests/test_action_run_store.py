@@ -326,7 +326,7 @@ async def test_finalize_persists_a_technique_encounter_row_for_an_authenticated_
     live = await store.get(run_id)
     assert "T1078" in live.run_state.encountered_technique_ids  # sanity: the fixture's gate actually fired
 
-    await store.finalize(db, run_id)
+    summary = await store.finalize(db, run_id)
 
     result = await db.execute(
         select(TechniqueEncounter).where(TechniqueEncounter.user_id == test_user["user"].id)
@@ -335,6 +335,16 @@ async def test_finalize_persists_a_technique_encounter_row_for_an_authenticated_
     assert len(rows) == 1
     assert rows[0].technique_id == "T1078"
     assert rows[0].encounter_count == 1
+
+    # run.end summary carries this run's own techniques (name/description
+    # only — the full dossier content is GET /dossier/me's job), independent
+    # of the TechniqueEncounter persistence checked above.
+    assert summary["techniques_encountered"] == [
+        {"technique_id": "T1078", "name": "Valid Accounts", "description": (
+            "Adversaries authenticate using legitimate, stolen credentials instead of "
+            "exploiting a vulnerability, avoiding exploit-based detection."
+        )},
+    ]
 
 
 async def test_finalize_does_not_persist_technique_encounters_for_an_unauthenticated_teaser_run(db, store, fast_teaser_scenario):
@@ -356,10 +366,14 @@ async def test_finalize_does_not_persist_technique_encounters_for_an_unauthentic
     live = await store.get(run_id)
     assert "T1078" in live.run_state.encountered_technique_ids  # the gate fires regardless of auth
 
-    await store.finalize(db, run_id)
+    summary = await store.finalize(db, run_id)
 
     result = await db.execute(select(TechniqueEncounter))
     assert result.scalars().all() == []
+
+    # The player still sees what fired during their own run even though
+    # nothing persists to a (nonexistent) dossier for an unauthenticated run.
+    assert summary["techniques_encountered"][0]["technique_id"] == "T1078"
 
 
 async def test_finalize_increments_encounter_count_on_repeat_exposure_across_separate_runs(db, store, fast_scenario, test_user):

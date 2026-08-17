@@ -164,6 +164,17 @@ export interface ScoreBreakdown {
   score_pct: number;
 }
 
+// One entry from a run.end summary's techniques_encountered —
+// action_run_store.ActionRunStore._techniques_encountered_summary's shape.
+// Deliberately just {technique_id, name, description}: the incident
+// narrative/source citation/scenario list are the full Dossier page's
+// content (GET /dossier/me, TECHNIQUE_DOSSIER), not this per-run summary's.
+export interface EncounteredTechnique {
+  technique_id: string;
+  name: string;
+  description: string;
+}
+
 // build_run_end_event's summary — finalize()'s dict, plus (mode="daily"
 // only) record_daily_action_run_result's carry-over fields merged in.
 // `outcome`/`score_breakdown.collateral` only ever appear here, in the
@@ -177,6 +188,11 @@ export interface RunEndSummary {
   score_breakdown: ScoreBreakdown;
   xp_awarded: number;
   new_achievements: string[];
+  // Every stage.mitre_technique that fired THIS run (verb_engine.RunState.
+  // encountered_technique_ids), regardless of auth — present even for an
+  // unauthenticated teaser run, though only an authenticated run's
+  // encounters also persist to GET /dossier/me.
+  techniques_encountered: EncounteredTechnique[];
   daily_challenge_id?: string;
   challenge_number?: number;
   rank?: number;

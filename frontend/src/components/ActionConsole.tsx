@@ -808,6 +808,30 @@ function RunDebrief({
         </div>
       )}
 
+      {/* Techniques Encountered — every stage.mitre_technique that fired
+          this run (verb_engine.RunState.encountered_technique_ids via
+          action_run_store's techniques_encountered), regardless of outcome:
+          this is exposure, not mastery, matching the backend's "deliberately
+          NOT gated on penalties/outcome" framing. Full incident-narrative/
+          source-citation content lives on the Dossier page (GET
+          /dossier/me) — this is just enough to say what happened, one line
+          each. */}
+      {summary.techniques_encountered.length > 0 && (
+        <div className="mb-6 max-w-sm text-left">
+          <p className="font-term text-xs uppercase tracking-[0.2em] text-dim mb-2 text-center">
+            Techniques Encountered
+          </p>
+          <ul className="space-y-2">
+            {summary.techniques_encountered.map((t) => (
+              <li key={t.technique_id}>
+                <p className="text-sm text-white font-bold">{t.name}</p>
+                <p className="text-xs text-dim">{t.description}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {summary.rank !== undefined && (
         <div className="mb-6 space-y-1">
           <p className="text-sm text-white">Rank #{summary.rank} today</p>

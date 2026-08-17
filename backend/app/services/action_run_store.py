@@ -41,6 +41,7 @@ from app.models.scenario import Scenario
 from app.models.technique_encounter import TechniqueEncounter
 from app.services import verb_engine
 from app.services.action_engine import CompiledRun
+from app.services.technique_dossier import TECHNIQUE_DOSSIER
 from app.services.xp_service import award_xp, check_scenario_achievements
 
 logger = logging.getLogger(__name__)
@@ -187,6 +188,25 @@ class ActionRunStore:
                 encounter.encounter_count += 1
                 encounter.last_encountered_at = now
 
+    def _techniques_encountered_summary(self, technique_ids: frozenset) -> list[dict]:
+        """This run's `encountered_technique_ids` shaped for the run.end
+        debrief — {technique_id, name, description} only, no
+        incident_narrative/source_reference/scenarios (that's the full
+        Dossier page's job, via GET /dossier/me, not a per-run summary).
+        Unlike `_record_technique_encounters`, this runs regardless of
+        `live.user_id` — an unauthenticated teaser run still fired these
+        stages and the player should still see what they encountered, even
+        though nothing gets persisted to their (nonexistent) dossier."""
+        return [
+            {
+                "technique_id": technique_id,
+                "name": TECHNIQUE_DOSSIER[technique_id]["name"],
+                "description": TECHNIQUE_DOSSIER[technique_id]["description"],
+            }
+            for technique_id in sorted(technique_ids)
+            if technique_id in TECHNIQUE_DOSSIER
+        ]
+
     async def finalize(
         self, db: AsyncSession, run_id: str, forced_outcome: Optional[str] = None,
     ) -> Optional[dict]:
@@ -289,6 +309,7 @@ class ActionRunStore:
             "score_breakdown": score_breakdown,
             "xp_awarded": xp_awarded,
             "new_achievements": new_achievements,
+            "techniques_encountered": self._techniques_encountered_summary(run_state.encountered_technique_ids),
         }
 
     async def sweep_expired(self, db: AsyncSession) -> list[tuple[str, dict]]:
