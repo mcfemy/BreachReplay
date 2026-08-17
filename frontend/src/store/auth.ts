@@ -9,6 +9,7 @@ interface User {
   role: string;
   organization_id: string | null;
   has_seen_console_intro: boolean;
+  seen_verb_coachmarks: string[];
 }
 
 interface AuthState {

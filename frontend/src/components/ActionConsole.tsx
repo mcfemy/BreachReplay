@@ -3,6 +3,7 @@ import NetworkMap, { type NetworkMapNode } from "./NetworkMap";
 import { colors, nodeStateColor, type NodeState } from "../theme/tokens";
 import XPToast from "./XPToast";
 import ConsolePreBrief from "./ConsolePreBrief";
+import Coachmark from "./Coachmark";
 import { useAuthStore } from "../store/auth";
 import { axiosInstance } from "../lib/api";
 import {
@@ -50,16 +51,32 @@ const TEXT_TARGET_PROMPT: Record<string, string> = {
   reset_creds: "Username from a revealed credential",
 };
 
-// Guided first-run beats — each fires at most once, only during a player's
-// genuine first run (gated by User.has_seen_console_intro, see the
-// isGuidedRunRef logic below). Teaches a control, never an answer: no host,
-// IP, or direction is ever named, matching the OBJECTIVE line's philosophy.
-const GUIDED_BEAT_TEXT = {
-  scan: "Red hosts are already compromised. Query one — see how they got in.",
-  query: "That log's got the attacker's address in it. Block it.",
-  block: "That host's contained. They're still moving through the rest.",
-} as const;
-type GuidedBeat = keyof typeof GUIDED_BEAT_TEXT;
+// Per-verb coachmarks — what each of the 8 verbs actually does, shown once
+// ever per account (User.seen_verb_coachmarks) the first time that specific
+// verb is tapped, anchored to its own chip. Explains the control, never the
+// answer: no host, IP, or direction is ever named, matching the OBJECTIVE
+// line's philosophy. Replaces the old GUIDED_BEAT_TEXT system, which only
+// ever covered 3 of the 8 verbs and only during a player's first-ever run.
+const VERB_COACHMARK_TEXT: Record<Verb, string> = {
+  scan_network: "Reveals the network topology — every host on the map, and which ones are already compromised.",
+  query_logs: "Pulls log data from a host. May reveal indicators of compromise.",
+  isolate: "Cuts a host off the network, containing anything active on it.",
+  image_disk: "Takes a forensic disk image. Reveals unpatched vulnerabilities and EDR status.",
+  interview_user: "Interviews the host's user. May reveal credentials seen in use.",
+  block_ip: "Blocks an IP address at the firewall.",
+  reset_creds: "Forces a credential reset, disabling it for the attacker.",
+  escalate: "Notifies a party outside the console. Over-notifying has a cost too — use judgment.",
+};
+
+// Derives from the same targeting-group arrays the rest of this file uses
+// (HOST_TARGETED_VERBS etc, imported from useRunSocket) rather than a
+// separate hardcoded map, so it can never drift out of sync with them.
+function targetingHintFor(verb: Verb): string {
+  if (UNTARGETED_VERBS.includes(verb)) return "No target — fires immediately.";
+  if (HOST_TARGETED_VERBS.includes(verb)) return "Tap a host on the map to target it.";
+  if (TEXT_TARGETED_VERBS.includes(verb)) return `Type the ${TEXT_TARGET_PROMPT[verb]}.`;
+  return "Pick who to notify from the list.";
+}
 
 // Client-side layout only — the backend gives topology (edges) but no
 // coordinates (NetworkSegment has no x/y, only reachable_from adjacency).
@@ -123,17 +140,20 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   const lastActionAtRef = useRef(0);
   const idleNudgedThisStretchRef = useRef(false);
 
-  // Guided first-run — pre-brief shows only when this account has never
-  // seen it. isGuidedRunRef is captured once at mount so the three in-run
-  // beats keep firing for the rest of THIS run even after handleDismissPreBrief
-  // flips the server-side flag (which would otherwise make a later re-read
-  // of `user.has_seen_console_intro` say "no, not guided" mid-run).
+  // Guided first-run pre-brief — shows only when this account has never seen it.
   const [showPreBrief, setShowPreBrief] = useState(() => user ? !user.has_seen_console_intro : false);
-  const isGuidedRunRef = useRef(showPreBrief);
-  const [guidedBeatShown, setGuidedBeatShown] = useState<Record<GuidedBeat, boolean>>({
-    scan: false, query: false, block: false,
-  });
-  const [guidedBeatText, setGuidedBeatText] = useState<string | null>(null);
+
+  // Per-verb coachmarks — coachmarkVerb is the one currently showing (at
+  // most one at a time, first-use-intercepted by handleChipTap below).
+  // seenCoachmarks starts from the account's persisted set and is updated
+  // optimistically on dismiss (see handleDismissCoachmark) so a rapid
+  // second tap of the same verb, before the PATCH round-trip resolves,
+  // never re-shows a coachmark the player just dismissed.
+  const [coachmarkVerb, setCoachmarkVerb] = useState<Verb | null>(null);
+  const [seenCoachmarks, setSeenCoachmarks] = useState<Set<Verb>>(
+    () => new Set((user?.seen_verb_coachmarks ?? []) as Verb[]),
+  );
+  const chipRefs = useRef<Partial<Record<Verb, HTMLButtonElement>>>({});
 
   function handleDismissPreBrief() {
     setShowPreBrief(false);
@@ -262,49 +282,6 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.lastDelta]);
 
-  // Guided first-run beats — shape-sniffed off the same run.lastDelta every
-  // other reaction here uses (see useRunSocket.ts's own shape-sniffing for
-  // why: the wire format doesn't tag which verb produced a delta). Each
-  // fires at most once, only for isGuidedRunRef.current runs.
-  useEffect(() => {
-    if (!isGuidedRunRef.current) return;
-    const delta = run.lastDelta;
-    if (!delta) return;
-
-    if (!guidedBeatShown.scan && Array.isArray(delta.nodes)) {
-      setGuidedBeatShown((s) => ({ ...s, scan: true }));
-      setGuidedBeatText(GUIDED_BEAT_TEXT.scan);
-    } else if (
-      !guidedBeatShown.block &&
-      delta.correct === true &&
-      typeof delta.host_id === "string"
-    ) {
-      // Correct block_ip — checked before the query branch below since a
-      // correct block_ip's delta ALSO carries revealed_iocs (see
-      // useRunSocket.ts), which would otherwise false-match as a query beat.
-      setGuidedBeatShown((s) => ({ ...s, block: true }));
-      setGuidedBeatText(GUIDED_BEAT_TEXT.block);
-    } else if (
-      !guidedBeatShown.query &&
-      Array.isArray(delta.revealed_iocs) &&
-      delta.revealed_iocs.length > 0 &&
-      !delta.forensics &&
-      typeof delta.correct !== "boolean"
-    ) {
-      // query_logs only — excludes image_disk (carries `forensics`) and
-      // block_ip/reset_creds (carry `correct`).
-      setGuidedBeatShown((s) => ({ ...s, query: true }));
-      setGuidedBeatText(GUIDED_BEAT_TEXT.query);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [run.lastDelta]);
-
-  useEffect(() => {
-    if (!guidedBeatText) return;
-    const t = setTimeout(() => setGuidedBeatText(null), 6000);
-    return () => clearTimeout(t);
-  }, [guidedBeatText]);
-
   // Idle nudge (onboarding layer 1 — see BREACHREPLAY_GAME_OVERHAUL_SPEC.md
   // Phase 5 for the full guided first-run this is a small slice of). A
   // push to act, never a hint about WHAT to do: no host/IP/direction is
@@ -324,14 +301,14 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     if (run.runEnd) return;
     const poll = setInterval(() => {
       if (idleNudgedThisStretchRef.current) return;
-      if (guidedBeatText) return; // don't stack the generic nudge on top of a guided beat
+      if (coachmarkVerb) return; // don't stack the generic nudge on top of an active coachmark
       if (Date.now() - lastActionAtRef.current >= IDLE_NUDGE_THRESHOLD_MS) {
         idleNudgedThisStretchRef.current = true;
         setIdleNudgeVisible(true);
       }
     }, 2000);
     return () => clearInterval(poll);
-  }, [run.runEnd, guidedBeatText]);
+  }, [run.runEnd, coachmarkVerb]);
 
   useEffect(() => {
     if (!idleNudgeVisible) return;
@@ -349,8 +326,21 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   // list, so this must stay non-empty outside target-select mode too.
   const clickableNodeIds = run.hosts.map((h) => h.id);
 
+  // First tap of a verb this account has never seen a coachmark for is
+  // intercepted here — the coachmark explains the control before anything
+  // is submitted or a target-select UI opens; performVerbTap (the original
+  // tap logic) only runs once it's dismissed. Every later tap of that same
+  // verb skips straight to performVerbTap.
   function handleChipTap(verb: Verb) {
     if (run.runEnd) return;
+    if (!seenCoachmarks.has(verb)) {
+      setCoachmarkVerb(verb);
+      return;
+    }
+    performVerbTap(verb);
+  }
+
+  function performVerbTap(verb: Verb) {
     if (UNTARGETED_VERBS.includes(verb)) {
       run.submitVerb(verb);
       return;
@@ -367,6 +357,24 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     setSelectedHostId(null);
     setTextInput("");
     setTargetVerb(verb);
+  }
+
+  // Same best-effort PATCH pattern as handleDismissPreBrief above: update
+  // local state immediately, persist in the background, swallow failure
+  // (worst case this verb's coachmark shows once more next time).
+  function handleDismissCoachmark() {
+    if (!coachmarkVerb) return;
+    const verb = coachmarkVerb;
+    const nextSeen = Array.from(new Set([...seenCoachmarks, verb]));
+    setCoachmarkVerb(null);
+    setSeenCoachmarks(new Set(nextSeen));
+    axiosInstance
+      .patch("/auth/me", { seen_verb_coachmarks: nextSeen })
+      .then(({ data }) => updateUser({ seen_verb_coachmarks: data.seen_verb_coachmarks }))
+      .catch(() => {
+        // Best-effort — worst case the coachmark shows again next tap, not harmful.
+      });
+    performVerbTap(verb);
   }
 
   function handleNodeClick(hostId: string) {
@@ -625,6 +633,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
         {VERB_ORDER.map((verb) => (
           <button
             key={verb}
+            ref={(el) => { chipRefs.current[verb] = el; }}
             onClick={() => handleChipTap(verb)}
             disabled={!run.connected}
             className={`flex flex-col items-center justify-center rounded-lg py-2 px-1 min-h-[52px] text-center active:scale-95 transition-colors disabled:opacity-40 ${
@@ -659,12 +668,15 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
         </div>
       )}
 
-      {/* Guided first-run beats — same toast system as the idle nudge above,
-          each fires at most once, only during a player's genuine first run. */}
-      {guidedBeatText && (
-        <div className="fixed bottom-40 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-full text-sm font-bold shadow-lg bg-phosphor text-void max-w-[90vw] text-center">
-          {guidedBeatText}
-        </div>
+      {/* Per-verb coachmark — anchored to the tapped chip, shown at most
+          once ever per verb per account (User.seen_verb_coachmarks). */}
+      {coachmarkVerb && (
+        <Coachmark
+          anchorEl={chipRefs.current[coachmarkVerb] ?? null}
+          text={VERB_COACHMARK_TEXT[coachmarkVerb]}
+          targetingHint={targetingHintFor(coachmarkVerb)}
+          onDismiss={handleDismissCoachmark}
+        />
       )}
     </div>
   );

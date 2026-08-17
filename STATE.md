@@ -175,7 +175,13 @@ about.)
   debrief page needed. A persistent objective line, a map legend (colors
   sourced from the same `nodeStateColor` map the network map itself
   renders from), and a sparing idle nudge were added later as onboarding
-  layer 1 — the full guided first-run stays a Phase 5 item.
+  layer 1. The full guided first-run shipped in commit `9d58c58`
+  (2026-07-27): a one-time in-fiction `ConsolePreBrief.tsx` handover
+  screen before the map appears, plus three in-run beats keyed to the
+  player's own first scan/query/block. Tracked server-side per account
+  (`User.has_seen_console_intro`, `PATCH /auth/me`) so it fires exactly
+  once ever, with a replay control in Settings (`UserProfilePage.tsx`)
+  for testing. Not a Phase 5 item — already live.
 - **Routing**: individual/solo scenario launches get a brand-new page +
   route (`frontend/src/pages/ActionConsolePage.tsx` at `/run/:runId`),
   NOT a branch inside `SimulationRoomPage.tsx` — mirrors Arena mode's own

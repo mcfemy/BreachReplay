@@ -52,5 +52,13 @@ class User(Base):
     # per account. Reset to False from Settings to replay it for testing.
     has_seen_console_intro: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
 
+    # Per-verb coachmark tutorial — sibling of has_seen_console_intro above,
+    # one level more granular: which of the 8 Action Console verbs' first-use
+    # anchored tooltips this account has already dismissed, so a returning
+    # player isn't re-shown one they've already earned past. Client always
+    # PATCHes the full array (mirrors has_seen_console_intro's full-replace
+    # contract, not an incremental append) — see ActionConsole.tsx.
+    seen_verb_coachmarks: Mapped[list] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list, server_default="[]")
+
     organization: Mapped["Organization"] = relationship("Organization", back_populates="users")
     session_participants: Mapped[list["SessionParticipant"]] = relationship("SessionParticipant", back_populates="user")
