@@ -22,7 +22,11 @@ async def compute_user_dossier(db: AsyncSession, user_id: str) -> dict:
     TechniqueEncounter rows (if any). A technique with no row is still
     included — `encountered: False`, `encounter_count: 0` — so the caller
     can render the full 30-technique dossier with locked/unlocked state,
-    not just the subset the user has hit so far.
+    not just the subset the user has hit so far. `incident_narrative` and
+    `source_reference` are only populated for encountered techniques —
+    the frontend's lock is cosmetic (name blurred client-side), so those
+    fields must be withheld server-side or the lock isn't a real data
+    boundary. `name`/`description` stay visible for browsing.
 
     Returns:
         {
@@ -50,8 +54,8 @@ async def compute_user_dossier(db: AsyncSession, user_id: str) -> dict:
             "name": content["name"],
             "tactic": content["tactic"],
             "description": content["description"],
-            "incident_narrative": content["incident_narrative"],
-            "source_reference": content["source_reference"],
+            "incident_narrative": content["incident_narrative"] if encountered else None,
+            "source_reference": content["source_reference"] if encountered else None,
             "scenarios": content["scenarios"],
             "encountered": encountered,
             "encounter_count": encounter.encounter_count if encounter else 0,

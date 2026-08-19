@@ -3,17 +3,17 @@ import { api } from "../lib/api";
 
 // Mirrors dossier_service.compute_user_dossier's response shape exactly
 // (backend/app/services/dossier_service.py) — every technique in
-// TECHNIQUE_DOSSIER is always present, `encountered: false` and no
-// incident_narrative/source_reference content shown for ones this user
-// hasn't hit yet, so the full 30-entry dossier renders with locked slots
-// rather than just the encountered subset.
+// TECHNIQUE_DOSSIER is always present, `encountered: false` and
+// incident_narrative/source_reference withheld (null) server-side for
+// ones this user hasn't hit yet, so the full 30-entry dossier renders
+// with locked slots rather than just the encountered subset.
 interface DossierTechnique {
   technique_id: string;
   name: string;
   tactic: string;
   description: string;
-  incident_narrative: string;
-  source_reference: string;
+  incident_narrative: string | null;
+  source_reference: string | null;
   scenarios: string[];
   encountered: boolean;
   encounter_count: number;

@@ -32,12 +32,15 @@ async def test_compute_user_dossier_returns_every_technique_unencountered_for_a_
         assert entry["encounter_count"] == 0
         assert entry["first_encountered_at"] is None
         assert entry["last_encountered_at"] is None
-        # Joined against the static content, not just the rollup row.
+        # Static reference content (name/description) stays visible for browsing
+        # even when locked, joined against the static content not just the rollup row.
         assert entry["name"] == TECHNIQUE_DOSSIER[technique_id]["name"]
         assert entry["tactic"] == TECHNIQUE_DOSSIER[technique_id]["tactic"]
         assert entry["description"] == TECHNIQUE_DOSSIER[technique_id]["description"]
-        assert entry["incident_narrative"] == TECHNIQUE_DOSSIER[technique_id]["incident_narrative"]
-        assert entry["source_reference"] == TECHNIQUE_DOSSIER[technique_id]["source_reference"]
+        # But the real narrative content is withheld server-side, not just
+        # hidden client-side, so the lock is an actual data boundary.
+        assert entry["incident_narrative"] is None
+        assert entry["source_reference"] is None
 
 
 async def test_compute_user_dossier_reflects_a_real_encounter_row(db, test_user):
@@ -61,6 +64,32 @@ async def test_compute_user_dossier_reflects_a_real_encounter_row(db, test_user)
     other = dossier["techniques"]["T1003"]
     assert other["encountered"] is False
     assert other["encounter_count"] == 0
+
+
+async def test_compute_user_dossier_withholds_narrative_and_source_only_for_unencountered_techniques(db, test_user):
+    """The frontend blurs locked names client-side, but that's cosmetic — the
+    API itself must not ship incident_narrative/source_reference for
+    techniques the user hasn't encountered, or the lock isn't a real data
+    boundary."""
+    now = datetime.utcnow()
+    db.add(TechniqueEncounter(
+        user_id=test_user["user"].id, technique_id="T1078",
+        encounter_count=1, first_encountered_at=now, last_encountered_at=now,
+    ))
+    await db.flush()
+
+    dossier = await dossier_service.compute_user_dossier(db, test_user["user"].id)
+
+    encountered = dossier["techniques"]["T1078"]
+    assert encountered["incident_narrative"] == TECHNIQUE_DOSSIER["T1078"]["incident_narrative"]
+    assert encountered["source_reference"] == TECHNIQUE_DOSSIER["T1078"]["source_reference"]
+
+    unencountered = dossier["techniques"]["T1003"]
+    assert unencountered["incident_narrative"] is None
+    assert unencountered["source_reference"] is None
+    # Static reference content is still present for browsing.
+    assert unencountered["name"] == TECHNIQUE_DOSSIER["T1003"]["name"]
+    assert unencountered["description"] == TECHNIQUE_DOSSIER["T1003"]["description"]
 
 
 async def test_compute_user_dossier_scopes_encounters_to_the_requesting_user(db, test_user, test_org):
@@ -98,6 +127,11 @@ async def test_get_my_dossier_returns_the_full_dossier_for_an_authenticated_user
     assert body["total_techniques"] == 30
     assert body["encountered_count"] == 0
     assert len(body["techniques"]) == 30
+    # No incident_narrative/source_reference leaks over the wire for a
+    # fresh user with zero encounters.
+    for entry in body["techniques"].values():
+        assert entry["incident_narrative"] is None
+        assert entry["source_reference"] is None
 
 
 async def test_get_my_dossier_reflects_encounters_persisted_through_a_real_action_run(client, db, test_user):
@@ -140,3 +174,5 @@ async def test_get_my_dossier_reflects_encounters_persisted_through_a_real_actio
     assert body["encountered_count"] == 1
     assert body["techniques"]["T1078"]["encountered"] is True
     assert body["techniques"]["T1078"]["encounter_count"] == 1
+    assert body["techniques"]["T1078"]["incident_narrative"] == TECHNIQUE_DOSSIER["T1078"]["incident_narrative"]
+    assert body["techniques"]["T1078"]["source_reference"] == TECHNIQUE_DOSSIER["T1078"]["source_reference"]
