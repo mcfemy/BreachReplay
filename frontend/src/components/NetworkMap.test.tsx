@@ -39,4 +39,17 @@ describe("NetworkMap", () => {
     // h1 isn't in clickableNodeIds — no button role at all
     expect(screen.queryByRole("button", { name: /CORP-WKS-22/ })).not.toBeInTheDocument();
   });
+
+  it("renders unknown NodeState as an unlabeled silhouette", () => {
+    render(
+      <NetworkMap
+        nodes={[{ id: "h1", label: "CORP-WKS-22", x: 80, y: 60 }]}
+        edges={[]}
+        nodeStates={{ h1: "unknown" }}
+      />,
+    );
+    expect(screen.getByLabelText("Unknown host")).toBeInTheDocument();
+    expect(screen.queryByText("CORP-WKS-22")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
 });

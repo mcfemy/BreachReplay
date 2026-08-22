@@ -318,6 +318,41 @@ def _set_host_isolated(world: OrgState, host_id: str) -> OrgState:
     )
 
 
+# Must match frontend/src/components/ActionConsole.tsx `layoutHosts` —
+# column-per-segment, hosts stacked within a column, in world.hosts order.
+# scan_network still does not send coordinates (its node payload is
+# unchanged); these numbers exist so the unknown tier can place a
+# silhouette on the same grid the known layout will occupy after a scan.
+_MAP_ORIGIN_X = 80
+_MAP_ORIGIN_Y = 60
+_MAP_COL_GAP = 150
+_MAP_ROW_GAP = 90
+
+# Locked set of keys an unknown-tier host is allowed to put on the wire.
+# Anything else — hostname/role/segment/compromise/isolated/forensics —
+# is a leak of unearned host detail. Tests assert this set, not just
+# that a couple of fields happen to be missing.
+_UNKNOWN_HOST_FIELDS = frozenset({"id", "x", "y", "visibility"})
+
+
+def _host_map_positions(world: OrgState) -> dict:
+    """Deterministic id → (x, y) for every host in `world`. Derived only
+    from `network_segment_id` and `world.hosts` order — never from
+    hostname/role/compromise — so the coordinates are safe to send on the
+    unknown tier. Same formula as ActionConsole.tsx `layoutHosts`."""
+    by_segment: dict[str, list] = {}
+    for h in world.hosts:
+        by_segment.setdefault(h.network_segment_id, []).append(h)
+    positions: dict = {}
+    for col, seg_id in enumerate(sorted(by_segment)):
+        for row, h in enumerate(by_segment[seg_id]):
+            positions[h.id] = (
+                _MAP_ORIGIN_X + col * _MAP_COL_GAP,
+                _MAP_ORIGIN_Y + row * _MAP_ROW_GAP,
+            )
+    return positions
+
+
 def _host_summary(host: Host) -> dict:
     """The fog-of-war-safe view of a host once its existence is revealed
     (query_logs/scan_network/image_disk): identity + current status, but
@@ -333,13 +368,23 @@ def _host_summary(host: Host) -> dict:
     }
 
 
+def _unknown_host_view(host_id: str, x: int, y: int) -> dict:
+    """Pre-scan silhouette: the host is known to exist (id + map position)
+    and nothing else. `visibility: "unknown"` is the marker the client
+    uses to render NodeState "unknown"; it is not host identity. Keys are
+    locked to `_UNKNOWN_HOST_FIELDS` — a client-side blur of hostname
+    would not be a data boundary (same discipline as the dossier lock)."""
+    return {"id": host_id, "x": x, "y": y, "visibility": "unknown"}
+
+
 def _revealed_edges(compiled: CompiledRun, revealed_host_ids: frozenset) -> list[dict]:
     """`compiled.edges` (topology only — source/target host ids, computed
     once at compile time, never scenario content) filtered to pairs where
-    BOTH endpoints are in `revealed_host_ids`. An edge touching a host the
-    player hasn't earned yet would itself leak that host's existence, so
-    this is never sent unfiltered — same fog-of-war contract every other
-    delta in this module already enforces."""
+    BOTH endpoints are in `revealed_host_ids` (the known tier). Unknown
+    silhouettes exist on the map without connections — edges are what
+    `scan_network` lifts, not the unknown tier. Sending an edge to/from
+    an unknown host would leak that host's connectivity, and sending the
+    full unfiltered list would leak the whole topology pre-scan."""
     return [
         e.to_dict() for e in compiled.edges
         if e.source in revealed_host_ids and e.target in revealed_host_ids
@@ -692,15 +737,31 @@ def earned_state_snapshot(run: RunState) -> dict:
     of Item 3's resume-by-run_id support) got clocks and an empty map,
     losing every host/IOC they'd already revealed — found while wiring up
     Item 5's frontend, fixed here rather than left for the UI to paper
-    over. Returns `{"hosts": [...], "revealed_iocs": [...], "edges": [...]}`;
-    every list is `[]` for a fresh, untouched run."""
-    hosts = [h for h in run.world.hosts if h.id in run.revealed_host_ids]
+    over. Returns `{"hosts": [...], "revealed_iocs": [...], "edges": [...]}`.
+
+    Two host tiers, both keyed off the existing `revealed_host_ids`
+    accumulator (no parallel visibility tracker):
+      - not in `revealed_host_ids` → unknown silhouette (`id` + position
+        only). Pre-scan the map is no longer empty — every compiled host
+        is present as unknown. Compromise/identity never ride along.
+      - in `revealed_host_ids` → known (`_host_summary` plus the same
+        coordinates, so a mixed reconnect doesn't re-layout a subset).
+    `revealed_iocs` / `edges` stay `[]` until actually earned; edges still
+    require BOTH endpoints to be known, not merely unknown."""
+    positions = _host_map_positions(run.world)
+    hosts = []
+    for h in run.world.hosts:
+        x, y = positions[h.id]
+        if h.id in run.revealed_host_ids:
+            hosts.append({**_host_summary(h), "x": x, "y": y})
+        else:
+            hosts.append(_unknown_host_view(h.id, x, y))
     revealed_iocs = [
         p.to_dict() for p in run.compiled.ioc_placements
         if (p.host_id, p.rule_id) in run.discovered_ioc_keys
     ]
     return {
-        "hosts": [_host_summary(h) for h in hosts],
+        "hosts": hosts,
         "revealed_iocs": revealed_iocs,
         "edges": _revealed_edges(run.compiled, run.revealed_host_ids),
         # Phase 3 — same reconnect-gap discipline Item 3 already applied to

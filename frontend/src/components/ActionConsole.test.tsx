@@ -73,11 +73,27 @@ describe("ActionConsole", () => {
     vi.mocked(useRunSocket).mockReturnValue(baseRunState());
   });
 
-  it("renders the verb chip bar and the empty-map fog-of-war message", () => {
+  it("renders the verb chip bar and unknown-state nodes on the pre-scan map", () => {
+    vi.mocked(useRunSocket).mockReturnValue(
+      baseRunState({
+        hosts: [
+          { id: "h1", x: 80, y: 60, visibility: "unknown" },
+          { id: "h2", x: 230, y: 60, visibility: "unknown" },
+        ],
+      }),
+    );
     render(<ActionConsole runId="run-1" />);
     expect(screen.getByText("Scan Network")).toBeInTheDocument();
     expect(screen.getByText("Block IP")).toBeInTheDocument();
-    expect(screen.getByText(/No hosts identified yet/i)).toBeInTheDocument();
+    expect(screen.queryByText(/No hosts identified yet/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Network topology map" })).toBeInTheDocument();
+    expect(screen.getAllByLabelText("Unknown host")).toHaveLength(2);
+    // Legend is complete — every NodeState, not the old 2-of-4 subset.
+    for (const state of ["unknown", "clean", "pulsing", "compromised", "contained"]) {
+      expect(screen.getByText(state)).toBeInTheDocument();
+    }
+    // Leak-safety: unknown tier must not surface a hostname.
+    expect(screen.queryByText("CORP-WKS-22")).not.toBeInTheDocument();
   });
 
   it("submits the untargeted scan_network verb immediately on tap", async () => {

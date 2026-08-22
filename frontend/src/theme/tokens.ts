@@ -21,11 +21,21 @@ export const fonts = {
 } as const;
 
 /** Node states for NetworkMap — see frontend/src/components/NetworkMap.tsx. */
-export type NodeState = "clean" | "pulsing" | "compromised" | "contained";
+export type NodeState = "unknown" | "clean" | "pulsing" | "compromised" | "contained";
 
 export const nodeStateColor: Record<NodeState, string> = {
+  unknown: "#3A4550", // silhouette: darker than dim so it doesn't collapse into clean
   clean: colors.dim,
   pulsing: colors.bleed,
   compromised: colors.bleed,
   contained: colors.contain,
 };
+
+/** Legend order — every NodeState, so ActionConsole can't silently drop one. */
+export const NODE_STATE_LEGEND: readonly NodeState[] = [
+  "unknown",
+  "clean",
+  "pulsing",
+  "compromised",
+  "contained",
+];

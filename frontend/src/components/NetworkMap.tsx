@@ -80,7 +80,9 @@ export default function NetworkMap({
           const state: NodeState = nodeStates[node.id] ?? "clean";
           const color = nodeStateColor[state];
           const isClickable = clickable.has(node.id);
+          const isUnknown = state === "unknown";
           const isPulsing = state === "pulsing" && !reduceMotion;
+          const label = isUnknown ? "Unknown host" : node.label;
 
           return (
             <g
@@ -96,27 +98,30 @@ export default function NetworkMap({
               }
               role={isClickable ? "button" : undefined}
               tabIndex={isClickable ? 0 : undefined}
-              aria-label={isClickable ? `Isolate ${node.label}` : node.label}
+              aria-label={isClickable ? `Isolate ${node.label}` : label}
               style={{ cursor: isClickable ? "pointer" : "default", outline: "none" }}
             >
               {isPulsing && <circle r={16} fill={color} opacity={0.35} className="animate-ping" />}
               <circle
                 r={11}
-                fill={state === "clean" ? colors.panel : color}
-                fillOpacity={state === "clean" ? 1 : 0.25}
+                fill={isUnknown ? colors.void : state === "clean" ? colors.panel : color}
+                fillOpacity={isUnknown || state === "clean" ? 1 : 0.25}
                 stroke={color}
                 strokeWidth={2}
+                strokeDasharray={isUnknown ? "3 3" : undefined}
                 className={isClickable ? "transition-opacity hover:opacity-70" : undefined}
               />
-              <text
-                y={26}
-                textAnchor="middle"
-                fontFamily={fonts.mono}
-                fontSize={10}
-                fill={colors.dim}
-              >
-                {node.label}
-              </text>
+              {!isUnknown && node.label ? (
+                <text
+                  y={26}
+                  textAnchor="middle"
+                  fontFamily={fonts.mono}
+                  fontSize={10}
+                  fill={colors.dim}
+                >
+                  {node.label}
+                </text>
+              ) : null}
             </g>
           );
         })}
