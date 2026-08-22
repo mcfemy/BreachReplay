@@ -5,6 +5,38 @@ scope for the phase/item in progress when they were found. Not a general
 issue tracker — just the small set of things flagged mid-work worth not
 losing.
 
+## Phase 3 juice pass — sound, map/feed, public run page SHIPPED; share cards open
+
+Spec §5 (`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md`) "Juice pass + share
+cards." Three of the five build items shipped tonight; share cards are
+the remaining open item.
+
+**Shipped:**
+- **Sound — PR #39, merged `59631e9` (2026-08-22).** Three Web Audio cues
+  (tick / thud / chime), muted by default, AppShell toggle, persisted in
+  `br_sound_enabled`. Silence on miss is intentional.
+- **Map/feed animation — PR #40, merged `38c8d64` (2026-08-22).**
+  NetworkMap infection pulse, contain ring, node shake; Action Console
+  alert feed typewriter. `prefers-reduced-motion` honored. Feed hostname
+  leak-safety follow-up in `db26da2` (known-tier gate on incident-feed
+  host names).
+- **Public run page — PR #41, merged `2608045` (2026-08-22).** Opaque
+  share token (Arena-parallel: `POST /action-runs/{id}/share` →
+  `GET /action-runs/public/replay/{token}` → `/r/{token}`), not a raw
+  `run_id`. Unauthenticated redacted DTO; `SessionReplayScrubber` was
+  the wrong shape and was not used. Spec §5 still says `/r/{run_id}`
+  and "extend PublicReplayPage with the scrubber" — that line is stale
+  relative to what shipped.
+
+**Not started — the one remaining juice-pass item:**
+- **Share cards.** Daily Wordle-style text already exists
+  (`backend/app/api/routes/daily.py` shareable-text builder). Extend
+  that pattern to Action Console runs and point the link at
+  `/r/{token}`. The PNG / `og:image` renderer (spec: final map thumbnail
+  + score + time-vs-real-world + scenario name) is new work, not an
+  extension of the Daily text path. One-tap Web Share API / copy-link
+  fallback still sits on this item.
+
 ## Phase 2.5 — CMMC evidence layer — COMPLETE
 
 Shipped and production-verified 2026-08-07 (spec:
