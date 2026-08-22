@@ -120,6 +120,21 @@ future Action Console mastery feed needs its own correctness signal (e.g.
 whether that stage's host was contained when it fired), not a reuse of
 `TechniqueEncounter`.
 
+## CI does not run `tsc -b` / full typecheck; `deploy.ps1` does — DEFERRED
+
+**Deferred / future. Not started.** Consider adding a typecheck step to
+CI so a TypeScript error surfaces before deploy, not during it.
+
+Found tonight deploying PRs #31–#36: `chipRefs` callback-ref typing
+(`HTMLButtonElement | null` vs `HTMLButtonElement | undefined`) passed
+CI (`npm test` / Vitest only — `.github/workflows/ci.yml` never runs
+`tsc -b` or `npx tsc --noEmit`) and then failed `deploy.ps1`'s
+`npm run build` (`tsc -b && vite build`), blocking the production
+cutover. One-line fix shipped in PR #37. Branch protection's required
+checks are locked to exactly `["review", "test"]`; a typecheck belongs
+in the existing `test` job (same pattern as the frontend Vitest steps)
+so it does not need a new required check name.
+
 ## Frontend test coverage — no runner configured — FIXED
 
 **Fixed on branch `frontend-test-infra`.** Added Vitest + React Testing
