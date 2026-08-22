@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useParams, Link } from "react-router-dom";
-import { axiosInstance } from "../lib/api";
+import { API_BASE, axiosInstance } from "../lib/api";
 import NetworkMap from "../components/NetworkMap";
 import { colors, type NodeState } from "../theme/tokens";
 import {
@@ -116,13 +116,16 @@ export default function PublicActionReplayPage() {
     setMeta("og:title", title, "property");
     setMeta("og:description", description, "property");
     setMeta("og:type", "website", "property");
-    setMeta("twitter:card", "summary");
+    const image = `${API_BASE}/action-runs/public/replay/${shareToken}/card.png`;
+    setMeta("og:image", image, "property");
+    setMeta("twitter:card", "summary_large_image");
     setMeta("twitter:title", title);
     setMeta("twitter:description", description);
+    setMeta("twitter:image", image);
     return () => {
       document.title = "BreachReplay";
     };
-  }, [replay]);
+  }, [replay, shareToken]);
 
   if (isLoading) {
     return (

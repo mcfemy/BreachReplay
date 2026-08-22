@@ -77,6 +77,13 @@ describe("PublicActionReplayPage", () => {
     expect(screen.getByText("CORP-WKS-22")).toBeInTheDocument();
 
     expect(axiosInstance.get).toHaveBeenCalledWith("/action-runs/public/replay/tok123");
+    const ogImage = document.head.querySelector('meta[property="og:image"]');
+    expect(ogImage?.getAttribute("content")).toBe(
+      "http://test.invalid/action-runs/public/replay/tok123/card.png",
+    );
+    expect(document.head.querySelector('meta[name="twitter:card"]')?.getAttribute("content")).toBe(
+      "summary_large_image",
+    );
     // Targets never belong on this page — the DTO doesn't have them, and
     // the timeline renderer must not invent a slot for them.
     expect(screen.queryByText(/203\.0\.113/)).not.toBeInTheDocument();

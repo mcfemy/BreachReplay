@@ -411,9 +411,15 @@ async def test_share_mints_idempotent_token_and_r_path(
     token = first.json()["share_token"]
     assert token
     assert first.json()["share_url_path"] == f"/r/{token}"
+    card = first.json()["share_card"]
+    assert card.startswith("🔐 BreachReplay")
+    assert "CONTAINED" in card
+    assert f"breachreplay.com/r/{token}" in card
+    assert "breachreplay.com/daily" not in card
     # Opaque — the run id must not be the token and must not be in the path.
     assert token != run.id
     assert run.id not in first.json()["share_url_path"]
+    assert run.id not in card
 
     second = await client.post(
         f"/api/v1/action-runs/{run.id}/share",

@@ -831,6 +831,7 @@ const OUTCOME_COLOR: Record<RunEndSummary["outcome"], string> = {
 
 function RunDebriefShare({ actionRunId }: { actionRunId: string }) {
   const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [shareCard, setShareCard] = useState<string | null>(null);
   const [sharing, setSharing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -839,10 +840,13 @@ function RunDebriefShare({ actionRunId }: { actionRunId: string }) {
     setSharing(true);
     setError(null);
     try {
-      const { data } = await axiosInstance.post<{ share_token: string; share_url_path: string }>(
-        `/action-runs/${actionRunId}/share`,
-      );
+      const { data } = await axiosInstance.post<{
+        share_token: string;
+        share_url_path: string;
+        share_card: string;
+      }>(`/action-runs/${actionRunId}/share`);
       setShareUrl(window.location.origin + data.share_url_path);
+      setShareCard(data.share_card);
       setCopied(false);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Could not create share link");
@@ -852,8 +856,9 @@ function RunDebriefShare({ actionRunId }: { actionRunId: string }) {
   }
 
   function copy() {
-    if (!shareUrl) return;
-    void navigator.clipboard?.writeText(shareUrl);
+    const text = shareCard ?? shareUrl;
+    if (!text) return;
+    void navigator.clipboard?.writeText(text);
     setCopied(true);
   }
 
@@ -874,7 +879,7 @@ function RunDebriefShare({ actionRunId }: { actionRunId: string }) {
           onClick={copy}
           className="font-term text-xs uppercase tracking-[0.2em] text-contain border border-contain/40 px-3 py-2 rounded w-full"
         >
-          {copied ? "Copied" : "Copy share link"}
+          {copied ? "Copied" : "Copy share card"}
         </button>
       )}
       {shareUrl && (

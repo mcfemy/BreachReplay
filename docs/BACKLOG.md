@@ -5,11 +5,11 @@ scope for the phase/item in progress when they were found. Not a general
 issue tracker — just the small set of things flagged mid-work worth not
 losing.
 
-## Phase 3 juice pass — sound, map/feed, public run page SHIPPED; share cards open
+## Phase 3 juice pass — sound, map/feed, public run page, share cards SHIPPED
 
 Spec §5 (`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md`) "Juice pass + share
-cards." Three of the five build items shipped tonight; share cards are
-the remaining open item.
+cards." All five build items have a shipped path; Web Share API (vs
+clipboard) is the only leftover share-card nicety.
 
 **Shipped:**
 - **Sound — PR #39, merged `59631e9` (2026-08-22).** Three Web Audio cues
@@ -28,7 +28,18 @@ the remaining open item.
   and "extend PublicReplayPage with the scrubber" — that line is stale
   relative to what shipped.
 
-**Not started — the one remaining juice-pass item:**
+**Shipped (this PR):**
+- **Share cards — text + PNG/og:image.** Daily-shaped plaintext
+  (`🔐` / Score — OUTCOME / Time) now mints from the debrief and points
+  at `breachreplay.com/r/{token}` instead of `/daily`. Pillow OG image
+  (`GET .../card.png`) from the locked public DTO only; crawler HTML at
+  `/public/unfurl/{token}` plus nginx bot rewrite on `/r/{token}` so
+  Slack/iMessage/Twitter see `og:image` without executing the SPA.
+  Daily never had a host emoji grid on the Action Console card
+  (decision-gate `✅❌` is a different path) — not invented here.
+  Web Share API still not wired (clipboard is the share action).
+
+**Was:**
 - **Share cards.** Daily Wordle-style text already exists
   (`backend/app/api/routes/daily.py` shareable-text builder). Extend
   that pattern to Action Console runs and point the link at
