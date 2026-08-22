@@ -1508,17 +1508,19 @@ def _public_host_state(host) -> dict:
     return {"id": host.id, "compromise_level": host.compromise_level, "isolated": host.isolated}
 
 
-def _diff_public_host_states(old_world, new_world) -> list[dict]:
+def _diff_public_host_states(old_world, new_world, revealed_host_ids: frozenset) -> list[dict]:
     """Hosts whose (compromise_level, isolated) changed between two world
     snapshots — covers both the player's own verb effect (e.g. isolate)
-    and attacker-driven stage progression uniformly; the map is allowed to
-    visibly show compromise/containment state for any host regardless of
-    whether that host's identity has been "revealed" yet (Phase 1's teaser
-    already establishes this: infection visibly spreads on the map without
-    a reveal action)."""
+    and attacker-driven stage progression uniformly. Filtered to hosts
+    already in `revealed_host_ids` (the known tier): putting compromise/
+    isolation on the wire for an unknown silhouette would collapse that
+    tier into a status leak, visible via network inspection even if the
+    client ignored the patch."""
     old_by_id = {h.id: (h.compromise_level, h.isolated) for h in old_world.hosts}
     changed = []
     for h in new_world.hosts:
+        if h.id not in revealed_host_ids:
+            continue
         if old_by_id.get(h.id) != (h.compromise_level, h.isolated):
             changed.append(_public_host_state(h))
     return changed
@@ -1615,7 +1617,9 @@ async def action_run_ws_handler(websocket: WebSocket, run_id: str, user_id: str)
                     new_stage_count,
                     len(new_run_state.compiled.stages),
                     is_final_reached,
-                    _diff_public_host_states(old_world, new_run_state.world),
+                    _diff_public_host_states(
+                        old_world, new_run_state.world, new_run_state.revealed_host_ids,
+                    ),
                 ))
 
             if is_over:

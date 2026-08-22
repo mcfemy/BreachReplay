@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import NetworkMap, { type NetworkMapNode } from "./NetworkMap";
-import { colors, nodeStateColor, type NodeState } from "../theme/tokens";
+import { colors, nodeStateColor, NODE_STATE_LEGEND, type NodeState } from "../theme/tokens";
 import XPToast from "./XPToast";
 import ConsolePreBrief from "./ConsolePreBrief";
 import Coachmark from "./Coachmark";
@@ -16,7 +16,9 @@ import {
   OUTCOME_LABELS,
   type Verb,
   type HostSummary,
+  type KnownHostSummary,
   type RunEndSummary,
+  isUnknownHost,
 } from "../lib/useRunSocket";
 
 /**
@@ -24,10 +26,11 @@ import {
  * picked by tapping the network map (reusing Phase 1's NetworkMap.tsx),
  * mobile-first (this bottom chip bar is the primary input; there is no
  * desktop command-line alternative in this first version — spec calls that
- * "secondary sugar, not the primary path"). Fog of war: before
- * `scan_network`, `run.hosts` is empty and the map is empty — that void IS
- * the fog, not a NetworkMap rendering mode (see STATE.md's note and
- * docs/BACKLOG.md's Phase 5 tone-pass entry on this).
+ * "secondary sugar, not the primary path"). Fog of war is two tiers:
+ * unknown silhouettes (id + position, no identity/compromise) until
+ * `scan_network`, then known hosts with full `_host_summary` fields.
+ * `scan_network` itself is unchanged — it still returns every host's
+ * full node list in one shot.
  */
 
 const VERB_LABELS: Record<Verb, string> = {
@@ -78,12 +81,29 @@ function targetingHintFor(verb: Verb): string {
   return "Pick who to notify from the list.";
 }
 
-// Client-side layout only — the backend gives topology (edges) but no
-// coordinates (NetworkSegment has no x/y, only reachable_from adjacency).
-// One column per segment, hosts stacked within it.
+// Client-side layout only — the backend gives topology (edges) but
+// scan_network's live delta still has no coordinates (NetworkSegment has
+// no x/y, only reachable_from adjacency). Unknown-tier hosts arrive with
+// server-computed x/y from the same formula; if every host has coords we
+// use those so silhouettes sit on the same grid a later scan will occupy.
+// One column per segment, hosts stacked within it. Numbers must match
+// verb_engine._host_map_positions (_MAP_ORIGIN_X/Y, _MAP_COL/ROW_GAP).
+function hasMapPosition(h: HostSummary): h is HostSummary & { x: number; y: number } {
+  return typeof (h as { x?: unknown }).x === "number" && typeof (h as { y?: unknown }).y === "number";
+}
+
 function layoutHosts(hosts: HostSummary[]): NetworkMapNode[] {
-  const bySegment = new Map<string, HostSummary[]>();
+  if (hosts.length > 0 && hosts.every(hasMapPosition)) {
+    return hosts.map((h) => ({
+      id: h.id,
+      label: isUnknownHost(h) ? "" : h.hostname,
+      x: h.x,
+      y: h.y,
+    }));
+  }
+  const bySegment = new Map<string, KnownHostSummary[]>();
   for (const h of hosts) {
+    if (isUnknownHost(h)) continue;
     const list = bySegment.get(h.network_segment_id) ?? [];
     list.push(h);
     bySegment.set(h.network_segment_id, list);
@@ -99,6 +119,7 @@ function layoutHosts(hosts: HostSummary[]): NetworkMapNode[] {
 }
 
 function hostNodeState(h: HostSummary): NodeState {
+  if (isUnknownHost(h)) return "unknown";
   if (h.isolated) return "contained";
   if (h.compromise_level === "none") return "clean";
   if (h.compromise_level === "foothold") return "pulsing";
@@ -320,11 +341,13 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   const nodeStates: Record<string, NodeState> = {};
   for (const h of run.hosts) nodeStates[h.id] = hostNodeState(h);
 
-  // Every revealed host is always tappable — either to submit the
-  // in-progress host-targeted verb, or (no verb selected) to open its
-  // detail drawer. NetworkMap only wires click handlers for ids in this
-  // list, so this must stay non-empty outside target-select mode too.
-  const clickableNodeIds = run.hosts.map((h) => h.id);
+  // Known hosts are tappable — either to submit the in-progress
+  // host-targeted verb, or (no verb selected) to open the detail drawer.
+  // Unknown silhouettes are visible but not targets: tapping one before
+  // scan would let isolate's `on_attack_path` (and the drawer) leak
+  // known-tier status. NetworkMap only wires click handlers for ids in
+  // this list.
+  const clickableNodeIds = run.hosts.filter((h) => !isUnknownHost(h)).map((h) => h.id);
 
   // First tap of a verb this account has never seen a coachmark for is
   // intercepted here — the coachmark explains the control before anything
@@ -415,6 +438,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   }
 
   const selectedHost = run.hosts.find((h) => h.id === selectedHostId) ?? null;
+  const selectedKnownHost = selectedHost && !isUnknownHost(selectedHost) ? selectedHost : null;
   const capRemaining = Math.max(0, run.capSeconds - run.attackerClockSeconds);
   const stageProgress = run.totalStages > 0 ? run.stagesFired / run.totalStages : 0;
 
@@ -456,23 +480,22 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
         {/* Legend — colors read directly from nodeStateColor (theme/tokens.ts),
             the same map NetworkMap itself renders from, so this can never
             drift out of sync with what a host's dot actually looks like.
-            Teaches the controls, not the deduction: no mention of which
-            host/IP is involved, only what a color/connection MEANS. */}
+            NODE_STATE_LEGEND is every NodeState; adding a state without
+            putting it here is a type error. Teaches the controls, not the
+            deduction: no mention of which host/IP is involved. */}
         <div className="absolute top-2 right-2 z-10 bg-panel/90 border border-dim/20 rounded-md px-2 py-1.5 text-[9px] font-term text-dim leading-tight max-w-[150px] pointer-events-none">
-          <div className="flex items-center gap-1.5">
-            <span
-              className="inline-block w-2 h-2 rounded-full shrink-0"
-              style={{ backgroundColor: nodeStateColor.compromised }}
-            />
-            <span>compromised</span>
-          </div>
-          <div className="flex items-center gap-1.5 mt-1">
-            <span
-              className="inline-block w-2 h-2 rounded-full shrink-0"
-              style={{ backgroundColor: nodeStateColor.contained }}
-            />
-            <span>contained</span>
-          </div>
+          {NODE_STATE_LEGEND.map((state, i) => (
+            <div key={state} className={`flex items-center gap-1.5${i === 0 ? "" : " mt-1"}`}>
+              <span
+                className="inline-block w-2 h-2 rounded-full shrink-0"
+                style={{
+                  backgroundColor: state === "unknown" ? "transparent" : nodeStateColor[state],
+                  border: `1.5px ${state === "unknown" ? "dashed" : "solid"} ${nodeStateColor[state]}`,
+                }}
+              />
+              <span>{state}</span>
+            </div>
+          ))}
           <div className="mt-1 text-dim/70">Attacker spreads along connections.</div>
         </div>
 
@@ -496,12 +519,12 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
       </div>
 
       {/* Host detail drawer */}
-      {selectedHost && !targetVerb && (
+      {selectedKnownHost && !targetVerb && (
         <HostDetailDrawer
-          host={selectedHost}
-          iocs={run.revealedIocs.filter((i) => i.host_id === selectedHost.id)}
-          forensics={run.forensicsByHost[selectedHost.id]}
-          credentials={run.credentialsByHost[selectedHost.id]}
+          host={selectedKnownHost}
+          iocs={run.revealedIocs.filter((i) => i.host_id === selectedKnownHost.id)}
+          forensics={run.forensicsByHost[selectedKnownHost.id]}
+          credentials={run.credentialsByHost[selectedKnownHost.id]}
           onClose={() => setSelectedHostId(null)}
         />
       )}
@@ -685,7 +708,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
 function HostDetailDrawer({
   host, iocs, forensics, credentials, onClose,
 }: {
-  host: HostSummary;
+  host: KnownHostSummary;
   iocs: { rule_id: string; description: string; source_system: string; severity: string; raw_log: string }[];
   forensics?: { unpatched_cves: string[]; edr_installed: boolean };
   credentials?: { credential_id: string; username: string; privilege: string }[];

@@ -371,8 +371,10 @@ def build_run_resync_event(
     and a reconnect resuming a live run. `hosts`/`revealed_iocs`/`edges`
     (from `verb_engine.earned_state_snapshot`) carry everything this
     player has already earned, so a reconnect actually restores what they
-    were looking at instead of just a clock baseline with an empty map —
-    all three are `[]` for a fresh, untouched run. `notified_party_ids`
+    were looking at instead of just a clock baseline with a blank map —
+    `revealed_iocs`/`edges` are `[]` for a fresh, untouched run; `hosts`
+    is the unknown-tier silhouette list (id + position, no identity or
+    compromise), not an empty array. `notified_party_ids`
     (also from `earned_state_snapshot`) is the same reconnect-gap fix
     applied to Phase 3's own state. `notification_parties` (Phase 3,
     `verb_engine.public_notification_parties`) is different in kind from

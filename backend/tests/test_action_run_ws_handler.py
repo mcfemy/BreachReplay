@@ -24,9 +24,9 @@ import uuid
 import pytest
 from fastapi import WebSocketDisconnect
 
-from app.services import action_engine
+from app.services import action_engine, verb_engine
 from app.services.action_run_store import action_run_store
-from app.websocket.handlers import action_run_ws_handler
+from app.websocket.handlers import action_run_ws_handler, _diff_public_host_states
 
 pytestmark = pytest.mark.asyncio
 
@@ -138,9 +138,17 @@ async def test_fresh_connect_sends_a_run_resync_event_at_zero(request):
     assert ws.sent[0]["elapsed_seconds"] == 0
     assert ws.sent[0]["attacker_clock_seconds"] == 0
     assert ws.sent[0]["cap_seconds"] == 600  # CAP_SECONDS_BY_MODE["scenario"]
-    # Leak check: a run nobody has touched yet must resync to nothing —
-    # no host, IOC, or edge exists to earn before the first verb.
-    assert ws.sent[0]["hosts"] == []
+    # Leak check: a run nobody has touched yet resyncs unknown silhouettes
+    # (id + position), never known-tier identity/compromise, and no edges
+    # or IOCs — those stay gated on revealed_host_ids / discovered_ioc_keys.
+    hosts = ws.sent[0]["hosts"]
+    assert hosts, "pre-scan resync must include unknown silhouettes"
+    for host in hosts:
+        assert host["visibility"] == "unknown"
+        assert set(host) == verb_engine._UNKNOWN_HOST_FIELDS
+        assert "hostname" not in host
+        assert "compromise_level" not in host
+        assert "isolated" not in host
     assert ws.sent[0]["revealed_iocs"] == []
     assert ws.sent[0]["edges"] == []
     assert ws.sent[0]["notification_parties"] == []
@@ -533,3 +541,24 @@ async def test_block_ip_correct_guess_includes_the_matched_ioc_body_live_and_on_
 
     async with action_run_store._lock:
         action_run_store._runs.pop(run_id, None)
+
+
+async def test_diff_public_host_states_omits_hosts_not_in_revealed_host_ids():
+    """stage.advance must not put compromise/isolation on the wire for an
+    unknown silhouette — that would leak known-tier status via network
+    inspection even if the client ignored the patch."""
+    compiled = action_engine.compile_scenario(
+        {"id": "fog-diff", "industry_vertical": "energy",
+         "alert_sequence": [], "decision_tree": _FAST_DECISION_TREE,
+         "pressure_injections": [], "hidden_iocs": []},
+        seed=1,
+    )
+    run = verb_engine.new_run(compiled)
+    target = compiled.world.hosts[0]
+    old_world = run.world
+    result = verb_engine.apply_verb(run, "isolate", target.id)
+    assert result.error is None
+    leaked = _diff_public_host_states(old_world, result.run.world, frozenset())
+    assert leaked == []
+    earned = _diff_public_host_states(old_world, result.run.world, frozenset({target.id}))
+    assert any(h["id"] == target.id and h["isolated"] is True for h in earned)

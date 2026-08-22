@@ -950,10 +950,12 @@ def test_no_leak_on_initial_resync_despite_a_pre_fired_world():
     pre-fired-world behavior specifically: BREACH_HEAD_START_SECONDS means
     `run.world` already has compromised hosts the instant a run starts, but
     `earned_state_snapshot` (what a fresh WS connect resyncs to, per
-    `action_run_ws_handler`) must still show nothing until a verb actually
-    reveals it — compromise state existing server-side is not the same as
-    it being earned. This exact interaction (pre-fired world + zero verbs
-    played) did not exist before today's BREACH_HEAD_START_SECONDS change
+    `action_run_ws_handler`) must still not leak that compromise — or any
+    host identity — until a verb actually reveals it. Unknown-tier
+    silhouettes (id + position) are not a leak of compromise state;
+    hostname/role/segment/compromise/isolated on a pre-scan host would be.
+    This exact interaction (pre-fired world + zero verbs played) did not
+    exist before today's BREACH_HEAD_START_SECONDS change
     and had no prior test coverage."""
     compiled = action_engine.compile_scenario(_COMPRESSED_SCENARIO, seed=_CORE_LOOP_SEED)
     assert any(h.compromise_level != "none" for h in compiled.world.hosts), (
@@ -962,7 +964,12 @@ def test_no_leak_on_initial_resync_despite_a_pre_fired_world():
 
     run = verb_engine.new_run(compiled)
     snapshot = verb_engine.earned_state_snapshot(run)
-    assert snapshot == {"hosts": [], "revealed_iocs": [], "edges": [], "notified_party_ids": []}
+    assert snapshot["revealed_iocs"] == []
+    assert snapshot["edges"] == []
+    assert snapshot["notified_party_ids"] == []
+    assert len(snapshot["hosts"]) == len(compiled.world.hosts)
+    assert {h["id"] for h in snapshot["hosts"]} == {h.id for h in compiled.world.hosts}
+    _assert_unknown_tier_hosts(snapshot["hosts"], compiled)
 
 
 def test_five_seeded_runs_win_or_lose_by_strategy_not_luck():
@@ -1166,3 +1173,119 @@ def test_pressure_stages_never_contribute_a_technique_id():
     run = verb_engine.new_run(compiled)
     run = _run_clock_past(run, max(s.trigger_seconds for s in pressure_stages))
     assert None not in run.encountered_technique_ids
+
+
+# ── Fog-of-war unknown tier ──────────────────────────────────────────────────
+#
+# Pre-scan hosts are silhouettes (id + position + visibility marker), not
+# absent. scan_network's live delta is unchanged — full `_host_summary`
+# nodes, no visibility/x/y. Do not tighten or rewrite
+# test_core_loop_scan_query_block_and_win_are_all_reachable_within_the_cap
+# (the Phase 2 acceptance test that already asserts scan_network returns
+# the full node list with compromise_level).
+
+_UNKNOWN_IDENTITY_FIELDS = frozenset({
+    "hostname", "role", "network_segment_id", "compromise_level", "isolated",
+    "unpatched_cves", "edr_installed",
+})
+
+
+def _assert_unknown_tier_hosts(hosts, compiled):
+    """Leak-safety: every pre-scan host is unknown, keys locked to
+    `_UNKNOWN_HOST_FIELDS`, and no identity/compromise field is present.
+    Same discipline as the dossier lock — a missing field is the boundary,
+    not a client-side blur."""
+    assert hosts, "pre-scan snapshot must include unknown silhouettes, not an empty map"
+    world_ids = {h.id for h in compiled.world.hosts}
+    assert {h["id"] for h in hosts} == world_ids
+    for host in hosts:
+        assert host["visibility"] == "unknown"
+        assert set(host) == verb_engine._UNKNOWN_HOST_FIELDS, (
+            f"unknown host carried extra keys: {set(host) - verb_engine._UNKNOWN_HOST_FIELDS}"
+        )
+        assert not (_UNKNOWN_IDENTITY_FIELDS & set(host))
+        assert isinstance(host["x"], int)
+        assert isinstance(host["y"], int)
+        world_host = compiled.world.get_host(host["id"])
+        assert world_host is not None
+        # Position-only: the wire payload must not echo the real hostname
+        # even as a coincidental string in another field.
+        assert world_host.hostname not in json.dumps(host)
+
+
+def test_pre_scan_snapshot_hosts_are_unknown_id_and_position_only():
+    compiled = _compiled()
+    snapshot = verb_engine.earned_state_snapshot(verb_engine.new_run(compiled))
+    _assert_unknown_tier_hosts(snapshot["hosts"], compiled)
+    assert snapshot["edges"] == []
+    assert snapshot["revealed_iocs"] == []
+
+
+def test_unknown_host_positions_match_the_client_segment_layout():
+    """Server-computed x/y must land on the same grid ActionConsole.tsx
+    layoutHosts uses after scan_network (which still sends no coordinates).
+    Independent recompute — not a tautology against `_host_map_positions`
+    calling itself."""
+    compiled = _compiled()
+    snapshot = verb_engine.earned_state_snapshot(verb_engine.new_run(compiled))
+    by_segment: dict[str, list] = {}
+    for h in compiled.world.hosts:
+        by_segment.setdefault(h.network_segment_id, []).append(h)
+    expected = {}
+    for col, seg_id in enumerate(sorted(by_segment)):
+        for row, h in enumerate(by_segment[seg_id]):
+            expected[h.id] = (80 + col * 150, 60 + row * 90)
+    for host in snapshot["hosts"]:
+        assert (host["x"], host["y"]) == expected[host["id"]]
+
+
+def test_scan_network_delta_is_still_the_full_known_node_list():
+    """scan_network's live payload is unchanged: every host, `_host_summary`
+    fields, no unknown marker, no coordinates. The Phase 2 acceptance
+    test (test_core_loop_scan_query_block_and_win_are_all_reachable_within_the_cap)
+    already consumes this shape; this locks the extra 'we did not split
+    scan_network into partial tiers' constraint."""
+    compiled = _compiled()
+    result = verb_engine.apply_verb(verb_engine.new_run(compiled), "scan_network")
+    assert result.error is None
+    nodes = result.delta["nodes"]
+    assert len(nodes) == len(compiled.world.hosts)
+    for node, host in zip(nodes, compiled.world.hosts):
+        assert node == verb_engine._host_summary(host)
+        assert "visibility" not in node
+        assert "x" not in node
+        assert "y" not in node
+
+
+def test_post_scan_resync_hosts_are_known_not_unknown():
+    compiled = _compiled()
+    run = verb_engine.apply_verb(verb_engine.new_run(compiled), "scan_network").run
+    snapshot = verb_engine.earned_state_snapshot(run)
+    assert {h["id"] for h in snapshot["hosts"]} == {h.id for h in compiled.world.hosts}
+    for host in snapshot["hosts"]:
+        assert host.get("visibility") != "unknown"
+        assert "hostname" in host
+        assert "compromise_level" in host
+        assert "isolated" in host
+
+
+def test_query_logs_promotes_only_the_targeted_host_to_known():
+    """revealed_host_ids is the known-tier accumulator — query_logs on one
+    host must not promote the rest. Other hosts stay unknown, with no
+    identity/compromise leak."""
+    compiled = _compiled()
+    target = compiled.world.hosts[0]
+    run = verb_engine.apply_verb(verb_engine.new_run(compiled), "query_logs", target.id).run
+    snapshot = verb_engine.earned_state_snapshot(run)
+    by_id = {h["id"]: h for h in snapshot["hosts"]}
+    known = by_id[target.id]
+    assert known.get("visibility") != "unknown"
+    assert known["hostname"] == target.hostname
+    assert known["compromise_level"] == target.compromise_level
+    others = [h for h in snapshot["hosts"] if h["id"] != target.id]
+    assert len(others) == len(compiled.world.hosts) - 1
+    for host in others:
+        assert host["visibility"] == "unknown"
+        assert set(host) == verb_engine._UNKNOWN_HOST_FIELDS
+        assert not (_UNKNOWN_IDENTITY_FIELDS & set(host))
+

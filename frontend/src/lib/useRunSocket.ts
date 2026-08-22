@@ -36,16 +36,37 @@ export const TEXT_TARGETED_VERBS: Verb[] = ["block_ip", "reset_creds"];
 // not a host, not free text, a fixed picklist known from run start.
 export const PARTY_TARGETED_VERBS: Verb[] = ["escalate"];
 
-// verb_engine._host_summary's shape. Never includes unpatched_cves/
-// edr_installed (image_disk-only forensics, kept separate below) or
-// anything not earned yet.
-export interface HostSummary {
+// verb_engine host wire shapes. Two tiers, both keyed off the server's
+// `revealed_host_ids` accumulator:
+//   unknown — pre-scan silhouette: id + map position + visibility marker.
+//             Never includes hostname/role/segment/compromise/isolated.
+//   known   — `_host_summary`'s shape (scan_network / query_logs /
+//             image_disk). Never includes unpatched_cves/edr_installed
+//             (image_disk-only forensics, kept separate below). Snapshot
+//             known hosts also carry x/y so a reconnect doesn't re-layout
+//             a subset; scan_network's live delta does not (unchanged).
+export interface UnknownHostSummary {
+  id: string;
+  x: number;
+  y: number;
+  visibility: "unknown";
+}
+
+export interface KnownHostSummary {
   id: string;
   hostname: string;
   role: string;
   network_segment_id: string;
   compromise_level: "none" | "foothold" | "admin" | "domain_admin";
   isolated: boolean;
+  x?: number;
+  y?: number;
+}
+
+export type HostSummary = UnknownHostSummary | KnownHostSummary;
+
+export function isUnknownHost(h: HostSummary): h is UnknownHostSummary {
+  return (h as UnknownHostSummary).visibility === "unknown";
 }
 
 export interface HostForensics {
@@ -266,11 +287,21 @@ function mergeIocs(existing: RevealedIoc[], incoming: RevealedIoc[]): RevealedIo
   return merged;
 }
 
-function upsertHost(hosts: HostSummary[], id: string, patch: Partial<HostSummary>): HostSummary[] {
+function upsertHost(
+  hosts: HostSummary[],
+  id: string,
+  patch: { compromise_level?: KnownHostSummary["compromise_level"]; isolated?: boolean },
+): HostSummary[] {
   const idx = hosts.findIndex((h) => h.id === id);
-  if (idx === -1) return hosts; // not revealed yet — nothing to patch, stays hidden
+  if (idx === -1) return hosts; // not on the map yet — nothing to patch
+  const current = hosts[idx];
+  // Unknown silhouettes must not pick up compromise/isolation from
+  // stage.advance — that would leak known-tier status onto a host the
+  // player hasn't scanned. Server already filters newly_compromised_hosts
+  // to revealed_host_ids; this is the client-side belt.
+  if (isUnknownHost(current)) return hosts;
   const next = [...hosts];
-  next[idx] = { ...next[idx], ...patch };
+  next[idx] = { ...current, ...patch };
   return next;
 }
 
@@ -309,11 +340,10 @@ export function useRunSocket(runId: string) {
         case "run.resync":
           // build_run_resync_event: {elapsed_seconds, attacker_clock_seconds,
           // cap_seconds, hosts, revealed_iocs, edges, notification_parties}
-          // — hosts/revealed_iocs/edges are everything this player has
-          // already earned (empty on a fresh run), restoring exactly what a
-          // reconnect should show. notification_parties is different in
-          // kind: a static per-scenario list known from t=0, not
-          // progressively earned, so it's populated even on a fresh run.
+          // — hosts are the two-tier snapshot (unknown silhouettes pre-scan,
+          // known `_host_summary` once revealed_host_ids has them).
+          // revealed_iocs/edges stay empty on a fresh run. notification_parties
+          // is different in kind: a static per-scenario list known from t=0.
           setState((s) => ({
             ...s,
             elapsedSeconds: msg.elapsed_seconds,
@@ -436,7 +466,7 @@ export function useRunSocket(runId: string) {
           setState((s) => {
             let hosts = s.hosts;
             for (const h of (msg.newly_compromised_hosts as { id: string; compromise_level: string; isolated: boolean }[])) {
-              hosts = upsertHost(hosts, h.id, { compromise_level: h.compromise_level as HostSummary["compromise_level"], isolated: h.isolated });
+              hosts = upsertHost(hosts, h.id, { compromise_level: h.compromise_level as KnownHostSummary["compromise_level"], isolated: h.isolated });
             }
             return {
               ...s,
