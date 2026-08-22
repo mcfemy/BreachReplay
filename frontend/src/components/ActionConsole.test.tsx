@@ -18,7 +18,7 @@ vi.mock("../lib/useRunSocket", async (importOriginal) => {
 });
 
 vi.mock("../lib/api", () => ({
-  axiosInstance: { patch: vi.fn() },
+  axiosInstance: { patch: vi.fn(), post: vi.fn() },
   API_BASE: "http://test.invalid",
 }));
 
@@ -70,6 +70,7 @@ describe("ActionConsole", () => {
     vi.mocked(playThud).mockClear();
     vi.mocked(playChime).mockClear();
     vi.mocked(axiosInstance.patch).mockReset();
+    vi.mocked(axiosInstance.post).mockReset();
     useAuthStore.setState({
       user: {
         id: "u1",
@@ -313,6 +314,17 @@ describe("ActionConsole", () => {
       vi.mocked(useRunSocket).mockReturnValue(baseRunState({ runEnd: stubRunEnd("breached") }));
       rerender(<ActionConsole runId="run-1" />);
       expect(playChime).not.toHaveBeenCalled();
+    });
+
+    it("mints a /r/ share link from the debrief without putting the run id in the URL", async () => {
+      vi.mocked(axiosInstance.post).mockResolvedValue({
+        data: { share_token: "opaque-token", share_url_path: "/r/opaque-token" },
+      });
+      vi.mocked(useRunSocket).mockReturnValue(baseRunState({ runEnd: stubRunEnd("contained") }));
+      render(<ActionConsole runId="run-1" />);
+      await userEvent.click(screen.getByRole("button", { name: /share this run/i }));
+      expect(axiosInstance.post).toHaveBeenCalledWith("/action-runs/run-1/share");
+      expect(await screen.findByText(/\/r\/opaque-token/)).toBeInTheDocument();
     });
   });
 

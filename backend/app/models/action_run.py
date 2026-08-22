@@ -15,10 +15,12 @@ class ActionRun(Base):
     One row per completed run, written once at `run.end` (see the Phase 2
     WebSocket wiring item) — never created at run start and updated later,
     since duration/outcome/score are only known once the run is over.
-    `action_log` is the single source of truth for replay: the exact
-    timestamped verb log `verb_engine.RunState.action_log` produces. This
-    is the Phase 4 ghost-racing replay format and what
-    `SessionReplayScrubber` reads.
+    `action_log` is the single source of truth for *authenticated* replay:
+    the exact timestamped verb log `verb_engine.RunState.action_log`
+    produces (Phase 4 ghost-racing). It is NOT what the public share page
+    reads — that path uses `share_token` + the redacted `public_snapshot`
+    (migration 0041), never a raw run_id and never this log wholesale
+    (targets / warranted / correct stay off the unauthenticated DTO).
 
     `user_id` is nullable — a teaser-mode run has no authenticated user yet
     (same pattern as TeaserEvent.user_id, migration 0028).
@@ -80,6 +82,19 @@ class ActionRun(Base):
     # than block it.
     evidence_session_id: Mapped[Optional[str]] = mapped_column(
         String, ForeignKey("evidence_sessions.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+    # Public share token (migration 0041) — lazily minted by
+    # POST /action-runs/{id}/share, same contract as
+    # arena_matches.share_token. Presence of a token does NOT by itself
+    # grant public access: GET /action-runs/public/replay/{token} still
+    # requires a frozen public_snapshot and a shareable mode
+    # (daily/scenario). Nullable, never backfilled.
+    share_token: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, unique=True, index=True)
+    # Fog-gated hosts + edges + technique name/description, frozen at
+    # finalize so the public GET never compile/replays a seed. Nullable
+    # for pre-0041 rows (those are not shareable — mint 404s).
+    public_snapshot: Mapped[Optional[dict]] = mapped_column(
+        JSONB().with_variant(JSON, "sqlite"), nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 

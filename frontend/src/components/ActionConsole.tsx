@@ -829,6 +829,62 @@ const OUTCOME_COLOR: Record<RunEndSummary["outcome"], string> = {
   breached: colors.bleed,
 };
 
+function RunDebriefShare({ actionRunId }: { actionRunId: string }) {
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [sharing, setSharing] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function mint() {
+    setSharing(true);
+    setError(null);
+    try {
+      const { data } = await axiosInstance.post<{ share_token: string; share_url_path: string }>(
+        `/action-runs/${actionRunId}/share`,
+      );
+      setShareUrl(window.location.origin + data.share_url_path);
+      setCopied(false);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Could not create share link");
+    } finally {
+      setSharing(false);
+    }
+  }
+
+  function copy() {
+    if (!shareUrl) return;
+    void navigator.clipboard?.writeText(shareUrl);
+    setCopied(true);
+  }
+
+  return (
+    <div className="mb-6 max-w-sm w-full">
+      {!shareUrl ? (
+        <button
+          type="button"
+          onClick={() => void mint()}
+          disabled={sharing}
+          className="font-term text-xs uppercase tracking-[0.2em] text-phosphor border border-phosphor/40 px-3 py-2 rounded disabled:opacity-50"
+        >
+          {sharing ? "Creating link…" : "Share this run"}
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={copy}
+          className="font-term text-xs uppercase tracking-[0.2em] text-contain border border-contain/40 px-3 py-2 rounded w-full"
+        >
+          {copied ? "Copied" : "Copy share link"}
+        </button>
+      )}
+      {shareUrl && (
+        <p className="mt-2 text-[10px] text-dim break-all">{shareUrl}</p>
+      )}
+      {error && <p className="mt-2 text-[10px] text-bleed">{error}</p>}
+    </div>
+  );
+}
+
 function RunDebrief({
   summary, xpVisible, onXpDone,
 }: {
@@ -855,6 +911,8 @@ function RunDebrief({
       </p>
       <p className="text-4xl font-black mb-1">{summary.score_breakdown.total_score.toLocaleString()}</p>
       <p className="text-dim text-sm mb-6">points — {summary.score_breakdown.score_pct.toFixed(0)}% score</p>
+
+      <RunDebriefShare actionRunId={summary.action_run_id} />
 
       {/* Collateral line — named, not a buried percentage: the specific
           systems taken offline unnecessarily, per spec section 5. Silent

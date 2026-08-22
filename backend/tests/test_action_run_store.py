@@ -161,6 +161,13 @@ async def test_finalize_persists_action_run_and_evicts_from_store(db, store, fas
     assert row.scenario_id == fast_scenario.id
     assert row.duration_seconds == 45
     assert row.mode == "scenario"
+    # Frozen at finalize so a later public GET never has to replay this
+    # row's seed. Must not carry revealed_iocs (raw_log) or the seed.
+    assert isinstance(row.public_snapshot, dict)
+    assert set(row.public_snapshot.keys()) == {"hosts", "edges", "techniques_encountered"}
+    assert "revealed_iocs" not in row.public_snapshot
+    assert "seed" not in row.public_snapshot
+    assert row.share_token is None  # minted lazily, not at finalize
 
 
 async def test_finalize_returns_none_for_an_already_finalized_run(db, store, fast_scenario, test_user):
