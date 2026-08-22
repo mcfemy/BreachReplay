@@ -1,7 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import NetworkMap from "./NetworkMap";
+import NetworkMap, { CONTAIN_FLASH_MS, NODE_SHAKE_MS } from "./NetworkMap";
 
 const nodes = [
   { id: "h1", label: "CORP-WKS-22", x: 80, y: 60 },
@@ -51,5 +51,89 @@ describe("NetworkMap", () => {
     expect(screen.getByLabelText("Unknown host")).toBeInTheDocument();
     expect(screen.queryByText("CORP-WKS-22")).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  });
+});
+
+function stubReduceMotion(reduce: boolean) {
+  window.matchMedia = ((query: string) =>
+    ({
+      matches: query.includes("prefers-reduced-motion") ? reduce : false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }) as unknown as MediaQueryList);
+}
+
+describe("NetworkMap juice", () => {
+  beforeEach(() => {
+    stubReduceMotion(false);
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("pulses along an edge when a clean node becomes pulsing", () => {
+    const { rerender } = render(
+      <NetworkMap nodes={nodes} edges={edges} nodeStates={{ h1: "clean", h2: "clean" }} />,
+    );
+    expect(document.querySelector("[data-spreading]")).not.toBeInTheDocument();
+
+    rerender(
+      <NetworkMap nodes={nodes} edges={edges} nodeStates={{ h1: "pulsing", h2: "clean" }} />,
+    );
+    const pulse = document.querySelector("[data-spreading]");
+    expect(pulse).toBeInTheDocument();
+    expect(pulse).toHaveAttribute("data-from", "h1");
+    expect(pulse).toHaveAttribute("data-to", "h2");
+  });
+
+  it("flashes a contain ring when a node becomes contained", () => {
+    const { rerender } = render(
+      <NetworkMap nodes={nodes} edges={edges} nodeStates={{ h1: "pulsing", h2: "clean" }} />,
+    );
+    rerender(
+      <NetworkMap nodes={nodes} edges={edges} nodeStates={{ h1: "contained", h2: "clean" }} />,
+    );
+    expect(screen.getByTestId("node-h1")).toHaveAttribute("data-contain-flash", "true");
+    act(() => {
+      vi.advanceTimersByTime(CONTAIN_FLASH_MS);
+    });
+    expect(screen.getByTestId("node-h1")).not.toHaveAttribute("data-contain-flash");
+  });
+
+  it("shakes a node when it becomes fully compromised", () => {
+    const { rerender } = render(
+      <NetworkMap nodes={nodes} edges={edges} nodeStates={{ h1: "pulsing", h2: "clean" }} />,
+    );
+    rerender(
+      <NetworkMap nodes={nodes} edges={edges} nodeStates={{ h1: "compromised", h2: "clean" }} />,
+    );
+    expect(screen.getByTestId("node-h1")).toHaveAttribute("data-shake", "true");
+    act(() => {
+      vi.advanceTimersByTime(NODE_SHAKE_MS);
+    });
+    expect(screen.getByTestId("node-h1")).not.toHaveAttribute("data-shake");
+  });
+
+  it("skips pulse, ring, and shake when prefers-reduced-motion is set", () => {
+    stubReduceMotion(true);
+    const { rerender } = render(
+      <NetworkMap nodes={nodes} edges={edges} nodeStates={{ h1: "clean", h2: "clean" }} />,
+    );
+    rerender(
+      <NetworkMap
+        nodes={nodes}
+        edges={edges}
+        nodeStates={{ h1: "compromised", h2: "contained" }}
+      />,
+    );
+    expect(document.querySelector("[data-spreading]")).not.toBeInTheDocument();
+    expect(screen.getByTestId("node-h1")).not.toHaveAttribute("data-shake");
+    expect(screen.getByTestId("node-h2")).not.toHaveAttribute("data-contain-flash");
   });
 });

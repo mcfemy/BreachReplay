@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import NetworkMap from "../components/NetworkMap";
 import LandingPageMarketing from "./LandingPageMarketing";
 import { teaserApi, stashTeaserToken, type TeaserStartResponse } from "../lib/teaser";
+import { useTypewriterLines } from "../lib/typewriter";
 import type { NodeState } from "../theme/tokens";
 
 /**
@@ -18,22 +19,21 @@ import type { NodeState } from "../theme/tokens";
 
 type Phase = "loading" | "playing" | "resolved" | "error";
 
-const ALERT_LINE_STAGGER_MS = 550;
-const TYPEWRITER_MS_PER_CHAR = 20;
-
 export default function TeaserLandingPage() {
   const navigate = useNavigate();
   const [phase, setPhase] = useState<Phase>("loading");
   const [payload, setPayload] = useState<TeaserStartResponse | null>(null);
   const [nodeStates, setNodeStates] = useState<Record<string, NodeState>>({});
-  const [visibleAlertChars, setVisibleAlertChars] = useState<number[]>([]);
   const [secondsLeft, setSecondsLeft] = useState(60);
   const [consequenceText, setConsequenceText] = useState("");
   const [endCardText, setEndCardText] = useState("");
   const [wasCorrect, setWasCorrect] = useState(false);
   const answeredRef = useRef(false);
-  const reduceMotion =
-    typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const alertItems = (payload?.alert_lines ?? []).map((line, i) => ({
+    id: `${line.timestamp}-${i}`,
+    text: line.text,
+  }));
+  const visibleAlertChars = useTypewriterLines(alertItems);
 
   const scrollToPricing = () => document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth" });
 
@@ -55,32 +55,6 @@ export default function TeaserLandingPage() {
       cancelled = true;
     };
   }, []);
-
-  // Alert feed typewriter (~20ms/char, staggered per line). Skipped for
-  // prefers-reduced-motion, which shows every line fully rendered at once.
-  useEffect(() => {
-    if (!payload) return;
-    if (reduceMotion) {
-      setVisibleAlertChars(payload.alert_lines.map((l) => l.text.length));
-      return;
-    }
-    const timers: number[] = [];
-    payload.alert_lines.forEach((line, lineIdx) => {
-      const lineStart = lineIdx * ALERT_LINE_STAGGER_MS;
-      for (let c = 0; c <= line.text.length; c++) {
-        timers.push(
-          window.setTimeout(() => {
-            setVisibleAlertChars((prev) => {
-              const next = [...prev];
-              next[lineIdx] = c;
-              return next;
-            });
-          }, lineStart + c * TYPEWRITER_MS_PER_CHAR)
-        );
-      }
-    });
-    return () => timers.forEach(clearTimeout);
-  }, [payload, reduceMotion]);
 
   const handleAnswer = useCallback(
     async (nodeId: string) => {
@@ -196,7 +170,7 @@ export default function TeaserLandingPage() {
       <section className="px-4 max-w-xl mx-auto mb-6">
         <div className="font-term text-xs space-y-1.5 bg-panel/50 border border-white/5 rounded-lg p-3">
           {payload.alert_lines.map((line, i) => {
-            const shown = line.text.slice(0, visibleAlertChars[i] ?? 0);
+            const shown = line.text.slice(0, visibleAlertChars[`${line.timestamp}-${i}`] ?? 0);
             if (!shown) return null;
             return (
               <div key={line.timestamp}>
