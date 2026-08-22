@@ -4,7 +4,9 @@ import userEvent from "@testing-library/user-event";
 import ActionConsole from "./ActionConsole";
 import { useAuthStore } from "../store/auth";
 import { useRunSocket } from "../lib/useRunSocket";
+import type { RunEndSummary } from "../lib/useRunSocket";
 import { axiosInstance } from "../lib/api";
+import { playChime, playTick, playThud } from "../lib/sound";
 
 // Real WebSocket is out of scope for a smoke test — mock the hook's return
 // value directly, same shape ActionConsole.tsx destructures off `run`.
@@ -18,6 +20,12 @@ vi.mock("../lib/useRunSocket", async (importOriginal) => {
 vi.mock("../lib/api", () => ({
   axiosInstance: { patch: vi.fn() },
   API_BASE: "http://test.invalid",
+}));
+
+vi.mock("../lib/sound", () => ({
+  playTick: vi.fn(),
+  playThud: vi.fn(),
+  playChime: vi.fn(),
 }));
 
 const submitVerb = vi.fn();
@@ -58,6 +66,9 @@ function baseRunState(overrides: Partial<ReturnType<typeof useRunSocket>> = {}) 
 describe("ActionConsole", () => {
   beforeEach(() => {
     submitVerb.mockClear();
+    vi.mocked(playTick).mockClear();
+    vi.mocked(playThud).mockClear();
+    vi.mocked(playChime).mockClear();
     vi.mocked(axiosInstance.patch).mockReset();
     useAuthStore.setState({
       user: {
@@ -222,4 +233,113 @@ describe("ActionConsole", () => {
       expect(submitVerb).toHaveBeenCalledWith("scan_network");
     });
   });
+
+  describe("sound cues", () => {
+    it("does not fire cues on mount", () => {
+      render(<ActionConsole runId="run-1" />);
+      expect(playTick).not.toHaveBeenCalled();
+      expect(playThud).not.toHaveBeenCalled();
+      expect(playChime).not.toHaveBeenCalled();
+    });
+
+    it("thuds when lastDelta reports isolation", () => {
+      const { rerender } = render(<ActionConsole runId="run-1" />);
+      vi.mocked(useRunSocket).mockReturnValue(
+        baseRunState({ lastDelta: { isolated: true, host_id: "h1" } }),
+      );
+      rerender(<ActionConsole runId="run-1" />);
+      expect(playThud).toHaveBeenCalledTimes(1);
+    });
+
+    it("thuds when lastDelta reports a correct targeted action", () => {
+      const { rerender } = render(<ActionConsole runId="run-1" />);
+      vi.mocked(useRunSocket).mockReturnValue(
+        baseRunState({ lastDelta: { correct: true } }),
+      );
+      rerender(<ActionConsole runId="run-1" />);
+      expect(playThud).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not thud on an incorrect guess", () => {
+      const { rerender } = render(<ActionConsole runId="run-1" />);
+      vi.mocked(useRunSocket).mockReturnValue(
+        baseRunState({ lastDelta: { correct: false } }),
+      );
+      rerender(<ActionConsole runId="run-1" />);
+      expect(playThud).not.toHaveBeenCalled();
+    });
+
+    it("ticks once when remaining budget first drops to 60s", () => {
+      const { rerender } = render(<ActionConsole runId="run-1" />);
+      expect(playTick).not.toHaveBeenCalled();
+      vi.mocked(useRunSocket).mockReturnValue(
+        baseRunState({ attackerClockSeconds: 540, capSeconds: 600 }),
+      );
+      rerender(<ActionConsole runId="run-1" />);
+      expect(playTick).toHaveBeenCalledTimes(1);
+      vi.mocked(useRunSocket).mockReturnValue(
+        baseRunState({ attackerClockSeconds: 550, capSeconds: 600 }),
+      );
+      rerender(<ActionConsole runId="run-1" />);
+      expect(playTick).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not tick when there is no response-budget cap", () => {
+      vi.mocked(useRunSocket).mockReturnValue(
+        baseRunState({ attackerClockSeconds: 90, capSeconds: 0 }),
+      );
+      render(<ActionConsole runId="run-1" />);
+      expect(playTick).not.toHaveBeenCalled();
+    });
+
+    it("chimes when the run ends contained", () => {
+      const { rerender } = render(<ActionConsole runId="run-1" />);
+      vi.mocked(useRunSocket).mockReturnValue(baseRunState({ runEnd: stubRunEnd("contained") }));
+      rerender(<ActionConsole runId="run-1" />);
+      expect(playChime).toHaveBeenCalledTimes(1);
+    });
+
+    it("chimes when the run ends contained_at_cost", () => {
+      const { rerender } = render(<ActionConsole runId="run-1" />);
+      vi.mocked(useRunSocket).mockReturnValue(
+        baseRunState({ runEnd: stubRunEnd("contained_at_cost") }),
+      );
+      rerender(<ActionConsole runId="run-1" />);
+      expect(playChime).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not chime when the run ends breached", () => {
+      const { rerender } = render(<ActionConsole runId="run-1" />);
+      vi.mocked(useRunSocket).mockReturnValue(baseRunState({ runEnd: stubRunEnd("breached") }));
+      rerender(<ActionConsole runId="run-1" />);
+      expect(playChime).not.toHaveBeenCalled();
+    });
+  });
 });
+
+function stubRunEnd(outcome: RunEndSummary["outcome"]): RunEndSummary {
+  return {
+    action_run_id: "run-1",
+    outcome,
+    score_breakdown: {
+      outcome,
+      outcome_base: 800,
+      evidence_points: 0,
+      evidence_found: 0,
+      evidence_total: 0,
+      speed_bonus: 0,
+      penalty_total: 0,
+      penalties: [],
+      collateral: [],
+      collateral_penalty: 0,
+      notifications: [],
+      notification_points: 0,
+      notification_penalty: 0,
+      total_score: 800,
+      score_pct: 80,
+    },
+    xp_awarded: 0,
+    new_achievements: [],
+    techniques_encountered: [],
+  };
+}

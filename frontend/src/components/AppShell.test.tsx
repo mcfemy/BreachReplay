@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
@@ -51,5 +51,28 @@ describe("AppShell", () => {
 
     await user.click(screen.getByLabelText("Close menu"));
     expect(container.querySelector(".bg-black\\/60")).not.toBeInTheDocument();
+  });
+
+  it("sound toggle starts muted and persists on to localStorage", async () => {
+    const user = userEvent.setup();
+    renderShell();
+    const toggles = screen.getAllByLabelText("Enable sound");
+    expect(toggles.length).toBe(2);
+    expect(localStorage.getItem("br_sound_enabled")).toBeNull();
+
+    await user.click(toggles[0]);
+    expect(localStorage.getItem("br_sound_enabled")).toBe("1");
+    expect(screen.getAllByLabelText("Mute sound")).toHaveLength(2);
+  });
+
+  it("restores an enabled sound toggle from localStorage without autoplaying", () => {
+    const ctor = vi.fn();
+    vi.stubGlobal("AudioContext", ctor);
+    localStorage.setItem("br_sound_enabled", "1");
+    localStorage.setItem("br_onboarded", "1");
+    renderShell();
+    expect(screen.getAllByLabelText("Mute sound")).toHaveLength(2);
+    expect(ctor).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });

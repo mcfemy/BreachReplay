@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { NavLink, useNavigate, Outlet } from "react-router-dom";
 import { useAuthStore } from "../store/auth";
 import OnboardingModal from "./OnboardingModal";
+import { installSoundUnlockListener, isSoundEnabled, setSoundEnabled } from "../lib/sound";
 
 const NAV = [
   { to: "/scenarios", label: "Scenarios", icon: "⚡", desc: "Library" },
@@ -20,6 +21,33 @@ const BOTTOM_NAV = [
   { to: "/pricing", label: "Pricing", icon: "💳" },
 ];
 
+function SoundToggle({
+  compact,
+  enabled,
+  onToggle,
+}: {
+  compact?: boolean;
+  enabled: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={enabled}
+      aria-label={enabled ? "Mute sound" : "Enable sound"}
+      className={
+        compact
+          ? "text-[10px] uppercase tracking-widest text-breach-muted hover:text-breach-text px-1 active:scale-95"
+          : "w-full flex items-center gap-2 px-3 py-2 rounded text-xs text-breach-muted hover:text-breach-text hover:bg-breach-bg transition-all"
+      }
+    >
+      {!compact && <span aria-hidden="true">{enabled ? "🔊" : "🔇"}</span>}
+      <span>{enabled ? "Sound on" : "Sound off"}</span>
+    </button>
+  );
+}
+
 // This is the first responsive breakpoint pattern in the codebase — no
 // existing collapsible-sidebar/bottom-sheet convention to match (confirmed
 // while scoping Item 5's mobile action console; see docs/BACKLOG.md). The
@@ -32,6 +60,15 @@ export default function AppShell() {
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [soundOn, setSoundOn] = useState(isSoundEnabled);
+
+  useEffect(() => installSoundUnlockListener(), []);
+
+  function handleSoundToggle() {
+    const next = !soundOn;
+    setSoundEnabled(next);
+    setSoundOn(next);
+  }
 
   async function handleLogout() {
     await logout();
@@ -57,7 +94,7 @@ export default function AppShell() {
           <span className="text-breach-accent text-sm font-black tracking-tight">BREACH</span>
           <span className="text-breach-text text-sm font-black tracking-tight">REPLAY</span>
         </div>
-        <div className="w-6" aria-hidden="true" />
+        <SoundToggle compact enabled={soundOn} onToggle={handleSoundToggle} />
       </div>
 
       {/* Backdrop — mobile only, dismisses the drawer on tap outside it */}
@@ -163,6 +200,8 @@ export default function AppShell() {
               <span className="font-medium">{label}</span>
             </NavLink>
           ))}
+
+          <SoundToggle enabled={soundOn} onToggle={handleSoundToggle} />
 
           {/* User info + logout */}
           <NavLink
