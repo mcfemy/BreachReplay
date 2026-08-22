@@ -50,12 +50,28 @@ export default {
           "30%": { boxShadow: "0 0 32px rgba(34, 197, 94, 0.55)" },
           "100%": { boxShadow: "0 0 0 rgba(34, 197, 94, 0)" },
         },
+        "infect-pulse": {
+          from: { strokeDashoffset: "100" },
+          to: { strokeDashoffset: "-14" },
+        },
+        "contain-ring": {
+          "0%": { opacity: "0.9", transform: "scale(1)" },
+          "100%": { opacity: "0", transform: "scale(1.85)" },
+        },
+        "node-shake": {
+          "0%, 100%": { transform: "translateX(0)" },
+          "25%": { transform: "translateX(-2px)" },
+          "75%": { transform: "translateX(2px)" },
+        },
       },
       animation: {
         "bounce-in": "bounce-in 450ms cubic-bezier(0.34, 1.56, 0.64, 1)",
         "host-flash": "host-flash 1000ms ease-out",
         "impact-flash": "impact-flash 900ms ease-out",
         "contained-glow": "contained-glow 1400ms ease-out",
+        "infect-pulse": "infect-pulse 700ms linear forwards",
+        "contain-ring": "contain-ring 150ms ease-out forwards",
+        "node-shake": "node-shake 120ms ease-in-out",
       },
     },
   },

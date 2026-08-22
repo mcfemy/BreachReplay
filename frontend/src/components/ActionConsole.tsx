@@ -21,6 +21,8 @@ import {
   isUnknownHost,
 } from "../lib/useRunSocket";
 import { playChime, playTick, playThud } from "../lib/sound";
+import { appendFeedLines, type FeedLine } from "../lib/runFeed";
+import AlertFeed from "./AlertFeed";
 
 /**
  * Phase 2 Item 5 — the action console: 8 verb chips + cost labels, targets
@@ -161,6 +163,13 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   const [idleNudgeVisible, setIdleNudgeVisible] = useState(false);
   const lastActionAtRef = useRef(0);
   const idleNudgedThisStretchRef = useRef(false);
+  const [feedLines, setFeedLines] = useState<FeedLine[]>([]);
+  const feedPrimedRef = useRef(false);
+  const prevStagesFiredRef = useRef(0);
+  const prevHostsRef = useRef<HostSummary[]>([]);
+  const prevLastDeltaRef = useRef<unknown>(null);
+  const elapsedForFeedRef = useRef(0);
+  elapsedForFeedRef.current = run.elapsedSeconds;
 
   // Guided first-run pre-brief — shows only when this account has never seen it.
   const [showPreBrief, setShowPreBrief] = useState(() => user ? !user.has_seen_console_intro : false);
@@ -334,6 +343,33 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     setIdleNudgeVisible(false);
   }, [run.lastDelta]);
 
+  // Incident feed — client-side rendering of events the socket already
+  // delivered (stage.advance, host isolate/compromise, lastDelta IOCs).
+  // Primed on first snapshot so a reconnect/resync doesn't dump history
+  // as if it just happened.
+  useEffect(() => {
+    if (!feedPrimedRef.current) {
+      feedPrimedRef.current = true;
+      prevStagesFiredRef.current = run.stagesFired;
+      prevHostsRef.current = run.hosts;
+      prevLastDeltaRef.current = run.lastDelta;
+      return;
+    }
+    const added = appendFeedLines({
+      prevStagesFired: prevStagesFiredRef.current,
+      stagesFired: run.stagesFired,
+      prevHosts: prevHostsRef.current,
+      hosts: run.hosts,
+      lastDeltaChanged: run.lastDelta !== prevLastDeltaRef.current,
+      lastDelta: run.lastDelta,
+      elapsedSeconds: elapsedForFeedRef.current,
+    });
+    prevStagesFiredRef.current = run.stagesFired;
+    prevHostsRef.current = run.hosts;
+    prevLastDeltaRef.current = run.lastDelta;
+    if (added.length) setFeedLines((prev) => [...prev, ...added].slice(-40));
+  }, [run.stagesFired, run.hosts, run.lastDelta]);
+
   const IDLE_NUDGE_THRESHOLD_MS = 25_000;
 
   useEffect(() => {
@@ -486,6 +522,8 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
           Contain the breach before the attacker reaches its final target.
         </p>
       </div>
+
+      <AlertFeed lines={feedLines} />
 
       {run.error && (
         <div className="shrink-0 px-4 py-2 text-xs text-bleed bg-bleed/10 border-b border-bleed/30">

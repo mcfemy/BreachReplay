@@ -20,3 +20,12 @@ body {
   background: #374151;
   border-radius: 3px;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-infect-pulse,
+  .animate-contain-ring,
+  .animate-node-shake,
+  .animate-ping {
+    animation: none !important;
+  }
+}

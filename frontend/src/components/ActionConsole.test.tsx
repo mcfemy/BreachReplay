@@ -315,6 +315,67 @@ describe("ActionConsole", () => {
       expect(playChime).not.toHaveBeenCalled();
     });
   });
+
+  describe("incident feed", () => {
+    beforeEach(() => {
+      window.matchMedia = ((query: string) =>
+        ({
+          matches: query.includes("prefers-reduced-motion"),
+          media: query,
+          onchange: null,
+          addListener: () => {},
+          removeListener: () => {},
+          addEventListener: () => {},
+          removeEventListener: () => {},
+          dispatchEvent: () => false,
+        }) as unknown as MediaQueryList);
+    });
+
+    it("does not dump the initial snapshot as live events", () => {
+      vi.mocked(useRunSocket).mockReturnValue(
+        baseRunState({
+          stagesFired: 1,
+          hosts: [
+            {
+              id: "h1",
+              hostname: "CORP-WKS-22",
+              role: "workstation",
+              network_segment_id: "lan",
+              compromise_level: "foothold",
+              isolated: true,
+            },
+          ],
+        }),
+      );
+      render(<ActionConsole runId="run-1" />);
+      expect(screen.queryByTestId("feed-line")).not.toBeInTheDocument();
+    });
+
+    it("renders a lateral-movement line when stagesFired increases", () => {
+      const { rerender } = render(<ActionConsole runId="run-1" />);
+      vi.mocked(useRunSocket).mockReturnValue(baseRunState({ stagesFired: 1 }));
+      rerender(<ActionConsole runId="run-1" />);
+      expect(screen.getByTestId("feed-line")).toHaveTextContent("Lateral movement detected.");
+    });
+
+    it("renders an isolate line for a known host as the run progresses", () => {
+      const host = {
+        id: "h1",
+        hostname: "CORP-WKS-22",
+        role: "workstation",
+        network_segment_id: "lan",
+        compromise_level: "none" as const,
+        isolated: false,
+      };
+      vi.mocked(useRunSocket).mockReturnValue(baseRunState({ hosts: [host] }));
+      const { rerender } = render(<ActionConsole runId="run-1" />);
+      vi.mocked(useRunSocket).mockReturnValue(
+        baseRunState({ hosts: [{ ...host, isolated: true }] }),
+      );
+      rerender(<ActionConsole runId="run-1" />);
+      expect(screen.getByTestId("feed-line")).toHaveTextContent("CORP-WKS-22 isolated.");
+    });
+  });
 });
 
 function stubRunEnd(outcome: RunEndSummary["outcome"]): RunEndSummary {
