@@ -17,18 +17,23 @@ to change for that.
 
 Public share links (opaque token, never a raw run_id) live on this same
 router, mirroring Arena:
-  POST /action-runs/{id}/share              — auth, owner-only, terminal row
-  GET  /action-runs/public/replay/{token}   — no auth, redacted DTO only
+  POST /action-runs/{id}/share                    — auth, owner-only, mints token + text card
+  GET  /action-runs/public/replay/{token}         — no auth, redacted DTO
+  GET  /action-runs/public/replay/{token}/card.png — no auth, Pillow OG image
+  GET  /action-runs/public/unfurl/{token}         — no auth, crawler HTML with og:image
 """
+import html
 import secrets
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.security import get_current_user
 from app.db.session import get_db
 from app.models.action_run import ActionRun
@@ -38,9 +43,10 @@ from app.services import action_engine
 from app.services.action_run_share import (
     SHARE_URL_PREFIX,
     SHAREABLE_MODES,
-    build_public_replay_dto,
-    public_player_label,
+    resolve_public_replay,
+    share_card_extras,
 )
+from app.services.action_run_share_card import build_share_card_text, render_share_card_png
 from app.services.action_run_store import CAP_SECONDS_BY_MODE, action_run_store
 
 router = APIRouter(prefix="/action-runs", tags=["action-runs"])
@@ -104,8 +110,31 @@ async def create_action_run(
 # final_org_state_cache rather than calling replay() on a crawled endpoint).
 
 
-def _share_response(share_token: str) -> dict:
-    return {"share_token": share_token, "share_url_path": f"{SHARE_URL_PREFIX}/{share_token}"}
+async def _share_response(db: AsyncSession, action_run, share_token: str) -> dict:
+    extras = await share_card_extras(db, action_run)
+    scenario_title = ""
+    title = await db.scalar(select(Scenario.title).where(Scenario.id == action_run.scenario_id))
+    if title:
+        scenario_title = title
+    return {
+        "share_token": share_token,
+        "share_url_path": f"{SHARE_URL_PREFIX}/{share_token}",
+        "share_card": build_share_card_text(
+            scenario_title=scenario_title,
+            outcome=action_run.outcome,
+            score=action_run.total_score,
+            duration_seconds=action_run.duration_seconds,
+            share_token=share_token,
+            mode=action_run.mode,
+            challenge_number=extras["challenge_number"],
+            streak=extras["streak"],
+        ),
+    }
+
+
+def _og_image_url(share_token: str) -> str:
+    origin = settings.FRONTEND_URL.rstrip("/")
+    return f"{origin}/api/v1/action-runs/public/replay/{share_token}/card.png"
 
 
 @router.post("/{run_id}/share")
@@ -133,7 +162,7 @@ async def share_action_run(
         raise HTTPException(status_code=404, detail="Run not found")
 
     if action_run.share_token:
-        return _share_response(action_run.share_token)
+        return await _share_response(db, action_run, action_run.share_token)
 
     locked_result = await db.execute(
         select(ActionRun).where(ActionRun.id == run_id).with_for_update()
@@ -142,7 +171,7 @@ async def share_action_run(
     if action_run is None:
         raise HTTPException(status_code=404, detail="Run not found")
     if action_run.share_token:
-        return _share_response(action_run.share_token)
+        return await _share_response(db, action_run, action_run.share_token)
 
     # secrets.token_urlsafe(16) — same mint as arena share_token. Column is
     # unique; retry a handful of times on IntegrityError as defense-in-depth
@@ -162,11 +191,70 @@ async def share_action_run(
             if action_run is None:
                 raise HTTPException(status_code=404, detail="Run not found")
             if action_run.share_token:
-                return _share_response(action_run.share_token)
+                return await _share_response(db, action_run, action_run.share_token)
     else:
         raise HTTPException(status_code=500, detail="Could not generate a unique share token")
 
-    return _share_response(action_run.share_token)
+    return await _share_response(db, action_run, action_run.share_token)
+
+
+@router.get("/public/replay/{share_token}/card.png")
+async def get_public_share_card_png(
+    share_token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """OG image for `/r/{token}`. Built from the same locked DTO as the
+    JSON GET — never from seed / action_log / a poisoned snapshot's extra
+    keys. Invalid tokens 404 identically to the JSON route."""
+    dto = await resolve_public_replay(db, share_token)
+    if dto is None:
+        raise HTTPException(status_code=404, detail="Replay not found")
+    png = render_share_card_png(dto)
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+@router.get("/public/unfurl/{share_token}", response_class=HTMLResponse)
+async def get_public_share_unfurl(
+    share_token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Crawler-facing HTML (Slack/iMessage/Twitter). nginx rewrites bot
+    hits on `/r/{token}` here so og:image is in the first response, not
+    only in the SPA's JS-set meta tags. 404s the same as the JSON GET."""
+    dto = await resolve_public_replay(db, share_token)
+    if dto is None:
+        raise HTTPException(status_code=404, detail="Replay not found")
+    title = html.escape(f"{dto['scenario_title']} — {dto['outcome']}")
+    description = html.escape(
+        f"{dto['score']:,} pts · {dto['duration_seconds']}s · {dto['mode']}"
+    )
+    image = html.escape(_og_image_url(share_token))
+    page = html.escape(f"{settings.FRONTEND_URL.rstrip('/')}{SHARE_URL_PREFIX}/{share_token}")
+    return HTMLResponse(
+        f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>{title}</title>
+<meta name="description" content="{description}"/>
+<meta property="og:title" content="{title}"/>
+<meta property="og:description" content="{description}"/>
+<meta property="og:type" content="website"/>
+<meta property="og:image" content="{image}"/>
+<meta property="og:url" content="{page}"/>
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:title" content="{title}"/>
+<meta name="twitter:description" content="{description}"/>
+<meta name="twitter:image" content="{image}"/>
+<link rel="canonical" href="{page}"/>
+</head>
+<body><a href="{page}">Open replay</a></body>
+</html>"""
+    )
 
 
 @router.get("/public/replay/{share_token}")
@@ -183,31 +271,8 @@ async def get_public_action_replay(
     Unauthenticated and currently un-rate-limited, same note as Arena's
     public GET: apply slowapi if this sees crawl volume.
     """
-    result = await db.execute(select(ActionRun).where(ActionRun.share_token == share_token))
-    action_run = result.scalar_one_or_none()
-    if action_run is None:
-        raise HTTPException(status_code=404, detail="Replay not found")
-
-    scenario_title = ""
-    scenario_result = await db.execute(select(Scenario.title).where(Scenario.id == action_run.scenario_id))
-    title_row = scenario_result.scalar_one_or_none()
-    if title_row:
-        scenario_title = title_row
-
-    player_user = None
-    if action_run.user_id:
-        user_result = await db.execute(select(User).where(User.id == action_run.user_id))
-        player_user = user_result.scalar_one_or_none()
-
-    dto = build_public_replay_dto(
-        action_run,
-        scenario_title=scenario_title,
-        player_label=public_player_label(player_user),
-    )
+    dto = await resolve_public_replay(db, share_token)
     if dto is None:
-        # Non-shareable row that somehow has a token (teaser, missing
-        # snapshot) — identical 404 to an unknown token, never a 400 that
-        # would confirm the token was real.
         raise HTTPException(status_code=404, detail="Replay not found")
     return dto
 

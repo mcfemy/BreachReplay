@@ -15,6 +15,12 @@ onto ActionRun.public_snapshot at finalize.
 """
 from typing import Any, Optional
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.action_run import ActionRun
+from app.models.daily_challenge import DailyChallenge, UserStreak
+from app.models.scenario import Scenario
 from app.models.user import User
 from app.services import verb_engine
 from app.services.technique_dossier import TECHNIQUE_DOSSIER
@@ -190,3 +196,52 @@ def build_public_replay_dto(
         "edges": edges,
         "techniques_encountered": techniques,
     }
+
+
+async def resolve_public_replay(db: AsyncSession, share_token: str) -> Optional[dict]:
+    """Load a shareable run and return the locked public DTO, or None.
+    Used by the JSON GET, the PNG card, and the crawler unfurl HTML so
+    those three paths cannot drift onto a less-redacted builder."""
+    result = await db.execute(select(ActionRun).where(ActionRun.share_token == share_token))
+    action_run = result.scalar_one_or_none()
+    if action_run is None:
+        return None
+
+    scenario_title = ""
+    scenario_result = await db.execute(select(Scenario.title).where(Scenario.id == action_run.scenario_id))
+    title_row = scenario_result.scalar_one_or_none()
+    if title_row:
+        scenario_title = title_row
+
+    player_user = None
+    if action_run.user_id:
+        user_result = await db.execute(select(User).where(User.id == action_run.user_id))
+        player_user = user_result.scalar_one_or_none()
+
+    return build_public_replay_dto(
+        action_run,
+        scenario_title=scenario_title,
+        player_label=public_player_label(player_user),
+    )
+
+
+async def share_card_extras(db: AsyncSession, action_run) -> dict:
+    """Authenticated-mint extras that are NOT on the public DTO: Daily
+    challenge number and streak. Scenario runs return Nones."""
+    challenge_number = None
+    streak = None
+    if action_run.mode == "daily" and action_run.daily_challenge_id:
+        number = await db.scalar(
+            select(DailyChallenge.challenge_number).where(
+                DailyChallenge.id == action_run.daily_challenge_id
+            )
+        )
+        if isinstance(number, int):
+            challenge_number = number
+    if action_run.mode == "daily" and action_run.user_id:
+        current = await db.scalar(
+            select(UserStreak.current_streak).where(UserStreak.user_id == action_run.user_id)
+        )
+        if isinstance(current, int):
+            streak = current
+    return {"challenge_number": challenge_number, "streak": streak}

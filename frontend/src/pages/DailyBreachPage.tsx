@@ -523,12 +523,18 @@ export default function DailyBreachPage() {
     qc.invalidateQueries({ queryKey: ["daily-action-leaderboard", challenge?.id] });
   }, [qc, challenge?.id]);
 
-  const handleShare = useCallback(() => {
+  const handleShare = useCallback(async () => {
     if (!challenge || !result) return;
-    navigator.clipboard.writeText(buildActionModeShareCard(challenge, result)).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2500);
-    });
+    try {
+      const { data } = await axiosInstance.post<{ share_card: string }>(
+        `/action-runs/${result.action_run_id}/share`,
+      );
+      await navigator.clipboard.writeText(data.share_card);
+    } catch {
+      await navigator.clipboard.writeText(buildActionModeShareCard(challenge, result));
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
   }, [result, challenge]);
 
   if (isLoading) {

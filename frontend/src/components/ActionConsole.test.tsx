@@ -316,15 +316,34 @@ describe("ActionConsole", () => {
       expect(playChime).not.toHaveBeenCalled();
     });
 
-    it("mints a /r/ share link from the debrief without putting the run id in the URL", async () => {
+    it("mints a /r/ share card from the debrief and copies the text, not the run id", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText },
+      });
+      const shareCard = [
+        "🔐 BreachReplay",
+        "Colonial Pipeline Replay",
+        "Score: 800 — CONTAINED",
+        "Time: 1:30",
+        "breachreplay.com/r/opaque-token",
+      ].join("\n");
       vi.mocked(axiosInstance.post).mockResolvedValue({
-        data: { share_token: "opaque-token", share_url_path: "/r/opaque-token" },
+        data: {
+          share_token: "opaque-token",
+          share_url_path: "/r/opaque-token",
+          share_card: shareCard,
+        },
       });
       vi.mocked(useRunSocket).mockReturnValue(baseRunState({ runEnd: stubRunEnd("contained") }));
       render(<ActionConsole runId="run-1" />);
       await userEvent.click(screen.getByRole("button", { name: /share this run/i }));
       expect(axiosInstance.post).toHaveBeenCalledWith("/action-runs/run-1/share");
       expect(await screen.findByText(/\/r\/opaque-token/)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: /copy share card/i }));
+      expect(writeText).toHaveBeenCalledWith(shareCard);
+      expect(writeText.mock.calls[0][0]).not.toContain("run-1");
     });
   });
 
