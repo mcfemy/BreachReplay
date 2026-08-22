@@ -1,7 +1,7 @@
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 
 from app.core.config import settings
 from app.models import Base
@@ -13,6 +13,32 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+
+
+def _widen_alembic_version_num(connection) -> None:
+    """Alembic's default `alembic_version.version_num` is VARCHAR(32).
+    `0038_scenario_notification_matrix` is 33 chars; stamping it on
+    Postgres raises StringDataRightTruncation and rolls back the whole
+    revision (hit on prod 2026-08-22). Widen once; no-op on sqlite, if
+    the table does not exist yet, or if the column is already >= 64."""
+    if connection.dialect.name != "postgresql":
+        return
+    connection.execute(text(
+        """
+        DO $$
+        BEGIN
+          IF EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'alembic_version'
+              AND column_name = 'version_num'
+              AND character_maximum_length IS NOT NULL
+              AND character_maximum_length < 64
+          ) THEN
+            ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(64);
+          END IF;
+        END $$;
+        """
+    ))
 
 
 def run_migrations_offline() -> None:
@@ -36,6 +62,7 @@ def run_migrations_online() -> None:
     with connectable.connect() as connection:
         context.configure(connection=connection, target_metadata=target_metadata)
         with context.begin_transaction():
+            _widen_alembic_version_num(connection)
             context.run_migrations()
 
 

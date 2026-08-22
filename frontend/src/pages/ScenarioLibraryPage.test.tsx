@@ -31,6 +31,20 @@ const SCENARIOS = [
   },
 ];
 
+// Distinct from SCENARIOS so a ticker click cannot be confused with the
+// grid card's "Launch Simulation" button (same POST /action-runs, different
+// scenario_id). Shape matches FreshIncidentTicker's RecentScenario.
+const RECENT = [
+  {
+    id: "scn-recent-1",
+    title: "Fresh Wire Transfer Fraud",
+    source_type: "cisa",
+    source_reference: null,
+    industry_vertical: "finance",
+    created_at: "2026-08-22T00:00:00Z",
+  },
+];
+
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -45,7 +59,7 @@ function renderPage() {
 describe("ScenarioLibraryPage", () => {
   beforeEach(() => {
     vi.mocked(api.get).mockResolvedValue(SCENARIOS);
-    vi.mocked(axiosInstance.get).mockResolvedValue({ data: [] }); // /scenarios/recent
+    vi.mocked(axiosInstance.get).mockResolvedValue({ data: RECENT }); // /scenarios/recent
   });
 
   it("loads and renders the scenario list", async () => {
@@ -62,6 +76,22 @@ describe("ScenarioLibraryPage", () => {
 
     await waitFor(() =>
       expect(api.post).toHaveBeenCalledWith("/action-runs", { scenario_id: "scn-1" }),
+    );
+  });
+
+  it("launches a ticker scenario via POST /action-runs on click", async () => {
+    vi.mocked(api.post).mockResolvedValue({ run_id: "run-ticker-1" });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByTitle("Play Fresh Wire Transfer Fraud"));
+
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith("/action-runs", { scenario_id: "scn-recent-1" }),
+    );
+    expect(api.post).not.toHaveBeenCalledWith(
+      "/sessions",
+      expect.objectContaining({ mode: "solo" }),
     );
   });
 });

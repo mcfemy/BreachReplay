@@ -100,6 +100,26 @@ gameplay-balance change to what `scan_network` actually returns in
 only restyles the unknown tier. Revisit alongside Phase 5's broader tone
 pass.
 
+## Action Console mastery signal — per-stage correctness at finalize() — DEFERRED
+
+**Deferred / future. Not started.** Capture per-stage correctness at
+`finalize()`, persist separately from `TechniqueEncounter`, feed into
+`/mastery/me` without merging incompatible `is_correct` /
+`encounter_count` semantics.
+
+Found while investigating why GET `/mastery/me` is empty for Action
+Console players after mid-July Item 5: `compute_user_mastery` still reads
+`SessionDecision.is_correct` (org tabletop) and `RedTeamMove.succeeded`.
+`technique_encounters` (PR #31) is exposure-only — a stage fired,
+regardless of containment — and must not be folded into
+`attempts`/`correct`/`accuracy_pct`. Pointing `/mastery/me` at encounters,
+or naively merging the two, would break Daily Drill weakest-technique
+weighting, certs (70% average mastery), admin team skill gaps, and the
+profile MasteryBar. Keep dossier = exposure, mastery = graded attempts. A
+future Action Console mastery feed needs its own correctness signal (e.g.
+whether that stage's host was contained when it fired), not a reuse of
+`TechniqueEncounter`.
+
 ## Frontend test coverage — no runner configured — FIXED
 
 **Fixed on branch `frontend-test-infra`.** Added Vitest + React Testing

@@ -58,18 +58,15 @@ export default function FreshIncidentTicker() {
 
   // Deep-link behavior: this app has no standalone /scenario/:id detail
   // route (scenarios are only ever browsed as cards in ScenarioLibraryPage's
-  // grid, then launched directly into a session). So the truest "deep-link
-  // into the scenario" this app supports is the same action the library
-  // cards' "Launch Simulation" button performs — start a solo session and
-  // jump straight into it. That keeps the ticker's click behavior consistent
-  // with the rest of the page rather than inventing a new navigation target.
+  // grid, then launched directly into a run). Match the library cards'
+  // "Launch Simulation" button (Phase 2 Item 5): POST /action-runs and
+  // jump to /run/:run_id — not the pre-Item-5 org-tabletop
+  // POST /sessions?mode=solo path, which minted SimulationSession rows
+  // that no longer receive play traffic.
   async function launch(scenarioId: string) {
     try {
-      const session = await api.post<{ id: string }>("/sessions", {
-        scenario_id: scenarioId,
-        mode: "solo",
-      });
-      navigate(`/session/${session.id}/intro`);
+      const run = await api.post<{ run_id: string }>("/action-runs", { scenario_id: scenarioId });
+      navigate(`/run/${run.run_id}`);
     } catch (err: any) {
       alert(err.message);
     }
