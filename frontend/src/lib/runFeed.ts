@@ -1,10 +1,16 @@
-import { isUnknownHost, type HostSummary } from "./useRunSocket";
+import { isUnknownHost, type HostSummary, type KnownHostSummary } from "./useRunSocket";
 
 /**
  * Client-side incident-feed lines derived from run state the socket
- * already sends. No new backend events — leak-safe: unknown hosts are
- * never named, and stage advances are a generic "lateral movement" line
- * (the server redacts stage names/targets from stage.advance).
+ * already sends. No new backend events.
+ *
+ * Leak-safety: the only host names this module interpolates come from
+ * known-tier `HostSummary`s — the client equivalent of
+ * `verb_engine.revealed_host_ids`. Unknown silhouettes (`visibility:
+ * "unknown"`, not yet scan_network'd) are skipped, and IOC lines are
+ * dropped unless their `host_id` is in that same known set. Stage
+ * advances stay a generic "lateral movement" line (the server already
+ * redacts stage names/targets from stage.advance).
  */
 
 export interface FeedLine {
@@ -19,6 +25,15 @@ export function formatFeedClock(elapsedSeconds: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+/** Same boundary as the map/API payload: known-tier iff not unknown. */
+function isRevealedHost(h: HostSummary): h is KnownHostSummary {
+  return !isUnknownHost(h);
+}
+
+function revealedHostIds(hosts: HostSummary[]): Set<string> {
+  return new Set(hosts.filter(isRevealedHost).map((h) => h.id));
+}
+
 export function appendFeedLines(args: {
   prevStagesFired: number;
   stagesFired: number;
@@ -30,6 +45,7 @@ export function appendFeedLines(args: {
 }): FeedLine[] {
   const ts = formatFeedClock(args.elapsedSeconds);
   const next: FeedLine[] = [];
+  const revealedIds = revealedHostIds(args.hosts);
 
   if (args.stagesFired > args.prevStagesFired) {
     next.push({
@@ -41,7 +57,7 @@ export function appendFeedLines(args: {
 
   const prevById = new Map(args.prevHosts.map((h) => [h.id, h]));
   for (const h of args.hosts) {
-    if (isUnknownHost(h)) continue;
+    if (!isRevealedHost(h)) continue;
     const before = prevById.get(h.id);
     if (h.isolated && (!before || isUnknownHost(before) || !before.isolated)) {
       next.push({
@@ -50,7 +66,7 @@ export function appendFeedLines(args: {
         text: `${h.hostname} isolated.`,
       });
     }
-    const beforeLevel = before && !isUnknownHost(before) ? before.compromise_level : "none";
+    const beforeLevel = before && isRevealedHost(before) ? before.compromise_level : "none";
     if (h.compromise_level !== "none" && h.compromise_level !== beforeLevel) {
       const fully = h.compromise_level === "admin" || h.compromise_level === "domain_admin";
       next.push({
@@ -68,8 +84,11 @@ export function appendFeedLines(args: {
     if (Array.isArray(iocs)) {
       for (const ioc of iocs) {
         if (!ioc || typeof ioc !== "object") continue;
-        const rec = ioc as { rule_id?: unknown; description?: unknown };
+        const rec = ioc as { rule_id?: unknown; description?: unknown; host_id?: unknown };
         if (typeof rec.description !== "string" || !rec.description) continue;
+        // Same revealed_host_ids boundary as the map: an IOC whose host
+        // is still an unknown silhouette must not become a feed line.
+        if (typeof rec.host_id !== "string" || !revealedIds.has(rec.host_id)) continue;
         const iocId = typeof rec.rule_id === "string" ? rec.rule_id : rec.description;
         next.push({ id: `ioc-${iocId}`, ts, text: rec.description });
       }
@@ -94,3 +113,4 @@ export function appendFeedLines(args: {
 
   return next;
 }
+
