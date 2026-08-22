@@ -174,7 +174,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   const [seenCoachmarks, setSeenCoachmarks] = useState<Set<Verb>>(
     () => new Set((user?.seen_verb_coachmarks ?? []) as Verb[]),
   );
-  const chipRefs = useRef<Partial<Record<Verb, HTMLButtonElement>>>({});
+  const chipRefs = useRef<Partial<Record<Verb, HTMLButtonElement | null>>>({});
 
   function handleDismissPreBrief() {
     setShowPreBrief(false);
