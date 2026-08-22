@@ -20,6 +20,7 @@ import {
   type RunEndSummary,
   isUnknownHost,
 } from "../lib/useRunSocket";
+import { playChime, playTick, playThud } from "../lib/sound";
 
 /**
  * Phase 2 Item 5 — the action console: 8 verb chips + cost labels, targets
@@ -175,6 +176,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     () => new Set((user?.seen_verb_coachmarks ?? []) as Verb[]),
   );
   const chipRefs = useRef<Partial<Record<Verb, HTMLButtonElement | null>>>({});
+  const pressureTickFired = useRef(false);
 
   function handleDismissPreBrief() {
     setShowPreBrief(false);
@@ -197,10 +199,22 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     if (run.runEnd) {
       setXpVisible(run.runEnd.xp_awarded > 0);
       onComplete?.(run.runEnd);
+      if (run.runEnd.outcome === "contained" || run.runEnd.outcome === "contained_at_cost") {
+        playChime();
+      }
     }
     // Fire once per completed run — run.runEnd only ever transitions null -> summary.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.runEnd]);
+
+  useEffect(() => {
+    if (run.capSeconds <= 0 || pressureTickFired.current) return;
+    const remaining = Math.max(0, run.capSeconds - run.attackerClockSeconds);
+    if (remaining <= 60) {
+      pressureTickFired.current = true;
+      playTick();
+    }
+  }, [run.capSeconds, run.attackerClockSeconds]);
 
   // The core-loop fix: a verb's result must be the immediate visible
   // outcome of paying its cost, not something the player has to already
@@ -248,6 +262,10 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
           ? { text: `Notified ${delta.party_name} — warranted.`, good: true }
           : { text: `Notified ${delta.party_name} — not warranted.`, good: false },
       );
+    }
+
+    if (delta.isolated === true || delta.correct === true) {
+      playThud();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.lastDelta]);
