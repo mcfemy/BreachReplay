@@ -54,7 +54,18 @@ gap is pre-existing and untouched by Phase 2 (per the org-tabletop
 isolation rule — see `REVIEW_CRITERIA.md`); fixing it is a separate,
 future change, not bundled into Phase 2 item work.
 
-## Fog-of-war tone pass (Phase 5)
+## Fog-of-war tone pass (Phase 5) — two-tier unknown/known SHIPPED
+
+**Shipped — PR #35, merged `88ca4bc` (2026-08-22).** Pre-scan hosts are no
+longer absent from `run.hosts`. `earned_state_snapshot` sends every
+compiled host as an unknown silhouette (`id` + map position +
+`visibility: "unknown"`), keyed off the existing `revealed_host_ids`
+accumulator — no parallel visibility tracker. `scan_network`'s live delta
+is unchanged: the full `_host_summary` node list (hostname/role/segment/
+compromise/isolated) in one shot. Unknown hosts are visible but not
+clickable. Left the original write-up below as-is for context on how this
+was found. The remaining, explicitly deferred work is a separate entry
+immediately below (Tier 0).
 
 Found during Item 5 planning. STATE.md's Item 5 line says
 "unexamined hosts render dim/unknown" — Item 5 implements this as
@@ -70,6 +81,24 @@ state*, not *host existence*. Revisiting this means changing what
 earns in `verb_engine.py` — that's a gameplay-balance decision, not a UI
 one, and explicitly out of scope for Item 5. Revisit alongside Phase 5's
 broader tone pass.
+
+## Fog-of-war Tier 0 — split `scan_network` into an existence reveal — DEFERRED
+
+**Deferred / future. Not started.** Distinct from the two-tier
+unknown/known snapshot that shipped in PR #35 (entry above). #35's
+unknown silhouettes still sit behind the existing resync/snapshot path;
+`scan_network` still returns every host's full field set in one shot.
+
+This item is the original "existence visible before `scan_network` fires"
+pre-reveal that was explicitly out of scope for #35: a **Tier 0** at run
+start, before any verb fires — dim silhouettes already on the map as a
+free (or cheaper) initial reveal of *existence/topology*, with
+`scan_network`'s current all-fields response split into partial tiers so
+that verb earns compromise/identity rather than host existence. That is a
+gameplay-balance change to what `scan_network` actually returns in
+`verb_engine.py`, not a UI one. Do not bundle it into a follow-up that
+only restyles the unknown tier. Revisit alongside Phase 5's broader tone
+pass.
 
 ## Frontend test coverage — no runner configured — FIXED
 
@@ -220,7 +249,8 @@ genuinely point at real map nodes; (2) a real-time visual cue (a distinct
 highlight/pulse) on the exact host a decision-gate stage compromises at the
 moment it fires, teaching the player by watching rather than reading; (3)
 something else entirely. Revisit alongside Phase 5's broader tone pass (see
-the fog-of-war entry above, which is adjacent).
+the fog-of-war Tier 0 entry above, which is the remaining adjacent work;
+the two-tier unknown/known snapshot itself has shipped).
 
 ## `user_streaks` idempotency guard doesn't survive same-day test reruns
 
