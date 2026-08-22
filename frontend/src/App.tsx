@@ -28,6 +28,7 @@ const LeaderboardPage = lazy(() => import("./pages/LeaderboardPage"));
 const DossierPage = lazy(() => import("./pages/DossierPage"));
 const CertificatePage = lazy(() => import("./pages/CertificatePage"));
 const PublicReplayPage = lazy(() => import("./pages/PublicReplayPage"));
+const PublicActionReplayPage = lazy(() => import("./pages/PublicActionReplayPage"));
 const GlobalIndexPage = lazy(() => import("./pages/GlobalIndexPage"));
 const ArenaEventsPage = lazy(() => import("./pages/ArenaEventsPage"));
 const ArenaEventDetailPage = lazy(() => import("./pages/ArenaEventDetailPage"));
@@ -79,6 +80,7 @@ export default function App() {
             <Route path="/reset-password" element={<ResetPasswordPage />} />
             <Route path="/cert/:token" element={<CertificatePage />} />
             <Route path="/replay/:shareToken" element={<PublicReplayPage />} />
+            <Route path="/r/:shareToken" element={<PublicActionReplayPage />} />
             <Route path="/global-index" element={<GlobalIndexPage />} />
             <Route path="/arena/events" element={<ArenaEventsPage />} />
             <Route path="/arena/events/:eventId" element={<ArenaEventDetailPage />} />

@@ -41,6 +41,7 @@ from app.models.scenario import Scenario
 from app.models.technique_encounter import TechniqueEncounter
 from app.services import verb_engine
 from app.services.action_engine import CompiledRun
+from app.services.action_run_share import freeze_public_snapshot
 from app.services.technique_dossier import TECHNIQUE_DOSSIER
 from app.services.xp_service import award_xp, check_scenario_achievements
 
@@ -227,6 +228,11 @@ class ActionRunStore:
         outcome = forced_outcome or verb_engine.determine_outcome(run_state)
         score_breakdown = verb_engine.compute_score(run_state, outcome, live.cap_seconds)
 
+        # Frozen here, on the authenticated finalize path, so the public
+        # GET never has to compile/replay a seed. Built from the live
+        # RunState (already fog-gated) rather than from the persisted
+        # action_log + seed, which would re-introduce the seed onto a
+        # code path that later gets copied onto the unauthenticated route.
         action_run = ActionRun(
             # Deliberately the SAME id `run_id` has meant since POST
             # /action-runs minted it (the live-store key, the /ws/run/{id}
@@ -250,6 +256,7 @@ class ActionRunStore:
             total_score=score_breakdown["total_score"],
             duration_seconds=run_state.elapsed_seconds,
             outcome=outcome,
+            public_snapshot=freeze_public_snapshot(run_state),
         )
         db.add(action_run)
         await db.flush()  # assigns action_run.id; visible to this same transaction's own queries below
