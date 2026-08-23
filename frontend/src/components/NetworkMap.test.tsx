@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import NetworkMap, { CONTAIN_FLASH_MS, NODE_SHAKE_MS } from "./NetworkMap";
+import NetworkMap, { CONTAIN_FLASH_MS, NODE_SHAKE_MS, NODE_REVEAL_MS } from "./NetworkMap";
+import { colors, unknownNodeFill, nodeStateColor } from "../theme/tokens";
 
 const nodes = [
   { id: "h1", label: "CORP-WKS-22", x: 80, y: 60 },
@@ -40,7 +41,7 @@ describe("NetworkMap", () => {
     expect(screen.queryByRole("button", { name: /CORP-WKS-22/ })).not.toBeInTheDocument();
   });
 
-  it("renders unknown NodeState as an unlabeled silhouette", () => {
+  it("renders unknown NodeState as an unlabeled silhouette with a visible non-void fill", () => {
     render(
       <NetworkMap
         nodes={[{ id: "h1", label: "CORP-WKS-22", x: 80, y: 60 }]}
@@ -51,6 +52,32 @@ describe("NetworkMap", () => {
     expect(screen.getByLabelText("Unknown host")).toBeInTheDocument();
     expect(screen.queryByText("CORP-WKS-22")).not.toBeInTheDocument();
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
+
+    const disc = screen.getByTestId("node-h1").querySelector("circle:last-of-type");
+    expect(disc).toHaveAttribute("fill", unknownNodeFill);
+    expect(disc).not.toHaveAttribute("fill", colors.void);
+    expect(unknownNodeFill.toLowerCase()).not.toBe(colors.void.toLowerCase());
+    expect(disc).toHaveAttribute("stroke", nodeStateColor.unknown);
+    expect(disc).toHaveAttribute("stroke-dasharray", "3 3");
+  });
+
+  it("fits the viewBox to node bounds instead of originating at 0,0", () => {
+    render(
+      <NetworkMap
+        nodes={nodes}
+        edges={[]}
+        nodeStates={{ h1: "unknown", h2: "unknown" }}
+      />,
+    );
+    const svg = screen.getByRole("img", { name: "Network topology map" });
+    const viewBox = svg.getAttribute("viewBox");
+    expect(viewBox).toBeTruthy();
+    const [minX, minY] = (viewBox as string).split(" ").map(Number);
+    // Nodes sit at x=80,y=60 — a 0 0 origin would letterbox empty void
+    // around the grid. The fitted box should start near those coords.
+    expect(minX).toBeGreaterThan(0);
+    expect(minY).toBeGreaterThanOrEqual(0);
+    expect(minX).toBeLessThan(80);
   });
 });
 
@@ -92,6 +119,48 @@ describe("NetworkMap juice", () => {
     expect(pulse).toHaveAttribute("data-to", "h2");
   });
 
+  it("plays a coming-online reveal when unknown becomes known, not an infect-pulse", () => {
+    const { rerender } = render(
+      <NetworkMap
+        nodes={nodes}
+        edges={[]}
+        nodeStates={{ h1: "unknown", h2: "unknown" }}
+      />,
+    );
+    expect(screen.getByTestId("node-h1")).not.toHaveAttribute("data-revealing");
+
+    rerender(
+      <NetworkMap
+        nodes={nodes}
+        edges={edges}
+        nodeStates={{ h1: "pulsing", h2: "clean" }}
+      />,
+    );
+    expect(screen.getByTestId("node-h1")).toHaveAttribute("data-revealing", "true");
+    expect(screen.getByTestId("node-h2")).toHaveAttribute("data-revealing", "true");
+    // Scan-reveal is not infection spreading — bleed-pulse stays off.
+    expect(document.querySelector("[data-spreading]")).not.toBeInTheDocument();
+    expect(document.querySelector("[data-edge-reveal]")).toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(NODE_REVEAL_MS);
+    });
+    expect(screen.getByTestId("node-h1")).not.toHaveAttribute("data-revealing");
+    expect(screen.getByTestId("node-h2")).not.toHaveAttribute("data-revealing");
+  });
+
+  it("reveals unknown → compromised without treating it as a live infect-pulse", () => {
+    const { rerender } = render(
+      <NetworkMap nodes={nodes} edges={edges} nodeStates={{ h1: "unknown", h2: "unknown" }} />,
+    );
+    rerender(
+      <NetworkMap nodes={nodes} edges={edges} nodeStates={{ h1: "compromised", h2: "clean" }} />,
+    );
+    expect(screen.getByTestId("node-h1")).toHaveAttribute("data-revealing", "true");
+    expect(screen.getByTestId("node-h1")).toHaveAttribute("data-shake", "true");
+    expect(document.querySelector("[data-spreading]")).not.toBeInTheDocument();
+  });
+
   it("flashes a contain ring when a node becomes contained", () => {
     const { rerender } = render(
       <NetworkMap nodes={nodes} edges={edges} nodeStates={{ h1: "pulsing", h2: "clean" }} />,
@@ -120,19 +189,20 @@ describe("NetworkMap juice", () => {
     expect(screen.getByTestId("node-h1")).not.toHaveAttribute("data-shake");
   });
 
-  it("skips pulse, ring, and shake when prefers-reduced-motion is set", () => {
+  it("skips pulse, ring, shake, and reveal when prefers-reduced-motion is set", () => {
     stubReduceMotion(true);
     const { rerender } = render(
-      <NetworkMap nodes={nodes} edges={edges} nodeStates={{ h1: "clean", h2: "clean" }} />,
+      <NetworkMap nodes={nodes} edges={edges} nodeStates={{ h1: "unknown", h2: "clean" }} />,
     );
     rerender(
       <NetworkMap
         nodes={nodes}
         edges={edges}
-        nodeStates={{ h1: "compromised", h2: "contained" }}
+        nodeStates={{ h1: "pulsing", h2: "contained" }}
       />,
     );
     expect(document.querySelector("[data-spreading]")).not.toBeInTheDocument();
+    expect(screen.getByTestId("node-h1")).not.toHaveAttribute("data-revealing");
     expect(screen.getByTestId("node-h1")).not.toHaveAttribute("data-shake");
     expect(screen.getByTestId("node-h2")).not.toHaveAttribute("data-contain-flash");
   });

@@ -25,6 +25,9 @@ body {
   .animate-infect-pulse,
   .animate-contain-ring,
   .animate-node-shake,
+  .animate-node-reveal,
+  .animate-reveal-ring,
+  .animate-edge-in,
   .animate-ping {
     animation: none !important;
   }

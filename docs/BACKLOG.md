@@ -57,6 +57,56 @@ clipboard) is the only leftover share-card nicety.
   extension of the Daily text path. One-tap Web Share API / copy-link
   fallback still sits on this item.
 
+## Player-facing moment check — process gap (scan-reveal shipped silent)
+
+Found after the fog-of-war unknown-tier + map-juice work passed leak-safety
+tests, the full frontend/backend suites, and an Opus review, then still
+shipped with the single most important visual moment disabled:
+`NetworkMap` explicitly skipped infect-pulse when `before === "unknown"`,
+so `scan_network` resolving silhouettes to known hosts was silent. Unknown
+nodes also filled with `colors.void`, so the pre-scan map blended into the
+console background. Automated checks were correct about *data* and *not
+crashing*; none of them asked whether the player-facing moment actually
+played.
+
+That is a process gap, not just a code bug. Do not stand up a heavy visual
+QA system to close it. Two lightweight gates would have caught tonight:
+
+1. **Manual playthrough before a juice/fog PR is "done"** (not merely
+   mergeable). For Action Console work that touches the map or feed, the
+   author (or reviewer) actually starts a run and watches:
+   - pre-scan: unknown silhouettes visible against void, unlabeled, no
+     edges
+   - tap Scan Network: nodes come online (reveal ring / scale), edges
+     fade in, names and compromise colors appear — not a pop with no
+     motion
+   - isolate a host: contain ring
+   - a later stage.advance onto a known clean host: infect-pulse along
+     an edge
+   - run end: debrief, not a frozen console
+   If any of those is "I didn't see it," the PR is not done. This is the
+   gate that would have caught the skipped `unknown` transition — a human
+   looking at the scan, which no unit test of `before !== "unknown"` was
+   ever going to fail.
+
+2. **Keep the targeted juice assertions** (the actual automated catch for
+   *this* class of miss): unknown → pulsing/compromised/clean must set
+   `data-revealing`; unknown disc fill must not be `colors.void`;
+   `prefers-reduced-motion` still skips juice. Those live next to
+   `NetworkMap.test.tsx`. Do not require a Playwright screenshot CI job
+   for the SPA. Backend Playwright is already in this stack for CMMC
+   HTML→PDF (`backend/app/services/cmmc_pdf.py`, CI `playwright install
+   chromium`) — it has no Action Console session, no WS, no auth cookie.
+   Driving a logged-in run for pixel diffs would be a new harness. If a
+   later contrast/layout regression needs a picture, a static SVG fixture
+   of the three map states (pre-scan / mid-reveal / post-scan) is enough;
+   do not screenshot the full console in CI unless that fixture starts
+   lying.
+
+**Was / remaining:** the playthrough list above is the safeguard. Not a
+Phase 5 item, not a new workflow file — just "look at the moment before
+you call the juice done."
+
 ## Phase 2.5 — CMMC evidence layer — COMPLETE
 
 Shipped and production-verified 2026-08-07 (spec:

@@ -501,19 +501,21 @@ export function useRunSocket(runId: string) {
     };
   }, [runId]);
 
-  const send = (payload: unknown) => {
+  const send = useCallback((payload: unknown): boolean => {
     if (ws.current?.readyState === WebSocket.OPEN) {
       ws.current.send(JSON.stringify(payload));
+      return true;
     }
-  };
-
-  const submitVerb = useCallback((verb: Verb, target?: string) => {
-    send({ type: "action.submit", verb, target });
+    return false;
   }, []);
 
-  const ping = useCallback(() => {
-    send({ type: "ping" });
-  }, []);
+  const submitVerb = useCallback((verb: Verb, target?: string): boolean => {
+    return send({ type: "action.submit", verb, target });
+  }, [send]);
+
+  const ping = useCallback((): boolean => {
+    return send({ type: "ping" });
+  }, [send]);
 
   return {
     ...state,

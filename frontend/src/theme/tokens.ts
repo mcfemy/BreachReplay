@@ -24,12 +24,19 @@ export const fonts = {
 export type NodeState = "unknown" | "clean" | "pulsing" | "compromised" | "contained";
 
 export const nodeStateColor: Record<NodeState, string> = {
-  unknown: "#3A4550", // silhouette: darker than dim so it doesn't collapse into clean
+  // Stroke for unknown silhouettes — cooler and dimmer than `clean`, but
+  // lifted off void so a dashed disc still reads as a real map node.
+  unknown: "#7D8B99",
   clean: colors.dim,
   pulsing: colors.bleed,
   compromised: colors.bleed,
   contained: colors.contain,
 };
+
+/** Disc fill for unknown nodes. Must not be `colors.void` — that was
+ *  blending silhouettes into the console background. Darker than `panel`
+ *  so a known-clean host still pops relative to a silhouette. */
+export const unknownNodeFill = "#1E2A36";
 
 /** Legend order — every NodeState, so ActionConsole can't silently drop one. */
 export const NODE_STATE_LEGEND: readonly NodeState[] = [

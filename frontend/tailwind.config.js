@@ -63,6 +63,18 @@ export default {
           "25%": { transform: "translateX(-2px)" },
           "75%": { transform: "translateX(2px)" },
         },
+        "node-reveal": {
+          "0%": { opacity: "0.25", transform: "scale(0.55)" },
+          "100%": { opacity: "1", transform: "scale(1)" },
+        },
+        "reveal-ring": {
+          "0%": { opacity: "0.85", transform: "scale(1)" },
+          "100%": { opacity: "0", transform: "scale(2)" },
+        },
+        "edge-in": {
+          from: { opacity: "0" },
+          to: { opacity: "1" },
+        },
       },
       animation: {
         "bounce-in": "bounce-in 450ms cubic-bezier(0.34, 1.56, 0.64, 1)",
@@ -72,6 +84,9 @@ export default {
         "infect-pulse": "infect-pulse 700ms linear forwards",
         "contain-ring": "contain-ring 150ms ease-out forwards",
         "node-shake": "node-shake 120ms ease-in-out",
+        "node-reveal": "node-reveal 420ms ease-out",
+        "reveal-ring": "reveal-ring 420ms ease-out forwards",
+        "edge-in": "edge-in 420ms ease-out",
       },
     },
   },

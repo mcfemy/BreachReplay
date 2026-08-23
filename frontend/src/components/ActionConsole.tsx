@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import NetworkMap, { type NetworkMapNode } from "./NetworkMap";
-import { colors, nodeStateColor, NODE_STATE_LEGEND, type NodeState } from "../theme/tokens";
+import { colors, nodeStateColor, unknownNodeFill, NODE_STATE_LEGEND, type NodeState } from "../theme/tokens";
 import XPToast from "./XPToast";
 import ConsolePreBrief from "./ConsolePreBrief";
 import Coachmark from "./Coachmark";
@@ -149,6 +149,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   const [selectedHostId, setSelectedHostId] = useState<string | null>(null);
   const [xpVisible, setXpVisible] = useState(false);
   const [resultToast, setResultToast] = useState<{ text: string; good: boolean } | null>(null);
+  const [connectionToast, setConnectionToast] = useState<string | null>(null);
   const [toolOutputExpanded, setToolOutputExpanded] = useState(false);
   // nmap specifically streams line-by-line instead of appearing all at
   // once — "as though it's a real exercise" — everything else stays a
@@ -224,6 +225,12 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
       playTick();
     }
   }, [run.capSeconds, run.attackerClockSeconds]);
+
+  useEffect(() => {
+    if (!connectionToast) return;
+    const t = setTimeout(() => setConnectionToast(null), 4500);
+    return () => clearTimeout(t);
+  }, [connectionToast]);
 
   // The core-loop fix: a verb's result must be the immediate visible
   // outcome of paying its cost, not something the player has to already
@@ -403,23 +410,50 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
   // this list.
   const clickableNodeIds = run.hosts.filter((h) => !isUnknownHost(h)).map((h) => h.id);
 
-  // First tap of a verb this account has never seen a coachmark for is
-  // intercepted here — the coachmark explains the control before anything
-  // is submitted or a target-select UI opens; performVerbTap (the original
-  // tap logic) only runs once it's dismissed. Every later tap of that same
-  // verb skips straight to performVerbTap.
+  function showConnectionError() {
+    setConnectionToast("Connection lost — refresh and start a new run to continue.");
+  }
+
+  function trySubmitVerb(verb: Verb, target?: string): boolean {
+    const sent = target !== undefined
+      ? run.submitVerb(verb, target)
+      : run.submitVerb(verb);
+    if (!sent) showConnectionError();
+    return sent;
+  }
+
+  // Same best-effort PATCH pattern as handleDismissPreBrief above.
+  function markCoachmarkSeen(verb: Verb) {
+    const nextSeen = Array.from(new Set([...seenCoachmarks, verb]));
+    setSeenCoachmarks(new Set(nextSeen));
+    axiosInstance
+      .patch("/auth/me", { seen_verb_coachmarks: nextSeen })
+      .then(({ data }) => updateUser({ seen_verb_coachmarks: data.seen_verb_coachmarks }))
+      .catch(() => {
+        // Best-effort — worst case this verb's coachmark shows once more next tap.
+      });
+  }
+
+  // First tap on an unseen verb shows its coachmark AND runs the verb in
+  // the same gesture — the chip stays clickable while the tooltip is up.
+  // A second tap on that same chip only dismisses the tooltip (the verb
+  // already fired on the first tap). "Got it" is the same dismiss-only path.
   function handleChipTap(verb: Verb) {
     if (run.runEnd) return;
-    if (!seenCoachmarks.has(verb)) {
-      setCoachmarkVerb(verb);
+    if (coachmarkVerb === verb) {
+      setCoachmarkVerb(null);
       return;
+    }
+    if (!seenCoachmarks.has(verb)) {
+      markCoachmarkSeen(verb);
+      setCoachmarkVerb(verb);
     }
     performVerbTap(verb);
   }
 
   function performVerbTap(verb: Verb) {
     if (UNTARGETED_VERBS.includes(verb)) {
-      run.submitVerb(verb);
+      trySubmitVerb(verb);
       return;
     }
     // Fallback for a scenario with no authored notification matrix yet
@@ -428,7 +462,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     // case, so the UI must match it: submit immediately instead of
     // opening a party picker with nothing in it.
     if (PARTY_TARGETED_VERBS.includes(verb) && run.notificationParties.length === 0) {
-      run.submitVerb(verb);
+      trySubmitVerb(verb);
       return;
     }
     setSelectedHostId(null);
@@ -436,22 +470,9 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     setTargetVerb(verb);
   }
 
-  // Same best-effort PATCH pattern as handleDismissPreBrief above: update
-  // local state immediately, persist in the background, swallow failure
-  // (worst case this verb's coachmark shows once more next time).
   function handleDismissCoachmark() {
     if (!coachmarkVerb) return;
-    const verb = coachmarkVerb;
-    const nextSeen = Array.from(new Set([...seenCoachmarks, verb]));
     setCoachmarkVerb(null);
-    setSeenCoachmarks(new Set(nextSeen));
-    axiosInstance
-      .patch("/auth/me", { seen_verb_coachmarks: nextSeen })
-      .then(({ data }) => updateUser({ seen_verb_coachmarks: data.seen_verb_coachmarks }))
-      .catch(() => {
-        // Best-effort — worst case the coachmark shows again next tap, not harmful.
-      });
-    performVerbTap(verb);
   }
 
   function handleNodeClick(hostId: string) {
@@ -462,7 +483,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
     // submit escalate (or block_ip/reset_creds) with a host id instead of
     // its real target.
     if (targetVerb && HOST_TARGETED_VERBS.includes(targetVerb)) {
-      run.submitVerb(targetVerb, hostId);
+      trySubmitVerb(targetVerb, hostId);
       setTargetVerb(null);
       return;
     }
@@ -472,13 +493,13 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
 
   function submitPartyTarget(partyId: string) {
     if (!targetVerb) return;
-    run.submitVerb(targetVerb, partyId);
+    trySubmitVerb(targetVerb, partyId);
     setTargetVerb(null);
   }
 
   function submitTextTarget() {
     if (!targetVerb || !textInput.trim()) return;
-    run.submitVerb(targetVerb, textInput.trim());
+    trySubmitVerb(targetVerb, textInput.trim());
     setTargetVerb(null);
     setTextInput("");
   }
@@ -501,7 +522,20 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
       {/* Clock / stage-progress bar — redacted (no stage names/targets), just length + time */}
       <div className="shrink-0 px-4 pt-3 pb-2 border-b border-dim/20">
         <div className="flex items-center justify-between text-xs font-term text-dim mb-1">
-          <span>RESPONSE BUDGET</span>
+          <div className="flex items-center gap-3">
+            <span>RESPONSE BUDGET</span>
+            <span
+              className={`inline-flex items-center gap-1 ${run.connected ? "text-dim" : "text-bleed"}`}
+              aria-live="polite"
+              title={run.connected ? "Console link live" : "Console link offline — actions won't reach the server"}
+            >
+              <span
+                className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${run.connected ? "bg-contain" : "bg-bleed animate-pulse"}`}
+                aria-hidden
+              />
+              {run.connected ? "Live" : "Offline"}
+            </span>
+          </div>
           <span className={capRemaining <= 60 ? "text-bleed" : "text-dim"}>{formatClock(capRemaining)} left to spend</span>
         </div>
         <div className="h-2 rounded-full bg-panel overflow-hidden">
@@ -545,7 +579,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
               <span
                 className="inline-block w-2 h-2 rounded-full shrink-0"
                 style={{
-                  backgroundColor: state === "unknown" ? "transparent" : nodeStateColor[state],
+                  backgroundColor: state === "unknown" ? unknownNodeFill : nodeStateColor[state],
                   border: `1.5px ${state === "unknown" ? "dashed" : "solid"} ${nodeStateColor[state]}`,
                 }}
               />
@@ -569,7 +603,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
             nodeStates={nodeStates}
             clickableNodeIds={clickableNodeIds}
             onNodeClick={handleNodeClick}
-            className="w-full h-full min-h-[280px]"
+            className="w-full h-auto min-h-[280px]"
           />
         )}
       </div>
@@ -714,8 +748,9 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
             key={verb}
             ref={(el) => { chipRefs.current[verb] = el; }}
             onClick={() => handleChipTap(verb)}
-            disabled={!run.connected}
-            className={`flex flex-col items-center justify-center rounded-lg py-2 px-1 min-h-[52px] text-center active:scale-95 transition-colors disabled:opacity-40 ${
+            className={`flex flex-col items-center justify-center rounded-lg py-2 px-1 min-h-[52px] text-center active:scale-95 transition-colors ${
+              !run.connected ? "opacity-70" : ""
+            } ${
               targetVerb === verb ? "bg-phosphor text-void" : "bg-void border border-dim/30 text-white"
             }`}
           >
@@ -728,6 +763,15 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
       {/* block_ip / reset_creds result — these have no host-drawer to open
           on a wrong guess (and reset_creds never opens one at all), so this
           is their only visible confirmation that the cost bought something. */}
+      {connectionToast && (
+        <div
+          role="alert"
+          className="fixed bottom-32 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-full text-sm font-bold shadow-lg bg-bleed text-void max-w-[90vw] text-center"
+        >
+          {connectionToast}
+        </div>
+      )}
+
       {resultToast && (
         <div
           className={`fixed bottom-24 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-full text-sm font-bold shadow-lg ${
