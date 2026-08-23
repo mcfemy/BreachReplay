@@ -26,7 +26,7 @@ import html
 import secrets
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -34,7 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import get_current_user
+from app.core.security import get_current_user, limiter
 from app.db.session import get_db
 from app.models.action_run import ActionRun
 from app.models.scenario import Scenario
@@ -57,7 +57,9 @@ class ActionRunCreateRequest(BaseModel):
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 async def create_action_run(
+    request: Request,
     payload: ActionRunCreateRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -199,7 +201,9 @@ async def share_action_run(
 
 
 @router.get("/public/replay/{share_token}/card.png")
+@limiter.limit("30/minute")
 async def get_public_share_card_png(
+    request: Request,
     share_token: str,
     db: AsyncSession = Depends(get_db),
 ):
@@ -218,7 +222,9 @@ async def get_public_share_card_png(
 
 
 @router.get("/public/unfurl/{share_token}", response_class=HTMLResponse)
+@limiter.limit("30/minute")
 async def get_public_share_unfurl(
+    request: Request,
     share_token: str,
     db: AsyncSession = Depends(get_db),
 ):
@@ -258,7 +264,9 @@ async def get_public_share_unfurl(
 
 
 @router.get("/public/replay/{share_token}")
+@limiter.limit("60/minute")
 async def get_public_action_replay(
+    request: Request,
     share_token: str,
     db: AsyncSession = Depends(get_db),
 ):
@@ -267,9 +275,6 @@ async def get_public_action_replay(
     ever minted for a completed daily/scenario run, but this route never
     trusts that alone). Missing, teaser, and snapshot-less tokens all
     404 identically — never 400, never a partial body.
-
-    Unauthenticated and currently un-rate-limited, same note as Arena's
-    public GET: apply slowapi if this sees crawl volume.
     """
     dto = await resolve_public_replay(db, share_token)
     if dto is None:

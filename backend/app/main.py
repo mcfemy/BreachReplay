@@ -21,7 +21,7 @@ from app.api import api_router
 from app.core.config import settings
 from app.core.logging import set_request_context, setup_logging
 from app.core.redis import get_redis
-from app.core.security import limiter, sentry_before_send
+from app.core.security import get_client_ip, limiter, sentry_before_send
 from app.db.session import engine
 from app.websocket.handlers import simulation_ws_handler, arena_ws_handler, arena_spectator_ws_handler, action_run_ws_handler
 
@@ -221,14 +221,8 @@ _WS_WINDOW = 60
 
 
 def _get_client_ip(websocket: WebSocket) -> str:
-    """Extract the true client IP, respecting standard proxy headers."""
-    forwarded_for = websocket.headers.get("x-forwarded-for")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    cf_ip = websocket.headers.get("cf-connecting-ip")
-    if cf_ip:
-        return cf_ip.strip()
-    return websocket.client.host if websocket.client else "unknown"
+    """Same header order as HTTP slowapi (`get_client_ip`)."""
+    return get_client_ip(websocket)
 
 
 async def _ws_rate_allowed(r: aioredis.Redis, client_ip: str) -> bool:
