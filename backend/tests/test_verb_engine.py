@@ -882,7 +882,7 @@ def test_notification_scoring_never_changes_outcome():
 def test_log4shell_notification_matrix_works_end_to_end_with_zero_code_changes():
     """Phase 3 item 2 of 5 — proves the actual claim: extending the
     mechanism to a second scenario is pure content authoring
-    (seed.LOG4SHELL's notification_matrix + migration 0039), not a
+    (seed.LOG4SHELL's notification_matrix + migration 0042), not a
     verb_engine.py change. Compiles the REAL LOG4SHELL dict (not a test
     fixture) and exercises escalate against its real 6-party matrix."""
     compiled = action_engine.compile_scenario(LOG4SHELL, seed=11)

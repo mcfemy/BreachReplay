@@ -1,13 +1,16 @@
 """Phase 3 — Targeted Escalation & Notification Proportionality: Log4Shell
 notification matrix (item 2 of 5)
 
-Revision ID: 0039_log4shell_notification_matrix
-Revises: 0038_scenario_notification_matrix
+Revision ID: 0042_log4shell_notification_matrix
+Revises: 0041_action_run_public_share
 Create Date: 2026-08-11 00:00:00.000000
 
 Second scenario in the build order (SolarWinds was item 1, migration 0038).
-Confirms the mechanism itself needed zero code changes to extend — this is
-purely a content-authoring migration, same shape as 0038's.
+Originally authored as 0039 revising 0038; renumbered to 0042 on rebase so
+it chains after technique_encounters / verb-coachmarks / public-share
+rather than forking a second head off 0038. Confirms the mechanism itself
+needed zero code changes to extend — this is purely a content-authoring
+migration, same shape as 0038's.
 
 Log4Shell's party list is deliberately DIFFERENT from SolarWinds' — not a
 reused DC3/CISA/prime/insurer/legal/PR template. This scenario's own
@@ -49,8 +52,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision: str = "0039_log4shell_notification_matrix"
-down_revision: Union[str, None] = "0038_scenario_notification_matrix"
+revision: str = "0042_log4shell_notification_matrix"
+down_revision: Union[str, None] = "0041_action_run_public_share"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

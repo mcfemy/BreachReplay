@@ -1,13 +1,13 @@
 """
-Round-trip test for migrations/versions/0039_log4shell_notification_matrix.py
+Round-trip test for migrations/versions/0042_log4shell_notification_matrix.py
 (Phase 3 — Targeted Escalation & Notification Proportionality, item 2 of 5).
 
-Simpler than 0038's own round-trip test: 0039 doesn't add a column (that
-happened in 0038, already at the base revision this test stamps to) — it's
-a pure content backfill, same "stamp-then-step" approach as
+Simpler than 0038's own round-trip test: 0042 doesn't add a column (that
+happened in 0038, already on the ORM schema this test creates) — it's a
+pure content backfill. Stamps at 0041 (current head before this revision)
+then steps to 0042, same "stamp-then-step" approach as
 test_scenario_notification_matrix_migration.py, minus the column-diffing
-`_pre_*_metadata` step, since `notification_matrix` already exists on the
-schema this test starts from.
+`_pre_*_metadata` step.
 """
 import os
 
@@ -21,8 +21,8 @@ from app.db.session import Base
 import app.models  # noqa: F401 — ensure every model (incl. Scenario) is registered
 
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_TARGET_REVISION = "0039_log4shell_notification_matrix"
-_PRIOR_REVISION = "0038_scenario_notification_matrix"
+_TARGET_REVISION = "0042_log4shell_notification_matrix"
+_PRIOR_REVISION = "0041_action_run_public_share"
 
 _LOG4SHELL_SOURCE_REF = "CVE-2021-44228"
 
@@ -39,9 +39,9 @@ def migration_engine(tmp_path):
     sqlite_url = f"sqlite:///{tmp_path / 'log4shell_notification_matrix_migration.db'}"
     engine = create_engine(sqlite_url)
     # Base.metadata already has notification_matrix (0038 landed it on the
-    # current ORM model) — this test only exercises 0039's own backfill,
+    # current ORM model) — this test only exercises 0042's own backfill,
     # so the full current schema is the correct starting point once
-    # stamped at 0038.
+    # stamped at 0041.
     Base.metadata.create_all(engine)
     cfg = _alembic_config(sqlite_url)
 
