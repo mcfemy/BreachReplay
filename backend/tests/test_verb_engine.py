@@ -8,6 +8,7 @@ import re
 import pytest
 
 from app.services import action_engine, verb_engine
+from seed import LOG4SHELL
 
 _SCENARIO = {
     "id": "test-scenario-colonial",
@@ -876,6 +877,37 @@ def test_notification_scoring_never_changes_outcome():
     escalated_run = _run_clock_past(escalated_run, final.trigger_seconds)
 
     assert verb_engine.determine_outcome(no_escalate_run) == verb_engine.determine_outcome(escalated_run)
+
+
+def test_log4shell_notification_matrix_works_end_to_end_with_zero_code_changes():
+    """Phase 3 item 2 of 5 — proves the actual claim: extending the
+    mechanism to a second scenario is pure content authoring
+    (seed.LOG4SHELL's notification_matrix + migration 0042), not a
+    verb_engine.py change. Compiles the REAL LOG4SHELL dict (not a test
+    fixture) and exercises escalate against its real 6-party matrix."""
+    compiled = action_engine.compile_scenario(LOG4SHELL, seed=11)
+    parties = verb_engine.public_notification_parties(compiled)
+    assert {p["id"] for p in parties} == {
+        "customer_contractual", "soc2_customers", "legal", "pr_comms", "cisa", "dhs_nation_state",
+    }
+    # Never leaks warranted-ness through the public list.
+    assert all(set(p.keys()) == {"id", "party_name"} for p in parties)
+
+    run = verb_engine.new_run(compiled)
+    warranted_result = verb_engine.apply_verb(run, "escalate", "soc2_customers")
+    assert warranted_result.error is None
+    assert warranted_result.delta["warranted"] is True
+
+    unwarranted_result = verb_engine.apply_verb(warranted_result.run, "escalate", "dhs_nation_state")
+    assert unwarranted_result.error is None
+    assert unwarranted_result.delta["warranted"] is False
+    assert any(p["type"] == "unwarranted_notification" for p in unwarranted_result.run.penalties)
+
+    breakdown = verb_engine.compute_score(unwarranted_result.run, "contained", cap_seconds=480)
+    assert breakdown["notification_points"] == verb_engine.NOTIFICATION_POINTS_PER_WARRANTED  # soc2_customers only
+    # cisa and customer_contractual/legal/pr_comms are also warranted but
+    # never notified in this test — each costs MISSED_NOTIFICATION_PENALTY.
+    assert breakdown["notification_penalty"] == verb_engine.MISSED_NOTIFICATION_PENALTY * 4
 
 
 # ── Phase 2 acceptance re-verification (spec section 4 checklist) ──────────────
