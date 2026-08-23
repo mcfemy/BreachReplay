@@ -620,6 +620,23 @@ game-design decisions (what collateral means for a live PvP match; what
 "real tool output" means for attacker-side actions like credential
 dumping), not just code reuse.
 
+## Arena technique coverage — three attacker tags lack dossier entries
+
+Arena's `_ACTION_TECHNIQUE_IDS` maps six attacker action types to MITRE IDs,
+but only three (`T1078`, `T1068`, `T1486`) have entries in `TECHNIQUE_DOSSIER`
+today. Arena match completion therefore filters credit to those three only —
+no parent/sub-technique normalization (e.g. forcing `T1003.001 → T1003` would
+misattribute Colonial-Pipeline-specific incident narrative to a synthetic
+Arena match). The remaining three need new dossier entries authored to the
+same real-citation bar as the original 30 before Arena can credit them:
+
+- **T1046** (network discovery) — `discover_segment` / `discover_host`
+- **T1550.002** (Pass the Hash) — `lateral_move`
+- **T1003.001** (LSASS credential dump) — `dump_credentials`
+
+Not authoring now; tracked here so Arena dossier writes don't silently skip
+these forever.
+
 ## CMMC invitations have no audit trail — Redis-only, no DB row
 
 Flagged by Femi during item 2 (onboarding/invitation flow) design review.
