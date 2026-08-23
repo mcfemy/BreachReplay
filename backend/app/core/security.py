@@ -10,7 +10,6 @@ from fastapi import Depends, HTTPException, status
 from fastapi.requests import Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from slowapi import Limiter
-from slowapi.util import get_remote_address
 from app.core.config import settings
 from app.core.logging import set_user_context
 from app.core.redis import get_redis
@@ -24,7 +23,39 @@ logger = logging.getLogger(__name__)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 bearer_scheme = HTTPBearer()
 
-limiter = Limiter(key_func=get_remote_address)
+
+def get_client_ip(request) -> str:
+    """Client IP for HTTP + WebSocket rate limits.
+
+    Parameter MUST be named `request` — slowapi only passes the
+    Request in if `inspect.signature` sees that name (stock
+    `get_remote_address` does). A different name is called with
+    zero args and TypeErrors.
+
+    slowapi's stock key is `request.client.host` — the TCP peer.
+    Behind this app's nginx → Docker publish, that peer is the
+    proxy hop, so every visitor shared one bucket. Prefer the same
+    headers the WS limiter already trusted: X-Forwarded-For (first
+    hop, set by CF/nginx), then CF-Connecting-IP, then the socket
+    peer. Works for Starlette Request and WebSocket (both expose
+    `.headers` and `.client`).
+    """
+    headers = request.headers
+    forwarded_for = headers.get("x-forwarded-for")
+    if forwarded_for:
+        first = forwarded_for.split(",")[0].strip()
+        if first:
+            return first
+    cf_ip = headers.get("cf-connecting-ip")
+    if cf_ip and cf_ip.strip():
+        return cf_ip.strip()
+    client = getattr(request, "client", None)
+    if client is not None and getattr(client, "host", None):
+        return client.host
+    return "127.0.0.1"
+
+
+limiter = Limiter(key_func=get_client_ip)
 
 # Patterns that must never appear in logs, errors, or Sentry payloads.
 _SECRET_PATTERNS = [
