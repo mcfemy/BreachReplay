@@ -5,6 +5,15 @@ scope for the phase/item in progress when they were found. Not a general
 issue tracker — just the small set of things flagged mid-work worth not
 losing.
 
+## First EBS snapshot restore drill — wait for DLM's first fire
+
+First EBS snapshot should exist after Sunday 23 August 2026 09:00 UTC
+(DLM `policy-0a235e4e35f007629`, daily 09:00 UTC window; AWS starts the
+snapshot within that hour) — schedule the first restore drill after that
+to validate the backup actually works, not just that the policy is
+enabled. Runbook: `docs/EBS_SNAPSHOT_RESTORE_RUNBOOK.md`. Policy was
+created manually in the AWS Console, not IaC.
+
 ## Phase 3 juice pass — sound, map/feed, public run page, share cards SHIPPED
 
 Spec §5 (`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md`) "Juice pass + share
