@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.action_run import ActionRun
 from app.models.scenario import Scenario
-from app.models.technique_encounter import TechniqueEncounter
+from app.services import dossier_service
 from app.services import verb_engine
 from app.services.action_engine import CompiledRun
 from app.services.action_run_share import freeze_public_snapshot
@@ -161,34 +161,6 @@ class ActionRunStore:
         title = result.scalar_one_or_none()
         return title or ""
 
-    async def _record_technique_encounters(
-        self, db: AsyncSession, user_id: str, technique_ids: frozenset,
-    ) -> None:
-        """Technique Dossier rollup — one `TechniqueEncounter` row per
-        (user_id, technique_id), incrementing `encounter_count` on repeat
-        exposure. Only ever called for an authenticated run (`finalize`'s
-        `live.user_id` gate) — an unauthenticated teaser run never reaches
-        this. Get-or-create via a plain select, matching this codebase's
-        existing convention for per-user rollup rows (e.g.
-        `daily._get_or_create_streak`) rather than a DB-specific upsert."""
-        now = datetime.utcnow()
-        for technique_id in technique_ids:
-            result = await db.execute(
-                select(TechniqueEncounter).where(
-                    TechniqueEncounter.user_id == user_id,
-                    TechniqueEncounter.technique_id == technique_id,
-                )
-            )
-            encounter = result.scalar_one_or_none()
-            if encounter is None:
-                db.add(TechniqueEncounter(
-                    user_id=user_id, technique_id=technique_id,
-                    encounter_count=1, first_encountered_at=now, last_encountered_at=now,
-                ))
-            else:
-                encounter.encounter_count += 1
-                encounter.last_encountered_at = now
-
     def _techniques_encountered_summary(self, technique_ids: frozenset) -> list[dict]:
         """This run's `encountered_technique_ids` shaped for the run.end
         debrief — {technique_id, name, description} only, no
@@ -262,7 +234,9 @@ class ActionRunStore:
         await db.flush()  # assigns action_run.id; visible to this same transaction's own queries below
 
         if live.user_id and run_state.encountered_technique_ids:
-            await self._record_technique_encounters(db, live.user_id, run_state.encountered_technique_ids)
+            await dossier_service.record_technique_encounters(
+                db, live.user_id, run_state.encountered_technique_ids,
+            )
 
         xp_awarded = 0
         new_achievements: list[str] = []

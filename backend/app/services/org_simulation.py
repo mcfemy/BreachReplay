@@ -863,6 +863,23 @@ def apply_attacker_action(state: OrgState, action: dict, rng: random.Random) -> 
     return state, False, None
 
 
+def attacker_action_was_accepted(prev_state: OrgState, action: dict, new_state: OrgState) -> bool:
+    """True when `apply_attacker_action` accepted the action (preconditions met),
+    not a no-op rejection. Recon actions count when the target exists even if
+    `new_state` is the same object as `prev_state`."""
+    if not isinstance(action, dict):
+        return False
+    action_type = action.get("action_type")
+    payload = action.get("payload", action)
+    if action_type not in ATTACKER_ACTION_TYPES:
+        return False
+    if action_type == "discover_segment":
+        return prev_state.get_segment(payload.get("segment_id")) is not None
+    if action_type == "discover_host":
+        return prev_state.get_host(payload.get("host_id")) is not None
+    return new_state is not prev_state
+
+
 def apply_defender_action(state: OrgState, action: dict) -> OrgState:
     """Apply a defender action. Deterministic — no RNG involved. Invalid/
     unmet-precondition actions are no-ops that return `state` unchanged.

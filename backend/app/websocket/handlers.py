@@ -24,6 +24,7 @@ from app.websocket.manager import (
 )
 from app.pipeline.claude_client import generate_decision_commentary
 from app.services.siem_service import send_alert_to_siem, send_decision_to_siem
+from app.services import dossier_service
 from app.services.org_simulation import (
     ORG_ARCHETYPES,
     ATTACKER_ACTION_TYPES,
@@ -651,6 +652,11 @@ async def _mark_match_completed_if_needed(db, match_id: str, match_status: str, 
     and its terminal status are committed atomically — there is no window
     where the match reads as over but ratings haven't moved yet.
 
+    Technique Dossier: on that same first terminal write, also records
+    `TechniqueEncounter` rows for any human participant via
+    `dossier_service.record_arena_match_encounters` (no writes for
+    abandoned/active/lobby, or when neither seat has a real user).
+
     Returns `{"completed": bool, "status": str | None, "rating_changes": dict}`
     — `status` and `rating_changes` are only meaningful when `completed` is
     True. Callers that only care about the boolean can keep using
@@ -679,6 +685,7 @@ async def _mark_match_completed_if_needed(db, match_id: str, match_status: str, 
         m.completed_at = datetime.utcnow()
         m.final_org_state_cache = new_state.to_dict()
         rating_changes = await arena_rating_service.apply_match_result(db, m)
+        await dossier_service.record_arena_match_encounters(db, m)
         await db.commit()
     return {"completed": True, "status": new_status, "rating_changes": rating_changes}
 
