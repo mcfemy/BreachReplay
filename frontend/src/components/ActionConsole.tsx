@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import NetworkMap, { type NetworkMapNode } from "./NetworkMap";
-import { colors, nodeStateColor, NODE_STATE_LEGEND, type NodeState } from "../theme/tokens";
+import { colors, nodeStateColor, unknownNodeFill, NODE_STATE_LEGEND, type NodeState } from "../theme/tokens";
 import XPToast from "./XPToast";
 import ConsolePreBrief from "./ConsolePreBrief";
 import Coachmark from "./Coachmark";
@@ -545,7 +545,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
               <span
                 className="inline-block w-2 h-2 rounded-full shrink-0"
                 style={{
-                  backgroundColor: state === "unknown" ? "transparent" : nodeStateColor[state],
+                  backgroundColor: state === "unknown" ? unknownNodeFill : nodeStateColor[state],
                   border: `1.5px ${state === "unknown" ? "dashed" : "solid"} ${nodeStateColor[state]}`,
                 }}
               />
@@ -569,7 +569,7 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
             nodeStates={nodeStates}
             clickableNodeIds={clickableNodeIds}
             onNodeClick={handleNodeClick}
-            className="w-full h-full min-h-[280px]"
+            className="w-full h-auto min-h-[280px]"
           />
         )}
       </div>
