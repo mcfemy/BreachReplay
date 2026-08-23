@@ -637,6 +637,24 @@ same real-citation bar as the original 30 before Arena can credit them:
 Not authoring now; tracked here so Arena dossier writes don't silently skip
 these forever.
 
+## Notification matrices remaining — MGM, Colonial, NHS (items 3–5/5)
+
+SolarWinds (item 1/5, migration `0038`) and Log4Shell (item 2/5, migration
+`0042_log4shell_notification_matrix`) are authored. Mechanism needs no further
+code changes — remaining work is content + a per-scenario backfill migration
+matching Log4Shell's shape. Party lists must stay scenario-native (not the
+DIB/DC3 template):
+
+- **MGM** — PCI / card brands, FBI, guest notification, SEC 8-K; extract from
+  `mgm-gate-005` / `mgm-pressure-004`
+- **Colonial** — TSA / NERC CIP / CISA / FBI; thinnest seed extract, most
+  citation research
+- **NHS WannaCry** — ICO / NCSC / NHS England; extract from `nhs-gate-005` /
+  pressures (availability vs personal-data-breach judgment already authored)
+
+Rough content estimate for the three: ~1.5–2 focused days (see session
+scoping 2026-08-23).
+
 ## CMMC invitations have no audit trail — Redis-only, no DB row
 
 Flagged by Femi during item 2 (onboarding/invitation flow) design review.
