@@ -14,6 +14,13 @@ to validate the backup actually works, not just that the policy is
 enabled. Runbook: `docs/EBS_SNAPSHOT_RESTORE_RUNBOOK.md`. Policy was
 created manually in the AWS Console, not IaC.
 
+## Phase 4 / ghost racing — leak-safety before build
+
+Spec's "public run = no hidden info" assumption corrected — see spec §6
+annotation. Ghost DTO needs its own leak-safety design, not a straight
+`action_log` pass-through, especially for Daily's shared-seed spoiler
+risk.
+
 ## Phase 3 juice pass — sound, map/feed, public run page, share cards SHIPPED
 
 Spec §5 (`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md`) "Juice pass + share
