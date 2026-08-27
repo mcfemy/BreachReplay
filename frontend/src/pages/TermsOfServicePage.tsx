@@ -34,7 +34,7 @@ export default function TermsOfServicePage() {
 
       <div className="max-w-3xl mx-auto px-6 py-20">
         <h1 className="text-4xl font-bold mb-2">Terms of Service</h1>
-        <p className="text-sm text-gray-600 mb-12">Last updated: July 6, 2026</p>
+        <p className="text-sm text-gray-600 mb-12">Last updated: August 27, 2026</p>
 
         <Section title="1. Acceptance of terms">
           <p>
@@ -52,6 +52,17 @@ export default function TermsOfServicePage() {
             mapping reports. It is a training and educational tool — it does not provide legal,
             compliance, or security-certification advice, and debrief scoring does not constitute
             an official audit finding.
+          </p>
+          <p>
+            The Action Console lets you complete timed breach runs (Daily Breach, scenarios, and
+            practice modes). Completed runs can be shared via public replay links, and other players
+            can race your recorded run as a ghost on the same seed. Ghost racing compares
+            containment times; share links and leaderboard placement make your run visible to
+            others as described in our{" "}
+            <Link to="/privacy" className="text-red-400 hover:text-red-300">
+              Privacy Policy
+            </Link>
+            .
           </p>
         </Section>
 
@@ -72,6 +83,12 @@ export default function TermsOfServicePage() {
             scenarios; disrupt the service (including automated abuse of Arena matchmaking or
             spectator connections); upload content you don't have the right to share; or use the
             platform to develop or test actual malicious tooling against real systems.
+          </p>
+          <p>
+            When you share a run link or race another player's ghost, you agree that your display
+            label and run outcome may be shown to that player and, if they beat your time, that we
+            may email you a beat notification (see the Privacy Policy for opt-out). Do not use share
+            links or ghost racing to harass other users.
           </p>
         </Section>
 

@@ -25,6 +25,7 @@ import { appendFeedLines, type FeedLine } from "../lib/runFeed";
 import AlertFeed from "./AlertFeed";
 import GhostPlayback from "./GhostPlayback";
 import type { GhostDto } from "../lib/ghostPlayback";
+import { useRacingNotice } from "./RacingNoticeGate";
 
 /**
  * Phase 2 Item 5 — the action console: 8 verb chips + cost labels, targets
@@ -923,8 +924,10 @@ function RunDebriefShare({ actionRunId }: { actionRunId: string }) {
   const [sharing, setSharing] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { ensureAcknowledged, dialog: racingNoticeDialog } = useRacingNotice();
 
   async function mint() {
+    if (!(await ensureAcknowledged())) return;
     setSharing(true);
     setError(null);
     try {
@@ -952,6 +955,7 @@ function RunDebriefShare({ actionRunId }: { actionRunId: string }) {
 
   return (
     <div className="mb-6 max-w-sm w-full">
+      {racingNoticeDialog}
       {!shareUrl ? (
         <button
           type="button"

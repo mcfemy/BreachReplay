@@ -7,9 +7,10 @@ import { useEffect } from "react";
 import DailyBreachPage from "./DailyBreachPage";
 import { axiosInstance } from "../lib/api";
 import { sampleGhostDto } from "../lib/ghostPlayback.fixture";
+import { useAuthStore } from "../store/auth";
 
 vi.mock("../lib/api", () => ({
-  axiosInstance: { get: vi.fn(), post: vi.fn() },
+  axiosInstance: { get: vi.fn(), post: vi.fn(), patch: vi.fn() },
   api: { get: vi.fn(), post: vi.fn(), patch: vi.fn(), delete: vi.fn() },
   API_BASE: "http://test.invalid",
 }));
@@ -104,6 +105,20 @@ function renderPage(initial = "/daily") {
 
 describe("DailyBreachPage — Race a ghost", () => {
   beforeEach(() => {
+    useAuthStore.setState({
+      user: {
+        id: "u-daily",
+        email: "daily@example.com",
+        full_name: "Daily",
+        role: "analyst",
+        organization_id: null,
+        has_seen_console_intro: true,
+        seen_verb_coachmarks: [],
+        has_acknowledged_racing_notice: true,
+      },
+      token: "tok",
+      refreshToken: null,
+    });
     startGhostRace.mockReset();
     startGhostRace.mockResolvedValue({
       run_id: "race-run-1",
@@ -173,5 +188,30 @@ describe("DailyBreachPage — Race a ghost", () => {
 
     expect(await screen.findByTestId("daily-race-ghost-unavailable")).toBeInTheDocument();
     expect(screen.queryByTestId("daily-race-ghost")).not.toBeInTheDocument();
+  });
+
+  it("shows racing notice once before starting a ghost race", async () => {
+    useAuthStore.setState((s) => ({
+      ...s,
+      user: s.user ? { ...s.user, has_acknowledged_racing_notice: false } : s.user,
+    }));
+    vi.mocked(axiosInstance.patch).mockResolvedValue({
+      data: { has_acknowledged_racing_notice: true },
+    });
+
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByText("🚨 RESPOND NOW"));
+    await user.click(await screen.findByTestId("daily-race-ghost"));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Got it/i }));
+
+    await waitFor(() =>
+      expect(startGhostRace).toHaveBeenCalledWith({ ghost_run_id: "ghost-above" }),
+    );
+    expect(axiosInstance.patch).toHaveBeenCalledWith("/auth/me", {
+      has_acknowledged_racing_notice: true,
+    });
   });
 });

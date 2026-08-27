@@ -80,6 +80,7 @@ describe("ActionConsole", () => {
         organization_id: null,
         has_seen_console_intro: true, // skip the pre-brief overlay
         seen_verb_coachmarks: ALL_VERBS_SEEN,
+        has_acknowledged_racing_notice: true,
       },
     });
     vi.mocked(useRunSocket).mockReturnValue(baseRunState());

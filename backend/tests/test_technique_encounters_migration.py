@@ -31,6 +31,13 @@ _PRIOR_REVISION = "0038_scenario_notification_matrix"
 
 _NEW_TABLE = "technique_encounters"
 _EXPECTED_INDEXES = {"ix_technique_encounters_user_id", "ix_technique_encounters_technique_id"}
+# `users` columns added after 0039 — omit from the 0038 baseline clone.
+_USER_COLS_EXCLUDED_AT_0039 = frozenset({
+    "seen_verb_coachmarks",  # 0040
+    "beat_notifications_enabled",
+    "email_unsubscribe_token",
+    "has_acknowledged_racing_notice",  # 0043
+})
 _EXPECTED_COLUMNS = {
     "id", "user_id", "technique_id", "encounter_count",
     "first_encountered_at", "last_encountered_at",
@@ -51,6 +58,10 @@ def _pre_0039_metadata() -> sa.MetaData:
     baseline = sa.MetaData()
     for table in Base.metadata.sorted_tables:
         if table.name == _NEW_TABLE:
+            continue
+        if table.name == "users":
+            cols = [c.copy() for c in table.columns if c.name not in _USER_COLS_EXCLUDED_AT_0039]
+            sa.Table(table.name, baseline, *cols, schema=table.schema)
             continue
         table.to_metadata(baseline)
     return baseline

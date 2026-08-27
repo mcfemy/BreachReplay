@@ -1,3 +1,4 @@
+import secrets
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -59,6 +60,25 @@ class User(Base):
     # PATCHes the full array (mirrors has_seen_console_intro's full-replace
     # contract, not an incremental append) — see ActionConsole.tsx.
     seen_verb_coachmarks: Mapped[list] = mapped_column(JSONB().with_variant(JSON, "sqlite"), default=list, server_default="[]")
+
+    # Phase 4 beat-email retention loop — opt-out + stable unsubscribe link
+    # (migration 0043). Token is generated once per account, never rotated
+    # per email, so one footer link works indefinitely.
+    beat_notifications_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true",
+    )
+    email_unsubscribe_token: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        nullable=False,
+        index=True,
+        default=lambda: secrets.token_urlsafe(32),
+    )
+    # First-use in-product notice before racing or sharing a run (ghost
+    # racing / public /r/{token} links). Sibling of has_seen_console_intro.
+    has_acknowledged_racing_notice: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
 
     organization: Mapped["Organization"] = relationship("Organization", back_populates="users")
     session_participants: Mapped[list["SessionParticipant"]] = relationship("SessionParticipant", back_populates="user")

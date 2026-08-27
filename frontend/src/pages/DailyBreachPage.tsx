@@ -7,6 +7,7 @@ import ActionConsole from "../components/ActionConsole";
 import { OUTCOME_LABELS, type RunEndSummary } from "../lib/useRunSocket";
 import { startGhostRace } from "../lib/ghostRace";
 import type { GhostDto } from "../lib/ghostPlayback";
+import { useRacingNotice } from "../components/RacingNoticeGate";
 
 // ── Daily Drill (spaced repetition on weak techniques) ──────────────────────
 interface KnowledgeCheckQuestion {
@@ -602,9 +603,11 @@ export default function DailyBreachPage() {
 
   const [raceBusy, setRaceBusy] = useState(false);
   const [raceError, setRaceError] = useState<string | null>(null);
+  const { ensureAcknowledged, dialog: racingNoticeDialog } = useRacingNotice();
 
   const handleRaceGhost = useCallback(async () => {
     if (!dailyGhost?.ghost_run_id) return;
+    if (!(await ensureAcknowledged())) return;
     setRaceBusy(true);
     setRaceError(null);
     try {
@@ -616,7 +619,7 @@ export default function DailyBreachPage() {
     } finally {
       setRaceBusy(false);
     }
-  }, [dailyGhost, navigate]);
+  }, [dailyGhost, navigate, ensureAcknowledged]);
 
   if (isLoading) {
     return (
@@ -788,6 +791,7 @@ export default function DailyBreachPage() {
             onDone={() => setXpToast(null)}
           />
         )}
+        {racingNoticeDialog}
       </div>
     </div>
   );
