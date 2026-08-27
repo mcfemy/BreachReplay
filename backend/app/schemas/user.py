@@ -70,6 +70,7 @@ class UserOut(BaseModel):
     has_seen_console_intro: bool = False
     seen_verb_coachmarks: list[str] = Field(default_factory=list)
     has_acknowledged_racing_notice: bool = False
+    response_index: int = 1200
     created_at: datetime
 
 

@@ -222,6 +222,10 @@ export interface RunEndSummary {
   total_dailies_played?: number;
   total_attempts_today?: number;
   avg_score_today?: number;
+  /** Ghost-race beat — separate from Arena ELO / public cohort Global Index. */
+  ghost_race_beat?: boolean;
+  response_index_bump?: number;
+  response_index?: number;
 }
 
 // A `state.delta` message's raw delta, verb-agnostic — see

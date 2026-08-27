@@ -303,9 +303,9 @@ class ActionRunStore:
         await db.commit()
 
         if beat_recorded is not None:
-            schedule_beat_notification_email(beat_recorded.id)
+            schedule_beat_notification_email(beat_recorded.beat.id)
 
-        return {
+        summary = {
             "action_run_id": action_run.id,
             "outcome": outcome,
             "score_breakdown": score_breakdown,
@@ -313,6 +313,11 @@ class ActionRunStore:
             "new_achievements": new_achievements,
             "techniques_encountered": self._techniques_encountered_summary(run_state.encountered_technique_ids),
         }
+        if beat_recorded is not None:
+            summary["ghost_race_beat"] = True
+            summary["response_index_bump"] = beat_recorded.response_index_bump
+            summary["response_index"] = beat_recorded.response_index
+        return summary
 
     async def sweep_expired(self, db: AsyncSession) -> list[tuple[str, dict]]:
         """Force-finalizes every run whose REAL elapsed time has passed its

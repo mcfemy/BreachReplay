@@ -171,6 +171,9 @@ async def test_finalize_records_beat_when_faster_and_contained(
     assert beat.ghost_containment_seconds == 200
     assert beat.ghost_owner_beat_notifications_enabled is True
     assert beat.beat_at is not None
+    assert summary["ghost_race_beat"] is True
+    assert summary["response_index_bump"] == 15
+    assert summary["response_index"] == 1215
 
 
 async def test_finalize_no_beat_when_slower(

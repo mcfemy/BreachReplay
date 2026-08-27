@@ -50,6 +50,7 @@ interface ProfileData {
     progress_pct: number;
   };
   global_rank: number;
+  response_index: number;
   achievements: Achievement[];
   unlocked_count: number;
   total_achievements: number;
@@ -812,6 +813,10 @@ export default function UserProfilePage() {
 
               <div className="flex flex-wrap gap-6 text-xs">
                 <div><span className="text-breach-muted">Global Rank </span><span className="text-white font-bold">#{profile.global_rank}</span></div>
+                <div>
+                  <span className="text-breach-muted">Response Index </span>
+                  <span className="text-cyan-400 font-bold" data-testid="profile-response-index">{profile.response_index}</span>
+                </div>
                 <div><span className="text-breach-muted">Achievements </span><span className="text-white font-bold">{profile.unlocked_count}/{profile.total_achievements}</span></div>
                 <div><span className="text-breach-muted">Certs </span><span className="text-white font-bold">{certs.length}</span></div>
                 <div><span className="text-breach-muted">Sessions </span><span className="text-white font-bold">{profile.stats.total_sessions}</span></div>

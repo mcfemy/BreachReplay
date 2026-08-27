@@ -125,6 +125,7 @@ async def get_my_profile(
             "total_sessions": stats_row.total_sessions if stats_row else 0,
             "avg_score": round(stats_row.avg_score or 0, 1) if stats_row else 0,
         },
+        "response_index": current_user.response_index,
         "member_since": current_user.created_at.isoformat(),
     }
 

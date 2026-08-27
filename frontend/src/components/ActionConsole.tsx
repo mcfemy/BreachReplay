@@ -1009,6 +1009,30 @@ function RunDebrief({
       <p className="text-4xl font-black mb-1">{summary.score_breakdown.total_score.toLocaleString()}</p>
       <p className="text-dim text-sm mb-6">points — {summary.score_breakdown.score_pct.toFixed(0)}% score</p>
 
+      {summary.ghost_race_beat && summary.response_index_bump != null && summary.response_index_bump > 0 && (
+        <div
+          className="mb-6 max-w-sm rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-3"
+          data-testid="ghost-race-beat-debrief"
+        >
+          <p className="font-term text-xs uppercase tracking-[0.2em] text-cyan-300 mb-1">
+            Ghost beaten
+          </p>
+          <p className="text-sm text-white">
+            You contained the breach faster than the ghost.
+          </p>
+          <p className="text-sm text-cyan-200 mt-2 tabular-nums">
+            Response Index{" "}
+            <span className="font-bold text-cyan-300">+{summary.response_index_bump}</span>
+            {summary.response_index != null && (
+              <>
+                {" "}
+                → <span className="font-bold text-white">{summary.response_index}</span>
+              </>
+            )}
+          </p>
+        </div>
+      )}
+
       <RunDebriefShare actionRunId={summary.action_run_id} />
 
       {/* Collateral line — named, not a buried percentage: the specific
