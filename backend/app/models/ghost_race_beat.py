@@ -24,7 +24,7 @@ class GhostRaceBeat(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     racer_user_id: Mapped[str] = mapped_column(String, ForeignKey("users.id"), nullable=False, index=True)
     racer_action_run_id: Mapped[str] = mapped_column(
-        String, ForeignKey("action_runs.id"), nullable=False, unique=True, index=True,
+        String, ForeignKey("action_runs.id"), nullable=False,
     )
     ghost_action_run_id: Mapped[str] = mapped_column(
         String, ForeignKey("action_runs.id"), nullable=False, index=True,
