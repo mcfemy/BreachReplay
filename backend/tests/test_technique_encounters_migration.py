@@ -37,6 +37,7 @@ _USER_COLS_EXCLUDED_AT_0039 = frozenset({
     "beat_notifications_enabled",
     "email_unsubscribe_token",
     "has_acknowledged_racing_notice",  # 0043
+    "response_index",  # 0046
 })
 _EXPECTED_COLUMNS = {
     "id", "user_id", "technique_id", "encounter_count",

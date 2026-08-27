@@ -36,6 +36,11 @@ class User(Base):
     # Live Arena Mode (Phase I) — ELO-style rating and record, updated by
     # arena_rating_service.py whenever a match reaches a terminal status.
     arena_rating: Mapped[int] = mapped_column(Integer, default=1200, server_default="1200")
+
+    # Phase 4 ghost racing — per-user Incident Response Index. Bumped on
+    # ghost-race beats via response_index_service; never touches arena_rating
+    # or the public cohort Global Index stats endpoint.
+    response_index: Mapped[int] = mapped_column(Integer, default=1200, server_default="1200")
     arena_wins: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     arena_losses: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     arena_matches_played: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

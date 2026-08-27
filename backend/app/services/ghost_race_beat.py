@@ -14,6 +14,7 @@ can still respect current prefs without losing audit data.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
 
@@ -24,11 +25,19 @@ from app.models.action_run import ActionRun
 from app.models.ghost_race_beat import GhostRaceBeat
 from app.models.user import User
 from app.services.action_run_ghost import _containment_seconds
+from app.services.response_index_service import bump_response_index_for_ghost_beat
 
 # Beat eligibility is stricter than ghost DTO containment display: overreacted
 # ghosts still expose a containment_seconds for comparison, but a racer must
 # finish contained or contained_at_cost to count as beating the ghost.
 BEAT_RACER_OUTCOMES = frozenset({"contained", "contained_at_cost"})
+
+
+@dataclass(frozen=True)
+class GhostRaceBeatRecord:
+    beat: GhostRaceBeat
+    response_index_bump: int
+    response_index: int
 
 
 def is_ghost_race_beat(
@@ -52,7 +61,7 @@ async def maybe_record_ghost_race_beat(
     racer_action_run_id: str,
     racer_outcome: str,
     racer_duration_seconds: int,
-) -> Optional[GhostRaceBeat]:
+) -> Optional[GhostRaceBeatRecord]:
     ghost_row = await db.scalar(
         select(ActionRun).where(ActionRun.id == ghost_opponent_run_id)
     )
@@ -82,4 +91,9 @@ async def maybe_record_ghost_race_beat(
     )
     db.add(beat)
     await db.flush()
-    return beat
+    bump_amount, new_index = await bump_response_index_for_ghost_beat(db, racer_user_id)
+    return GhostRaceBeatRecord(
+        beat=beat,
+        response_index_bump=bump_amount,
+        response_index=new_index,
+    )

@@ -389,6 +389,32 @@ describe("ActionConsole", () => {
       expect(playChime).not.toHaveBeenCalled();
     });
 
+    it("shows ghost-race beat Response Index bump on debrief", () => {
+      const { rerender } = render(<ActionConsole runId="run-1" />);
+      vi.mocked(useRunSocket).mockReturnValue(
+        baseRunState({
+          runEnd: {
+            ...stubRunEnd("contained"),
+            ghost_race_beat: true,
+            response_index_bump: 15,
+            response_index: 1215,
+          },
+        }),
+      );
+      rerender(<ActionConsole runId="run-1" />);
+      const debrief = screen.getByTestId("ghost-race-beat-debrief");
+      expect(debrief).toHaveTextContent("Ghost beaten");
+      expect(debrief).toHaveTextContent("+15");
+      expect(debrief).toHaveTextContent("1215");
+    });
+
+    it("does not show ghost-race beat block when no bump earned", () => {
+      const { rerender } = render(<ActionConsole runId="run-1" />);
+      vi.mocked(useRunSocket).mockReturnValue(baseRunState({ runEnd: stubRunEnd("contained") }));
+      rerender(<ActionConsole runId="run-1" />);
+      expect(screen.queryByTestId("ghost-race-beat-debrief")).not.toBeInTheDocument();
+    });
+
     it("mints a /r/ share card from the debrief and copies the text, not the run id", async () => {
       const writeText = vi.fn().mockResolvedValue(undefined);
       Object.defineProperty(navigator, "clipboard", {

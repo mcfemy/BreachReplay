@@ -32,6 +32,27 @@ targets, daily via token stays map-state-only). See
 leaderboard row). Targets only on `share_token` + scenario-mode ghosts;
 `ghost_run_id` is always map-only (Daily entry + defense in depth).
 
+## Phase 4 — close-out note (2026-08-28)
+
+**Shipped:** ghost racing end-to-end (PRs #50–#58), beat detection + beat-email
+retention loop, first-use racing notice, and per-user `response_index` bump on
+ghost-race beats (migration `0046`, `response_index_service.py` — separate from
+`arena_rating` and from the public cohort `/global-index` page).
+
+**Acceptance checklist — accepted gaps (not blockers):** spec §6 items #1
+(determinism test), #2 (mobile stacked maps), and #3 (share → signup → race
+E2E) are functionally implemented with direct code/test evidence but not
+formally proven via dedicated determinism / mobile-viewport / brand-new-signup
+E2E tests. Treated as accepted QA debt given real functional correctness.
+
+**Explicitly unshipped spec language (deferred, not forgotten):** player
+experience "take their leaderboard slot" — beat is recorded; no dynamic slot
+reorder yet.
+
+**Retroactive racing notice:** resolved via first-use `has_acknowledged_racing_notice`
+gate — existing users see the notice on first race/share; no separate retroactive
+consent flow needed.
+
 ## Phase 3 juice pass — sound, map/feed, public run page, share cards SHIPPED
 
 Spec §5 (`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md`) "Juice pass + share
