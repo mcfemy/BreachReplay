@@ -21,6 +21,10 @@ router, mirroring Arena:
   GET  /action-runs/public/replay/{token}         — no auth, redacted DTO
   GET  /action-runs/public/replay/{token}/card.png — no auth, Pillow OG image
   GET  /action-runs/public/unfurl/{token}         — no auth, crawler HTML with og:image
+
+Phase 4 ghost racing (selection + server-controlled DTO, not action_log
+passthrough — see action_run_ghost.py / spec §6 correction):
+  GET  /action-runs/public/ghost/{token}          — no auth, Race-this-run DTO
 """
 import html
 import secrets
@@ -40,6 +44,7 @@ from app.models.action_run import ActionRun
 from app.models.scenario import Scenario
 from app.models.user import User
 from app.services import action_engine
+from app.services.action_run_ghost import resolve_ghost_by_share_token
 from app.services.action_run_share import (
     SHARE_URL_PREFIX,
     SHAREABLE_MODES,
@@ -279,5 +284,25 @@ async def get_public_action_replay(
     dto = await resolve_public_replay(db, share_token)
     if dto is None:
         raise HTTPException(status_code=404, detail="Replay not found")
+    return dto
+
+
+@router.get("/public/ghost/{share_token}")
+@limiter.limit("60/minute")
+async def get_public_ghost(
+    request: Request,
+    share_token: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Phase 4 — 'Race this run' from a public `/r/{token}` link.
+
+    No auth (same entry pattern as public replay). Server-controlled ghost
+    DTO: scenario-mode includes per-verb targets; daily-mode stays
+    map-state-only (shared-seed spoiler bar). Missing / teaser / unsourced
+    tokens 404 identically — never a raw action_log body.
+    """
+    dto = await resolve_ghost_by_share_token(db, share_token)
+    if dto is None:
+        raise HTTPException(status_code=404, detail="Ghost not found")
     return dto
 

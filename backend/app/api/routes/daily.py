@@ -29,6 +29,7 @@ from app.models.user import User
 from app.core.security import get_current_user
 from app.core.logging import get_logger
 from app.services import action_engine, xp_service
+from app.services.action_run_ghost import resolve_daily_ghost
 from app.services.action_run_store import CAP_SECONDS_BY_MODE, action_run_store
 
 router = APIRouter(prefix="/daily", tags=["daily"])
@@ -740,3 +741,24 @@ async def get_daily_action_leaderboard(
         )
         for i, (run, full_name, email) in enumerate(rows)
     ]
+
+
+@router.get("/ghost")
+async def get_daily_ghost(
+    daily_challenge_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Phase 4 — default Daily ghost: the completed run just above the
+    caller on today's action leaderboard. Auth required (needs the caller's
+    rank). Returns a map-state-only ghost DTO — never verb targets (shared
+    seed spoiler bar). 404 when no challenge, empty board, or caller is #1.
+    """
+    dto = await resolve_daily_ghost(
+        db,
+        user_id=current_user.id,
+        daily_challenge_id=daily_challenge_id,
+    )
+    if dto is None:
+        raise HTTPException(status_code=404, detail="Ghost not found")
+    return dto
