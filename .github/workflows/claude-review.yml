@@ -29,14 +29,17 @@ name: Claude PR Review
 #   - The review is SKIPPED ENTIRELY unless the diff touches one of the
 #     small set of paths where REVIEW_CRITERIA.md's blocking criteria
 #     (leak safety, determinism, org-tabletop isolation, playability) can
-#     actually be violated: backend/app/services/, backend/app/websocket/,
-#     backend/migrations/, or frontend WS/state handling
-#     (frontend/src/lib/*Socket*, frontend/src/store/). Everywhere else —
-#     docs, config, workflows, styling, small route fixes — passes on CI
-#     alone; a one-line "auto-skipped — CI is the gate" comment passes the
-#     gate for free. PR #12 (a docs-only PR, which this rule also covers)
-#     cost $0.42 and produced no verdict before this. REVIEW_CRITERIA.md
-#     (n) has the full path list and reasoning.
+#     actually be violated: backend/app/services/, backend/app/api/routes/,
+#     backend/app/websocket/, backend/migrations/, or frontend WS/state
+#     handling (frontend/src/lib/*Socket*, frontend/src/store/). Routes
+#     are included because the HTTP surface is where seed/auth/DTO
+#     decisions land before services run (e.g. POST /action-runs/race) —
+#     a routes-only PR must not auto-skip. Everywhere else — docs, config,
+#     workflows, styling — passes on CI alone; a one-line
+#     "auto-skipped — CI is the gate" comment passes the gate for free.
+#     PR #12 (a docs-only PR, which this rule also covers) cost $0.42 and
+#     produced no verdict before this. REVIEW_CRITERIA.md (n) has the full
+#     path list and reasoning.
 #   - A cheap 1-turn preflight call runs before the real review to detect
 #     "the Claude API itself is unreachable" (billing/auth/quota) and
 #     report that distinctly from a genuine review failure — see
@@ -125,8 +128,11 @@ jobs:
 
           # Reviewed paths — where leak safety, determinism, org-tabletop
           # isolation, and playability (REVIEW_CRITERIA.md's blocking
-          # criteria) can actually be violated. frontend/src/lib/*Socket*
-          # covers every WS hook across both branches (useArenaSocket.ts,
+          # criteria) can actually be violated. backend/app/api/routes/
+          # is the HTTP surface into those services (auth, seed lookup,
+          # DTO assembly on create/share/race endpoints) — routes-only
+          # diffs must not auto-skip. frontend/src/lib/*Socket* covers
+          # every WS hook across both branches (useArenaSocket.ts,
           # useArenaSpectatorSocket.ts, useSimulationSocket.ts, and
           # phase-2-action-console's useRunSocket.ts, which doesn't exist
           # on main yet); frontend/src/store/ is the zustand state layer.
@@ -134,7 +140,7 @@ jobs:
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             case "$f" in
-              backend/app/services/*|backend/app/websocket/*|backend/migrations/*|frontend/src/lib/*Socket*|frontend/src/store/*)
+              backend/app/services/*|backend/app/api/routes/*|backend/app/websocket/*|backend/migrations/*|frontend/src/lib/*Socket*|frontend/src/store/*)
                 SKIP_REVIEW=false
                 ;;
             esac
