@@ -212,10 +212,12 @@ verb/WS layer; determinism (c) lives in `action_engine.compile_scenario`
 and what it calls; org tabletop isolation (d) lives in
 `simulation_ws_handler`/`ConnectionManager`; server authority (f) lives in
 clock/score computation; migrations (g) is self-evidently
-`backend/migrations/`. None of these can be violated by a docs change, a
-workflow-file edit, a styling tweak, or a small route fix that doesn't
-touch the paths above — CI's independently-run test suite (i) is a
-complete, sufficient check for that class of change on its own.
+`backend/migrations/`; and the HTTP route layer is where auth gates, seed
+lookup, and DTO assembly for create/share/race endpoints decide what
+leaves the server before a service runs. None of these can be violated by
+a docs change, a workflow-file edit, or a styling tweak — CI's
+independently-run test suite (i) is a complete, sufficient check for that
+class of change on its own.
 
 Concretely, `claude-review.yml`'s `Compute diff stats` step skips the
 Claude review entirely — a one-line `auto-skipped — CI is the gate`
@@ -224,6 +226,9 @@ diff touches at least one of:
 
 - `backend/app/services/` (the compiler, verb engine, mastery/XP/pipeline
   services — where determinism and most of the domain logic live)
+- `backend/app/api/routes/` (the HTTP surface into those services —
+  seed must never be client-supplied, share/race DTOs must stay
+  leak-safe, auth gates must hold; a routes-only PR must not auto-skip)
 - `backend/app/websocket/` (leak safety, org tabletop isolation, server
   authority all live in the WS handlers)
 - `backend/migrations/` (criterion (g) is entirely about this directory)
@@ -239,11 +244,14 @@ instance of "touches none of the reviewed paths," not a special case
 needing its own rule. PR #12 (docs-only, cost $0.42, produced no verdict —
 the API-unavailable failure (j) now catches that class separately) was
 the original motivating case; the broader rule additionally covers
-config, workflow-file, styling, and small route-fix PRs that were
-previously paying for a review that could never find anything a passing
-CI run hadn't already proven. A PR that mixes any reviewed-path change
-with unrelated files still gets the full review — this only skips when
-**none** of the changed files touch a reviewed path.
+config, workflow-file, and styling PRs that were previously paying for a
+review that could never find anything a passing CI run hadn't already
+proven. (Routes were wrongly in that skip set until PR #53 exposed the
+gap: `POST /action-runs/race` lived only under `api/routes/` and
+auto-skipped despite being the HTTP surface for seed/DTO decisions.) A
+PR that mixes any reviewed-path change with unrelated files still gets
+the full review — this only skips when **none** of the changed files
+touch a reviewed path.
 
 **(o) The review model is pinned explicitly, not inherited.**
 `claude-review.yml` passes `--model claude-opus-4-8` to both the
