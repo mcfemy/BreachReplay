@@ -22,6 +22,7 @@ from app.models.membership import Membership
 from app.models.evidence_session import EvidenceSession
 from app.models.issued_evidence_pack import IssuedEvidencePack
 from app.models.technique_encounter import TechniqueEncounter
+from app.models.ghost_race_beat import GhostRaceBeat
 
 __all__ = [
     "Base",
@@ -57,4 +58,5 @@ __all__ = [
     "EvidenceSession",
     "IssuedEvidencePack",
     "TechniqueEncounter",
+    "GhostRaceBeat",
 ]
