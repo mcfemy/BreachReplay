@@ -52,6 +52,7 @@ _USER_COLS_EXCLUDED_AT_0035 = frozenset({
     "email_unsubscribe_token",
     "has_acknowledged_racing_notice",  # 0043
 })
+_EXPECTED_ACTION_RUNS_COLUMNS_SUPERSET = {"evidence_session_id"}  # added on top of 0034's existing set
 
 
 def _alembic_config(sqlite_url: str) -> Config:
