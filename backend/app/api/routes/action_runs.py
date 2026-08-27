@@ -210,7 +210,10 @@ async def start_ghost_race(
     compiled = action_engine.compile_scenario(scenario, seed)
     run_id = str(uuid.uuid4())
     mode = "scenario"
-    await action_run_store.start_run(run_id, current_user.id, scenario.id, mode, compiled)
+    await action_run_store.start_run(
+        run_id, current_user.id, scenario.id, mode, compiled,
+        ghost_opponent_run_id=ghost_row.id,
+    )
 
     return {
         "run_id": run_id,

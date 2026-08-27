@@ -42,6 +42,7 @@ from app.services import dossier_service
 from app.services import verb_engine
 from app.services.action_engine import CompiledRun
 from app.services.action_run_share import freeze_public_snapshot
+from app.services.ghost_race_beat import maybe_record_ghost_race_beat
 from app.services.technique_dossier import TECHNIQUE_DOSSIER
 from app.services.xp_service import award_xp, check_scenario_achievements
 
@@ -83,6 +84,9 @@ class LiveRun:
     # Set only for mode="daily" runs — carried through to the persisted
     # ActionRun row in finalize() (migration 0030's daily_challenge_id).
     daily_challenge_id: Optional[str] = None
+    # Phase 4 ghost racing — opponent ActionRun.id when this live run was
+    # started via POST /action-runs/race. Used at finalize() to detect beats.
+    ghost_opponent_run_id: Optional[str] = None
     real_started_at: datetime = field(default_factory=datetime.utcnow)
     last_activity_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -106,6 +110,7 @@ class ActionRunStore:
     async def start_run(
         self, run_id: str, user_id: Optional[str], scenario_id: str, mode: str, compiled: CompiledRun,
         daily_challenge_id: Optional[str] = None,
+        ghost_opponent_run_id: Optional[str] = None,
     ) -> LiveRun:
         live = LiveRun(
             run_id=run_id,
@@ -114,6 +119,7 @@ class ActionRunStore:
             mode=mode,
             run_state=verb_engine.new_run(compiled),
             daily_challenge_id=daily_challenge_id,
+            ghost_opponent_run_id=ghost_opponent_run_id,
         )
         async with self._lock:
             self._runs[run_id] = live
@@ -280,6 +286,16 @@ class ActionRunStore:
                 score_pct=score_breakdown["score_pct"],
                 time_seconds=run_state.elapsed_seconds,
                 total_completed=completed_count or 0,
+            )
+
+        if live.ghost_opponent_run_id and live.user_id:
+            await maybe_record_ghost_race_beat(
+                db,
+                ghost_opponent_run_id=live.ghost_opponent_run_id,
+                racer_user_id=live.user_id,
+                racer_action_run_id=action_run.id,
+                racer_outcome=outcome,
+                racer_duration_seconds=run_state.elapsed_seconds,
             )
 
         await db.commit()
