@@ -612,6 +612,7 @@ async def test_http_start_race_by_share_token_uses_ghost_seed_scenario_mode(
     assert set(data["ghost"].keys()) == PUBLIC_GHOST_DTO_KEYS
     assert data["ghost"]["share_token"] == token
     assert data["ghost"]["race_type"] == "scenario"
+    assert any(e.get("target") == _LEAK_IP for e in data["ghost"]["verb_timeline"])
     leaked = _all_keys(data["ghost"]) & GHOST_FORBIDDEN_KEYS
     assert leaked == set()
     assert "seed" not in data["ghost"]
@@ -647,6 +648,41 @@ async def test_http_start_race_by_ghost_run_id_daily_map_only(
     assert set(data["ghost"].keys()) == DAILY_GHOST_DTO_KEYS
     assert data["ghost"]["ghost_run_id"] == ghost.id
     assert data["ghost"]["race_type"] == "daily"
+    for entry in data["ghost"]["verb_timeline"]:
+        assert "target" not in entry
+    assert _LEAK_IP not in resp.text
+    async with action_run_store._lock:
+        action_run_store._runs.pop(data["run_id"], None)
+
+
+async def test_http_race_ghost_run_id_never_includes_targets_even_for_scenario_row(
+    client, db, test_user, approved_scenario,
+):
+    """Defense in depth: ghost_run_id is the Daily entry surface.
+
+    A Daily-selected id is always mode=daily (select_daily_ghost_run), so
+    targets were already off. Pasting a scenario ActionRun.id must still
+    not widen the DTO to include targets — only share_token + scenario
+    mode may (Race this run opt-in).
+    """
+    ghost = await _insert_run(
+        db,
+        user_id=test_user["user"].id,
+        scenario_id=approved_scenario.id,
+        mode="scenario",
+        seed=888,
+        action_log=_poisoned_action_log(),
+    )
+    resp = await client.post(
+        "/api/v1/action-runs/race",
+        json={"ghost_run_id": ghost.id},
+        headers=_auth_headers(test_user["token"]),
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["ghost"]["race_type"] == "daily"
+    assert "ghost_run_id" in data["ghost"]
+    assert "share_token" not in data["ghost"]
     for entry in data["ghost"]["verb_timeline"]:
         assert "target" not in entry
     assert _LEAK_IP not in resp.text

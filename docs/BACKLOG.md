@@ -27,6 +27,11 @@ ghost DTOs + selection — `GET /daily/ghost` (auth, map-state-only) and
 targets, daily via token stays map-state-only). See
 `app/services/action_run_ghost.py` and `tests/test_action_run_ghost.py`.
 
+**Shipped (race start + UI, PR #53):** `POST /action-runs/race` starts a
+`mode="scenario"` practice run on the ghost seed (never a second Daily /
+leaderboard row). Targets only on `share_token` + scenario-mode ghosts;
+`ghost_run_id` is always map-only (Daily entry + defense in depth).
+
 ## Phase 3 juice pass — sound, map/feed, public run page, share cards SHIPPED
 
 Spec §5 (`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md`) "Juice pass + share

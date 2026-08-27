@@ -221,6 +221,7 @@ On today's Daily Breach (and any scenario with prior runs), the player can race 
 - [ ] "Race this run" from a shared link works for a brand-new account end-to-end (share → signup → race).
 - [ ] Beat-notification email sends once per beaten run, respects unsubscribe.
 - [ ] Daily leaderboard integrity: ghost races on today's seed count; races on old seeds don't pollute today's board.
+  - **Correction (2026-08-27):** shipped behavior is the safety-critical half only. After Daily finishes, a second Daily attempt is a 409; `POST /action-runs/race` always starts a `mode="scenario"` practice run (no `daily_challenge_id`) on the ghost's seed — same world, not a second leaderboard attempt. Races therefore never land on today's Daily action leaderboard (and cannot pollute it). They do **not** "count" as Daily attempts either; the checklist line's "count" wording is superseded by this practice-run design (PR #53).
 
 ---
 

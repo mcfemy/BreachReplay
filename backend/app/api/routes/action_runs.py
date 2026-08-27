@@ -172,8 +172,20 @@ async def start_ghost_race(
     if ghost_row.user_id:
         player_user = await db.scalar(select(User).where(User.id == ghost_row.user_id))
 
-    # Daily ghosts stay map-state-only; scenario share races may include targets.
-    include_targets = ghost_row.mode == "scenario"
+    # Spec §6 / PR #50: Daily (shared seed) = map-state-only, never
+    # targets. Scenario "Race this run" (share_token opt-in) may include
+    # targets. include_targets is keyed on the ENTRY POINT + mode, not
+    # mode alone:
+    #
+    # * ghost_run_id is the authenticated Daily path. GET /daily/ghost →
+    #   select_daily_ghost_run filters ActionRun.mode == "daily" only;
+    #   POST /daily/action-run always start_run(..., "daily", ...);
+    #   finalize persists live.mode unchanged. So a Daily-selected
+    #   ghost_run_id always loads mode="daily" → targets off. We still
+    #   refuse targets on ANY ghost_run_id (even a pasted scenario id)
+    #   so the HTTP surface cannot widen the Daily DTO by swapping ids.
+    # * share_token + mode=="scenario" is the opt-in Race-this-run path.
+    include_targets = bool(payload.share_token) and ghost_row.mode == "scenario"
     if payload.share_token:
         identity = "share_token"
         share_token = payload.share_token
