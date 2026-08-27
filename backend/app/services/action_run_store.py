@@ -43,6 +43,7 @@ from app.services import verb_engine
 from app.services.action_engine import CompiledRun
 from app.services.action_run_share import freeze_public_snapshot
 from app.services.ghost_race_beat import maybe_record_ghost_race_beat
+from app.services.ghost_race_beat_email import schedule_beat_notification_email
 from app.services.technique_dossier import TECHNIQUE_DOSSIER
 from app.services.xp_service import award_xp, check_scenario_achievements
 
@@ -288,8 +289,9 @@ class ActionRunStore:
                 total_completed=completed_count or 0,
             )
 
+        beat_recorded = None
         if live.ghost_opponent_run_id and live.user_id:
-            await maybe_record_ghost_race_beat(
+            beat_recorded = await maybe_record_ghost_race_beat(
                 db,
                 ghost_opponent_run_id=live.ghost_opponent_run_id,
                 racer_user_id=live.user_id,
@@ -299,6 +301,9 @@ class ActionRunStore:
             )
 
         await db.commit()
+
+        if beat_recorded is not None:
+            schedule_beat_notification_email(beat_recorded.id)
 
         return {
             "action_run_id": action_run.id,

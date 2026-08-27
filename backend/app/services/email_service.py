@@ -124,6 +124,50 @@ tabletop simulation. Claude AI has generated your full gap analysis and complian
     return _send(to_email, subject, html)
 
 
+def _format_seconds(seconds: int) -> str:
+    minutes, secs = divmod(max(0, seconds), 60)
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def send_ghost_race_beat_email(
+    to_email: str,
+    *,
+    racer_label: str,
+    scenario_title: str,
+    seconds_faster: int,
+    racer_time_label: str,
+    ghost_time_label: str,
+    unsubscribe_url: str,
+) -> bool:
+    subject = f"Someone beat your ghost run — {scenario_title}"
+    faster_label = _format_seconds(seconds_faster)
+    body = f"""
+<h2>Your Ghost Run Was Beaten</h2>
+<p><strong style="color:#f1f5f9;">{racer_label}</strong> just beat your ghost on
+<strong style="color:#f1f5f9;">{scenario_title}</strong>.</p>
+
+<div class="metric">
+  <div class="metric-label">They finished faster by</div>
+  <div class="metric-value" style="color:#10b981;">{faster_label}</div>
+</div>
+
+<p style="font-size:13px; color:#94a3b8;">
+  Their containment: <strong style="color:#f1f5f9;">{racer_time_label}</strong>
+  &nbsp;·&nbsp; Your ghost: <strong style="color:#f1f5f9;">{ghost_time_label}</strong>
+</p>
+
+<a class="cta" href="{settings.FRONTEND_URL}/daily">Race them back →</a>
+
+<p style="font-size:11px; color:#475569;">
+  <a href="{unsubscribe_url}" style="color:#64748b;">Unsubscribe from beat notifications</a>
+</p>
+"""
+    html = _HTML_WRAPPER.format(subject=subject, body=body, frontend_url=settings.FRONTEND_URL)
+    return _send(to_email, subject, html)
+
+
 def send_team_invite_email(
     to_email: str,
     inviter_name: str,
