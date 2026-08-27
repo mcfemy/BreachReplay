@@ -173,6 +173,11 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://localhost:5174",
+        # Vite is often bound to 127.0.0.1 (e.g. `npm run dev -- --host 127.0.0.1`);
+        # browsers treat that Origin as distinct from localhost, so omit it and
+        # credentialed XHR fails with a generic "Network Error".
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
         "https://breachreplay.com",
         "https://www.breachreplay.com",
     ],
