@@ -21,6 +21,12 @@ annotation. Ghost DTO needs its own leak-safety design, not a straight
 `action_log` pass-through, especially for Daily's shared-seed spoiler
 risk.
 
+**Shipped (selection + DTO, no client playback yet):** server-controlled
+ghost DTOs + selection — `GET /daily/ghost` (auth, map-state-only) and
+`GET /action-runs/public/ghost/{token}` (Race this run; scenario includes
+targets, daily via token stays map-state-only). See
+`app/services/action_run_ghost.py` and `tests/test_action_run_ghost.py`.
+
 ## Phase 3 juice pass — sound, map/feed, public run page, share cards SHIPPED
 
 Spec §5 (`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md`) "Juice pass + share
