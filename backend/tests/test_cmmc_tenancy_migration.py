@@ -44,7 +44,14 @@ _TABLES_NOT_YET_EXISTING_AT_0035 = _NEW_TABLES | {"issued_evidence_packs"}
 _EXPECTED_MEMBERSHIP_COLUMNS = {
     "id", "user_id", "consulting_org_id", "client_org_id", "role", "joined_at",
 }
-_EXPECTED_ACTION_RUNS_COLUMNS_SUPERSET = {"evidence_session_id"}  # added on top of 0034's existing set
+# Columns on `users` added after migration 0035 — baseline must omit them
+# so raw-SQL inserts in this test don't need tokens that didn't exist yet.
+_USER_COLS_EXCLUDED_AT_0035 = frozenset({
+    "seen_verb_coachmarks",  # 0040
+    "beat_notifications_enabled",
+    "email_unsubscribe_token",
+    "has_acknowledged_racing_notice",  # 0043
+})
 
 
 def _alembic_config(sqlite_url: str) -> Config:
@@ -76,6 +83,9 @@ def migration_engine(tmp_path):
             continue
         if name == "action_runs":
             cols = [c.copy() for c in table.columns if c.name != "evidence_session_id"]
+            sa.Table(name, baseline_metadata, *cols)
+        elif name == "users":
+            cols = [c.copy() for c in table.columns if c.name not in _USER_COLS_EXCLUDED_AT_0035]
             sa.Table(name, baseline_metadata, *cols)
         else:
             table.to_metadata(baseline_metadata)
