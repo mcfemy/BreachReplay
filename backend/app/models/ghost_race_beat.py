@@ -36,3 +36,7 @@ class GhostRaceBeat(Base):
     racer_containment_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     ghost_containment_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     beat_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    # Set once email processing completes (sent or intentionally skipped).
+    email_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Set only when SendGrid actually delivers — used for per-owner daily cap.
+    email_delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
