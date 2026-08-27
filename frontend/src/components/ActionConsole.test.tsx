@@ -181,6 +181,7 @@ describe("ActionConsole", () => {
           role: "user",
           organization_id: null,
           has_seen_console_intro: true,
+          has_acknowledged_racing_notice: true,
           seen_verb_coachmarks: [], // nothing seen yet
         },
       });
@@ -209,6 +210,7 @@ describe("ActionConsole", () => {
           role: "user",
           organization_id: null,
           has_seen_console_intro: true,
+          has_acknowledged_racing_notice: true,
           seen_verb_coachmarks: [],
         },
       });
@@ -232,6 +234,7 @@ describe("ActionConsole", () => {
           role: "user",
           organization_id: null,
           has_seen_console_intro: true,
+          has_acknowledged_racing_notice: true,
           seen_verb_coachmarks: [],
         },
       });
@@ -258,6 +261,7 @@ describe("ActionConsole", () => {
           role: "user",
           organization_id: null,
           has_seen_console_intro: true,
+          has_acknowledged_racing_notice: true,
           seen_verb_coachmarks: [],
         },
       });
