@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/auth";
 import { teaserApi, consumeStashedTeaserToken } from "../lib/teaser";
+import { safeAuthNext } from "../lib/ghostRace";
 
 const API_BASE = import.meta.env.VITE_API_URL || "/api/v1";
 
@@ -23,6 +24,8 @@ export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
   const { setAuth } = useAuthStore();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const postAuthPath = safeAuthNext(searchParams.get("next")) ?? "/scenarios";
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     setForm((f) => ({ ...f, [e.target.name]: e.target.value }));
@@ -48,7 +51,7 @@ export default function RegisterPage() {
         }
       }
 
-      navigate("/scenarios");
+      navigate(postAuthPath);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -108,7 +111,7 @@ export default function RegisterPage() {
           </button>
           <p className="text-center text-xs text-breach-muted">
             Already have an account?{" "}
-            <Link to="/login" className="text-breach-blue hover:underline">Sign in</Link>
+            <Link to={searchParams.get("next") ? `/login?next=${encodeURIComponent(searchParams.get("next")!)}` : "/login"} className="text-breach-blue hover:underline">Sign in</Link>
           </p>
 
           {/* Identity Provider SSO */}

@@ -25,10 +25,12 @@ router, mirroring Arena:
 Phase 4 ghost racing (selection + server-controlled DTO, not action_log
 passthrough — see action_run_ghost.py / spec §6 correction):
   GET  /action-runs/public/ghost/{token}          — no auth, Race-this-run DTO
+  POST /action-runs/race                          — auth, start scenario run on ghost seed
 """
 import html
 import secrets
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, Response
@@ -44,10 +46,14 @@ from app.models.action_run import ActionRun
 from app.models.scenario import Scenario
 from app.models.user import User
 from app.services import action_engine
-from app.services.action_run_ghost import resolve_ghost_by_share_token
+from app.services.action_run_ghost import (
+    build_ghost_dto,
+    resolve_ghost_by_share_token,
+)
 from app.services.action_run_share import (
     SHARE_URL_PREFIX,
     SHAREABLE_MODES,
+    public_player_label,
     resolve_public_replay,
     share_card_extras,
 )
@@ -59,6 +65,17 @@ router = APIRouter(prefix="/action-runs", tags=["action-runs"])
 
 class ActionRunCreateRequest(BaseModel):
     scenario_id: str
+
+
+class RaceStartRequest(BaseModel):
+    """Start a same-seed practice race against a completed ghost run.
+
+    Exactly one of ghost_run_id / share_token. Seed is looked up server-side
+    from the ActionRun row — never accepted from the client (ghost DTOs
+    deliberately omit seed).
+    """
+    ghost_run_id: Optional[str] = None
+    share_token: Optional[str] = None
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -103,6 +120,106 @@ async def create_action_run(
         "seed": seed,
         "mode": mode,
         "cap_seconds": CAP_SECONDS_BY_MODE[mode],
+    }
+
+
+@router.post("/race", status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
+async def start_ghost_race(
+    request: Request,
+    payload: RaceStartRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Phase 4 — start a live scenario-mode run on a ghost's seed.
+
+    After Daily finishes, a second Daily attempt is impossible (409); racing
+    the analyst above you is a practice run on that ghost's identical seed
+    (mode=scenario, no daily_challenge_id). "Race this run" from a share
+    link uses the same path via share_token.
+
+    Returns the new run_id plus the locked ghost DTO (seed never on the
+    ghost object) so the client can mount GhostPlayback without a second
+    round-trip that might re-select a different Daily ghost.
+    """
+    has_id = bool(payload.ghost_run_id)
+    has_token = bool(payload.share_token)
+    if has_id == has_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one of ghost_run_id or share_token",
+        )
+
+    if payload.share_token:
+        ghost_row = await db.scalar(
+            select(ActionRun).where(ActionRun.share_token == payload.share_token)
+        )
+    else:
+        ghost_row = await db.scalar(
+            select(ActionRun).where(ActionRun.id == payload.ghost_run_id)
+        )
+
+    if ghost_row is None or ghost_row.mode not in SHAREABLE_MODES:
+        raise HTTPException(status_code=404, detail="Ghost not found")
+    if not ghost_row.outcome or ghost_row.duration_seconds is None:
+        raise HTTPException(status_code=404, detail="Ghost not found")
+
+    scenario = await db.scalar(select(Scenario).where(Scenario.id == ghost_row.scenario_id))
+    if scenario is None or scenario.status != "approved":
+        raise HTTPException(status_code=404, detail="Scenario not found")
+
+    player_user = None
+    if ghost_row.user_id:
+        player_user = await db.scalar(select(User).where(User.id == ghost_row.user_id))
+
+    # Spec §6 / PR #50: Daily (shared seed) = map-state-only, never
+    # targets. Scenario "Race this run" (share_token opt-in) may include
+    # targets. include_targets is keyed on the ENTRY POINT + mode, not
+    # mode alone:
+    #
+    # * ghost_run_id is the authenticated Daily path. GET /daily/ghost →
+    #   select_daily_ghost_run filters ActionRun.mode == "daily" only;
+    #   POST /daily/action-run always start_run(..., "daily", ...);
+    #   finalize persists live.mode unchanged. So a Daily-selected
+    #   ghost_run_id always loads mode="daily" → targets off. We still
+    #   refuse targets on ANY ghost_run_id (even a pasted scenario id)
+    #   so the HTTP surface cannot widen the Daily DTO by swapping ids.
+    # * share_token + mode=="scenario" is the opt-in Race-this-run path.
+    include_targets = bool(payload.share_token) and ghost_row.mode == "scenario"
+    if payload.share_token:
+        identity = "share_token"
+        share_token = payload.share_token
+    else:
+        # Auth Daily path — ghost_run_id identity on the DTO.
+        identity = "ghost_run_id"
+        share_token = ghost_row.share_token
+
+    ghost_dto = build_ghost_dto(
+        ghost_row,
+        scenario=scenario,
+        player_label=public_player_label(player_user),
+        include_targets=include_targets,
+        identity=identity,
+        share_token=share_token,
+    )
+    if ghost_dto is None:
+        raise HTTPException(status_code=404, detail="Ghost not found")
+
+    # Seed stays server-side until this create response for the racer's own run.
+    seed = ghost_row.seed
+    compiled = action_engine.compile_scenario(scenario, seed)
+    run_id = str(uuid.uuid4())
+    mode = "scenario"
+    await action_run_store.start_run(run_id, current_user.id, scenario.id, mode, compiled)
+
+    return {
+        "run_id": run_id,
+        "action_run_id": run_id,
+        "scenario_id": scenario.id,
+        "seed": seed,
+        "mode": mode,
+        "cap_seconds": CAP_SECONDS_BY_MODE[mode],
+        "ghost": ghost_dto,
     }
 
 

@@ -35,6 +35,7 @@ export default function GhostPlayback({
   const frame = selectMapFrame(ghost.map_frames, elapsedSeconds);
   const feedLines = ghostVerbFeedLines(ghost.verb_timeline, elapsedSeconds);
   const map = frame ? frameToNetworkMap(frame) : null;
+  const clock = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
 
   return (
     <div
@@ -48,7 +49,16 @@ export default function GhostPlayback({
         <p className="text-[10px] text-phosphor uppercase tracking-widest font-extrabold">
           Ghost — {ghost.player_label}
         </p>
-        <p className="text-[10px] text-dim font-term">
+        <p
+          className="text-[11px] text-phosphor font-term tabular-nums"
+          data-testid="ghost-clock"
+          aria-live="off"
+        >
+          {clock}
+        </p>
+      </div>
+      <div className="flex items-center justify-between gap-2 px-3 py-0.5">
+        <p className="text-[10px] text-dim font-term truncate">
           {ghost.scenario_title}
           {ghost.containment_seconds != null
             ? ` · contained ${Math.floor(ghost.containment_seconds / 60)}:${String(ghost.containment_seconds % 60).padStart(2, "0")}`
