@@ -114,3 +114,35 @@ def test_downgrade_drops_columns(migration_engine):
     with engine.connect() as conn:
         columns = {row[1] for row in conn.execute(text("PRAGMA table_info(users)"))}
         assert _NEW_COLUMNS.isdisjoint(columns)
+
+
+def test_reupgrade_after_downgrade_restores_columns_and_unique_tokens(migration_engine):
+    """upgrade → downgrade → upgrade — the path criterion (g) requires CI to
+    exercise (mirrors test_technique_encounters_migration's re-upgrade case)."""
+    engine, cfg = migration_engine
+    with engine.begin() as conn:
+        _insert_legacy_user(conn, "u-re", "reupgrade@example.com")
+
+    command.upgrade(cfg, _TARGET_REVISION)
+    command.downgrade(cfg, _PRIOR_REVISION)
+    command.upgrade(cfg, _TARGET_REVISION)
+
+    with engine.connect() as conn:
+        columns = {row[1] for row in conn.execute(text("PRAGMA table_info(users)"))}
+        assert _NEW_COLUMNS.issubset(columns)
+
+        index_names = {
+            row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='index'"))
+        }
+        assert "ix_users_email_unsubscribe_token" in index_names
+
+        row = conn.execute(
+            text("""
+                SELECT beat_notifications_enabled, email_unsubscribe_token,
+                       has_acknowledged_racing_notice
+                FROM users WHERE id = 'u-re'
+            """)
+        ).one()
+        assert row[0] == 1
+        assert row[1] and len(row[1]) >= 16
+        assert row[2] == 0
