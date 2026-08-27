@@ -34,7 +34,7 @@ export default function PrivacyPolicyPage() {
 
       <div className="max-w-3xl mx-auto px-6 py-20">
         <h1 className="text-4xl font-bold mb-2">Privacy Policy</h1>
-        <p className="text-sm text-gray-600 mb-12">Last updated: July 6, 2026</p>
+        <p className="text-sm text-gray-600 mb-12">Last updated: August 27, 2026</p>
 
         <Section title="1. What we collect">
           <p>
@@ -75,7 +75,9 @@ export default function PrivacyPolicyPage() {
           </p>
           <p>
             <span className="text-gray-300 font-medium">SendGrid</span> — transactional email
-            (password resets, notifications).
+            (password resets, session debrief notices, team invitations, and — if you have not
+            opted out — beat-notification emails when another player beats your shared or
+            leaderboard-visible run in ghost racing).
           </p>
         </Section>
 
@@ -94,6 +96,31 @@ export default function PrivacyPolicyPage() {
             or aggregate statistics pages. Anything shared this way is intentionally visible to
             anyone with the link, or (for aggregate stats) shown in anonymized/aggregated form. You
             can opt out of public profile visibility at any time from account settings.
+          </p>
+          <p>
+            <span className="text-gray-300 font-medium">Action Console share links</span> — when you
+            mint a share link for a completed run, we generate an opaque token URL (for example{" "}
+            <code className="text-gray-500">/r/…</code>) that exposes a redacted replay of that run
+            (outcome, score, timing, map state, and verb timeline — not hidden targets or seed).
+            Anyone with the link can view the replay and, if they have an account, race against your
+            recorded run as a &quot;ghost.&quot;
+          </p>
+          <p>
+            <span className="text-gray-300 font-medium">Ghost racing</span> — you can race another
+            player&apos;s recorded run on the same scenario seed (from Daily Breach or a share
+            link). Your live run is separate from theirs; we compare containment times after the
+            race. Racing or sharing for the first time shows an in-product notice explaining this
+            behavior.
+          </p>
+          <p>
+            <span className="text-gray-300 font-medium">Beat-notification emails</span> — if another
+            player beats your run in a ghost race, we may email you at your account address with
+            their public display label (or a generic label if none is set) and how much faster they
+            contained the breach. This is a single email category; you can opt out at any time via
+            the unsubscribe link in the email or by visiting{" "}
+            <code className="text-gray-500">/api/v1/unsubscribe?token=…</code> with your personal
+            unsubscribe token. Opting out does not delete your account or stop other transactional
+            emails (password resets, invitations).
           </p>
         </Section>
 

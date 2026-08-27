@@ -237,6 +237,8 @@ async def update_me(
         current_user.has_seen_console_intro = payload.has_seen_console_intro
     if payload.seen_verb_coachmarks is not None:
         current_user.seen_verb_coachmarks = payload.seen_verb_coachmarks
+    if payload.has_acknowledged_racing_notice is not None:
+        current_user.has_acknowledged_racing_notice = payload.has_acknowledged_racing_notice
     await db.commit()
     await db.refresh(current_user)
     return _user_out(current_user)

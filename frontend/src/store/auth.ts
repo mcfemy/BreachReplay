@@ -10,6 +10,7 @@ interface User {
   organization_id: string | null;
   has_seen_console_intro: boolean;
   seen_verb_coachmarks: string[];
+  has_acknowledged_racing_notice: boolean;
 }
 
 interface AuthState {

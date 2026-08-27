@@ -69,6 +69,7 @@ class UserOut(BaseModel):
     mfa_enabled: bool = False
     has_seen_console_intro: bool = False
     seen_verb_coachmarks: list[str] = Field(default_factory=list)
+    has_acknowledged_racing_notice: bool = False
     created_at: datetime
 
 
@@ -118,6 +119,7 @@ class UserUpdateRequest(BaseModel):
     # client always sends the complete updated array (it already holds the
     # current one from /auth/me), not a single verb to append.
     seen_verb_coachmarks: Optional[list[str]] = Field(default=None, max_length=8)
+    has_acknowledged_racing_notice: Optional[bool] = None
 
     @field_validator("seen_verb_coachmarks")
     @classmethod

@@ -12,6 +12,7 @@ import {
 } from "../lib/useRunSocket";
 import { useAuthStore } from "../store/auth";
 import { startGhostRace } from "../lib/ghostRace";
+import { useRacingNotice } from "../components/RacingNoticeGate";
 
 // Public, no-auth Action Console run replay — GET /r/{token}.
 // Loading / 404 / OG-tag shape is borrowed from PublicReplayPage.tsx
@@ -109,6 +110,7 @@ export default function PublicActionReplayPage() {
   const token = useAuthStore((s) => s.token);
   const [raceBusy, setRaceBusy] = useState(false);
   const [raceError, setRaceError] = useState<string | null>(null);
+  const { ensureAcknowledged, dialog: racingNoticeDialog } = useRacingNotice();
 
   const { data: replay, isLoading, isError } = useQuery<PublicActionReplay>({
     queryKey: ["public-action-replay", shareToken],
@@ -140,6 +142,7 @@ export default function PublicActionReplayPage() {
 
   const beginRace = async () => {
     if (!shareToken) return;
+    if (!(await ensureAcknowledged())) return;
     setRaceBusy(true);
     setRaceError(null);
     try {
@@ -327,6 +330,7 @@ export default function PublicActionReplayPage() {
           )}
         </div>
       </div>
+      {racingNoticeDialog}
     </div>
   );
 }
