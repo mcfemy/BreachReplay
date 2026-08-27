@@ -29,7 +29,12 @@ const DossierPage = lazy(() => import("./pages/DossierPage"));
 const CertificatePage = lazy(() => import("./pages/CertificatePage"));
 const PublicReplayPage = lazy(() => import("./pages/PublicReplayPage"));
 const PublicActionReplayPage = lazy(() => import("./pages/PublicActionReplayPage"));
-const GhostPlaybackHarnessPage = lazy(() => import("./pages/GhostPlaybackHarnessPage"));
+// Dev-only visual harness (Phase 4). `import.meta.env.DEV` is false in
+// production builds, so Vite DCE drops this lazy import and the route —
+// /dev/ghost-playback must not ship publicly.
+const GhostPlaybackHarnessPage = import.meta.env.DEV
+  ? lazy(() => import("./pages/GhostPlaybackHarnessPage"))
+  : null;
 const GlobalIndexPage = lazy(() => import("./pages/GlobalIndexPage"));
 const ArenaEventsPage = lazy(() => import("./pages/ArenaEventsPage"));
 const ArenaEventDetailPage = lazy(() => import("./pages/ArenaEventDetailPage"));
@@ -82,7 +87,9 @@ export default function App() {
             <Route path="/cert/:token" element={<CertificatePage />} />
             <Route path="/replay/:shareToken" element={<PublicReplayPage />} />
             <Route path="/r/:shareToken" element={<PublicActionReplayPage />} />
-            <Route path="/dev/ghost-playback" element={<GhostPlaybackHarnessPage />} />
+            {GhostPlaybackHarnessPage ? (
+              <Route path="/dev/ghost-playback" element={<GhostPlaybackHarnessPage />} />
+            ) : null}
             <Route path="/global-index" element={<GlobalIndexPage />} />
             <Route path="/arena/events" element={<ArenaEventsPage />} />
             <Route path="/arena/events/:eventId" element={<ArenaEventDetailPage />} />
