@@ -582,3 +582,101 @@ async def test_resolve_ghost_by_share_token_none_without_token_row(
     )
     assert run.share_token is None
     assert await resolve_ghost_by_share_token(db, "nope") is None
+
+
+# ── POST /action-runs/race ───────────────────────────────────────────────────
+
+async def test_http_start_race_by_share_token_uses_ghost_seed_scenario_mode(
+    client, db, test_user, approved_scenario,
+):
+    token = f"raceTok{uuid.uuid4().hex[:10]}"
+    ghost = await _insert_run(
+        db,
+        user_id=test_user["user"].id,
+        scenario_id=approved_scenario.id,
+        mode="scenario",
+        share_token=token,
+        seed=777001,
+    )
+    resp = await client.post(
+        "/api/v1/action-runs/race",
+        json={"share_token": token},
+        headers=_auth_headers(test_user["token"]),
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["mode"] == "scenario"
+    assert data["seed"] == 777001
+    assert data["scenario_id"] == approved_scenario.id
+    assert "run_id" in data
+    assert set(data["ghost"].keys()) == PUBLIC_GHOST_DTO_KEYS
+    assert data["ghost"]["share_token"] == token
+    assert data["ghost"]["race_type"] == "scenario"
+    leaked = _all_keys(data["ghost"]) & GHOST_FORBIDDEN_KEYS
+    assert leaked == set()
+    assert "seed" not in data["ghost"]
+    # Live store registered under the new run_id
+    assert data["run_id"] in action_run_store._runs
+    async with action_run_store._lock:
+        action_run_store._runs.pop(data["run_id"], None)
+    assert ghost.seed == 777001
+
+
+async def test_http_start_race_by_ghost_run_id_daily_map_only(
+    client, db, test_user, approved_scenario,
+):
+    challenge = await _make_challenge(db, approved_scenario.id, date(2031, 5, 8))
+    ghost = await _insert_run(
+        db,
+        user_id=test_user["user"].id,
+        scenario_id=approved_scenario.id,
+        mode="daily",
+        daily_challenge_id=challenge.id,
+        seed=555,
+        action_log=_poisoned_action_log(),
+    )
+    resp = await client.post(
+        "/api/v1/action-runs/race",
+        json={"ghost_run_id": ghost.id},
+        headers=_auth_headers(test_user["token"]),
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["mode"] == "scenario"  # practice — not a second Daily
+    assert data["seed"] == 555
+    assert set(data["ghost"].keys()) == DAILY_GHOST_DTO_KEYS
+    assert data["ghost"]["ghost_run_id"] == ghost.id
+    assert data["ghost"]["race_type"] == "daily"
+    for entry in data["ghost"]["verb_timeline"]:
+        assert "target" not in entry
+    assert _LEAK_IP not in resp.text
+    async with action_run_store._lock:
+        action_run_store._runs.pop(data["run_id"], None)
+
+
+async def test_http_start_race_requires_auth(client):
+    resp = await client.post("/api/v1/action-runs/race", json={"share_token": "x"})
+    assert resp.status_code in (401, 403)
+
+
+async def test_http_start_race_rejects_both_or_neither_identifiers(
+    client, test_user,
+):
+    headers = _auth_headers(test_user["token"])
+    r1 = await client.post("/api/v1/action-runs/race", json={}, headers=headers)
+    assert r1.status_code == 400
+    r2 = await client.post(
+        "/api/v1/action-runs/race",
+        json={"share_token": "a", "ghost_run_id": "b"},
+        headers=headers,
+    )
+    assert r2.status_code == 400
+
+
+async def test_http_start_race_unknown_ghost_404(client, test_user):
+    resp = await client.post(
+        "/api/v1/action-runs/race",
+        json={"share_token": "missing-token-zzzz"},
+        headers=_auth_headers(test_user["token"]),
+    )
+    assert resp.status_code == 404

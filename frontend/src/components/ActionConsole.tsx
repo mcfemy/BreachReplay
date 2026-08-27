@@ -23,6 +23,8 @@ import {
 import { playChime, playTick, playThud } from "../lib/sound";
 import { appendFeedLines, type FeedLine } from "../lib/runFeed";
 import AlertFeed from "./AlertFeed";
+import GhostPlayback from "./GhostPlayback";
+import type { GhostDto } from "../lib/ghostPlayback";
 
 /**
  * Phase 2 Item 5 — the action console: 8 verb chips + cost labels, targets
@@ -34,6 +36,11 @@ import AlertFeed from "./AlertFeed";
  * `scan_network`, then known hosts with full `_host_summary` fields.
  * `scan_network` itself is unchanged — it still returns every host's
  * full node list in one shot.
+ *
+ * Phase 4 optional `ghost`: stacks GhostPlayback above the live map on
+ * narrow screens (spec §6 "mobile stacked maps"), side-by-side from md+.
+ * Ghost clock is driven by this run's live `elapsedSeconds` — synced, not
+ * a second independent timer.
  */
 
 const VERB_LABELS: Record<Verb, string> = {
@@ -138,9 +145,11 @@ function formatClock(seconds: number): string {
 interface ActionConsoleProps {
   runId: string;
   onComplete?: (summary: RunEndSummary) => void;
+  /** When set, race layout: ghost map + live map, dual clocks. */
+  ghost?: GhostDto | null;
 }
 
-export default function ActionConsole({ runId, onComplete }: ActionConsoleProps) {
+export default function ActionConsole({ runId, onComplete, ghost = null }: ActionConsoleProps) {
   const run = useRunSocket(runId);
   const user = useAuthStore((s) => s.user);
   const updateUser = useAuthStore((s) => s.updateUser);
@@ -535,6 +544,15 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
               />
               {run.connected ? "Live" : "Offline"}
             </span>
+            {ghost && (
+              <span
+                className="text-phosphor tabular-nums"
+                data-testid="live-race-clock"
+                title="Your live elapsed clock (synced with ghost)"
+              >
+                YOU {formatClock(run.elapsedSeconds)}
+              </span>
+            )}
           </div>
           <span className={capRemaining <= 60 ? "text-bleed" : "text-dim"}>{formatClock(capRemaining)} left to spend</span>
         </div>
@@ -565,47 +583,73 @@ export default function ActionConsole({ runId, onComplete }: ActionConsoleProps)
         </div>
       )}
 
-      {/* Map */}
-      <div className="flex-1 min-h-0 overflow-auto relative">
-        {/* Legend — colors read directly from nodeStateColor (theme/tokens.ts),
-            the same map NetworkMap itself renders from, so this can never
-            drift out of sync with what a host's dot actually looks like.
-            NODE_STATE_LEGEND is every NodeState; adding a state without
-            putting it here is a type error. Teaches the controls, not the
-            deduction: no mention of which host/IP is involved. */}
-        <div className="absolute top-2 right-2 z-10 bg-panel/90 border border-dim/20 rounded-md px-2 py-1.5 text-[9px] font-term text-dim leading-tight max-w-[150px] pointer-events-none">
-          {NODE_STATE_LEGEND.map((state, i) => (
-            <div key={state} className={`flex items-center gap-1.5${i === 0 ? "" : " mt-1"}`}>
-              <span
-                className="inline-block w-2 h-2 rounded-full shrink-0"
-                style={{
-                  backgroundColor: state === "unknown" ? unknownNodeFill : nodeStateColor[state],
-                  border: `1.5px ${state === "unknown" ? "dashed" : "solid"} ${nodeStateColor[state]}`,
-                }}
-              />
-              <span>{state}</span>
-            </div>
-          ))}
-          <div className="mt-1 text-dim/70">Attacker spreads along connections.</div>
-        </div>
-
-        {nodes.length === 0 ? (
-          <div className="flex h-full items-center justify-center px-6 text-center">
-            <div>
-              <p className="text-dim font-term text-sm uppercase tracking-widest mb-2">No hosts identified yet</p>
-              <p className="text-white/70 text-sm">Tap "Scan Network" below to reveal the topology.</p>
-            </div>
+      {/* Map — solo, or race: ghost + live (stacked mobile / split md+) */}
+      <div
+        className={
+          ghost
+            ? "flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden"
+            : "flex-1 min-h-0 overflow-auto relative"
+        }
+        data-testid={ghost ? "race-maps" : undefined}
+      >
+        {ghost && (
+          <div className="shrink-0 md:shrink md:flex-1 md:min-w-0 md:min-h-0 border-b md:border-b-0 md:border-r border-dim/20 overflow-auto max-h-[42%] md:max-h-none">
+            <GhostPlayback
+              ghost={ghost}
+              elapsedSeconds={run.elapsedSeconds}
+              mapClassName="w-full h-auto min-h-[160px] md:min-h-[220px] px-1 pb-2"
+            />
           </div>
-        ) : (
-          <NetworkMap
-            nodes={nodes}
-            edges={run.edges}
-            nodeStates={nodeStates}
-            clickableNodeIds={clickableNodeIds}
-            onNodeClick={handleNodeClick}
-            className="w-full h-auto min-h-[280px]"
-          />
         )}
+        <div className={`relative overflow-auto ${ghost ? "flex-1 min-h-0" : "h-full"}`}>
+          {ghost && (
+            <div className="sticky top-0 z-10 flex items-center justify-between px-3 py-1.5 bg-panel/95 border-b border-white/5">
+              <p className="text-[10px] text-white uppercase tracking-widest font-extrabold">You — live</p>
+              <p className="text-[11px] text-phosphor font-term tabular-nums" data-testid="live-map-clock">
+                {formatClock(run.elapsedSeconds)}
+              </p>
+            </div>
+          )}
+          {/* Legend — colors read directly from nodeStateColor (theme/tokens.ts),
+              the same map NetworkMap itself renders from, so this can never
+              drift out of sync with what a host's dot actually looks like.
+              NODE_STATE_LEGEND is every NodeState; adding a state without
+              putting it here is a type error. Teaches the controls, not the
+              deduction: no mention of which host/IP is involved. */}
+          <div className={`absolute ${ghost ? "top-10" : "top-2"} right-2 z-10 bg-panel/90 border border-dim/20 rounded-md px-2 py-1.5 text-[9px] font-term text-dim leading-tight max-w-[150px] pointer-events-none`}>
+            {NODE_STATE_LEGEND.map((state, i) => (
+              <div key={state} className={`flex items-center gap-1.5${i === 0 ? "" : " mt-1"}`}>
+                <span
+                  className="inline-block w-2 h-2 rounded-full shrink-0"
+                  style={{
+                    backgroundColor: state === "unknown" ? unknownNodeFill : nodeStateColor[state],
+                    border: `1.5px ${state === "unknown" ? "dashed" : "solid"} ${nodeStateColor[state]}`,
+                  }}
+                />
+                <span>{state}</span>
+              </div>
+            ))}
+            <div className="mt-1 text-dim/70">Attacker spreads along connections.</div>
+          </div>
+
+          {nodes.length === 0 ? (
+            <div className="flex h-full items-center justify-center px-6 text-center min-h-[180px]">
+              <div>
+                <p className="text-dim font-term text-sm uppercase tracking-widest mb-2">No hosts identified yet</p>
+                <p className="text-white/70 text-sm">Tap "Scan Network" below to reveal the topology.</p>
+              </div>
+            </div>
+          ) : (
+            <NetworkMap
+              nodes={nodes}
+              edges={run.edges}
+              nodeStates={nodeStates}
+              clickableNodeIds={clickableNodeIds}
+              onNodeClick={handleNodeClick}
+              className="w-full h-auto min-h-[220px] md:min-h-[280px]"
+            />
+          )}
+        </div>
       </div>
 
       {/* Host detail drawer */}

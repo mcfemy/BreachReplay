@@ -1,6 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useParams, Link } from "react-router-dom";
+import { useNavigate, useParams, Link, useSearchParams } from "react-router-dom";
 import { API_BASE, axiosInstance } from "../lib/api";
 import NetworkMap from "../components/NetworkMap";
 import { colors, type NodeState } from "../theme/tokens";
@@ -10,6 +10,8 @@ import {
   type HostSummary,
   type RunOutcome,
 } from "../lib/useRunSocket";
+import { useAuthStore } from "../store/auth";
+import { startGhostRace } from "../lib/ghostRace";
 
 // Public, no-auth Action Console run replay — GET /r/{token}.
 // Loading / 404 / OG-tag shape is borrowed from PublicReplayPage.tsx
@@ -19,6 +21,10 @@ import {
 // Console runs do not have. Timeline here is the redacted verb log
 // (verb + clock, no targets). The map is the same known/unknown
 // rendering ActionConsole already uses, read-only (no clickableNodeIds).
+//
+// Phase 4 — "Race this run" starts POST /action-runs/race with this
+// share_token (auth required). Unauthenticated visitors are sent to
+// login/register with ?next= back here + autoRace=1.
 
 interface PublicTimelineEntry {
   sequence_number: number;
@@ -98,6 +104,11 @@ function hostNodeState(h: HostSummary): NodeState {
 
 export default function PublicActionReplayPage() {
   const { shareToken } = useParams<{ shareToken: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const token = useAuthStore((s) => s.token);
+  const [raceBusy, setRaceBusy] = useState(false);
+  const [raceError, setRaceError] = useState<string | null>(null);
 
   const { data: replay, isLoading, isError } = useQuery<PublicActionReplay>({
     queryKey: ["public-action-replay", shareToken],
@@ -126,6 +137,42 @@ export default function PublicActionReplayPage() {
       document.title = "BreachReplay";
     };
   }, [replay, shareToken]);
+
+  const beginRace = async () => {
+    if (!shareToken) return;
+    setRaceBusy(true);
+    setRaceError(null);
+    try {
+      const started = await startGhostRace({ share_token: shareToken });
+      navigate(`/race/${started.run_id}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Could not start race";
+      setRaceError(message);
+      setRaceBusy(false);
+    }
+  };
+
+  // After login/register with ?next=/r/TOKEN?race=1
+  useEffect(() => {
+    if (!shareToken || !token) return;
+    if (searchParams.get("race") !== "1") return;
+    const next = new URLSearchParams(searchParams);
+    next.delete("race");
+    setSearchParams(next, { replace: true });
+    void beginRace();
+    // intentionally once when race=1 + authed
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shareToken, token]);
+
+  const handleRaceClick = () => {
+    if (!shareToken) return;
+    if (!token) {
+      const next = encodeURIComponent(`/r/${shareToken}?race=1`);
+      navigate(`/login?next=${next}`);
+      return;
+    }
+    void beginRace();
+  };
 
   if (isLoading) {
     return (
@@ -205,6 +252,25 @@ export default function PublicActionReplayPage() {
                 <div className="text-[9px] text-dim uppercase tracking-widest mb-1">Verbs</div>
                 <div className="text-sm font-bold">{replay.timeline.length}</div>
               </div>
+            </div>
+
+            <div className="mt-5 space-y-2">
+              <button
+                type="button"
+                onClick={handleRaceClick}
+                disabled={raceBusy}
+                data-testid="race-this-run"
+                className="w-full py-3 rounded-lg border border-phosphor/40 bg-phosphor/10 hover:bg-phosphor/20 text-phosphor font-bold text-sm uppercase tracking-wider transition-all active:scale-95 disabled:opacity-50"
+              >
+                {raceBusy ? "Starting race…" : "Race this run"}
+              </button>
+              <p className="text-center text-[10px] text-dim">
+                Start a live run on the same seed while this ghost plays beside you.
+                {!token ? " Sign in required." : ""}
+              </p>
+              {raceError && (
+                <p className="text-center text-xs text-bleed" role="alert">{raceError}</p>
+              )}
             </div>
           </div>
 

@@ -5,6 +5,8 @@ import { axiosInstance } from "../lib/api";
 import XPToast from "../components/XPToast";
 import ActionConsole from "../components/ActionConsole";
 import { OUTCOME_LABELS, type RunEndSummary } from "../lib/useRunSocket";
+import { startGhostRace } from "../lib/ghostRace";
+import type { GhostDto } from "../lib/ghostPlayback";
 
 // ── Daily Drill (spaced repetition on weak techniques) ──────────────────────
 interface KnowledgeCheckQuestion {
@@ -341,11 +343,21 @@ function ActionResultsPanel({
   challenge,
   leaderboard,
   onShare,
+  onRaceGhost,
+  raceBusy,
+  raceError,
+  hasGhost,
+  ghostLoading,
 }: {
   summary: RunEndSummary;
   challenge: DailyChallenge;
   leaderboard: ActionLeaderboardEntry[];
   onShare: () => void;
+  onRaceGhost: () => void;
+  raceBusy: boolean;
+  raceError: string | null;
+  hasGhost: boolean;
+  ghostLoading: boolean;
 }) {
   // Proportionate Response's 5-state outcome — `overreacted` deliberately
   // reads red, not yellow: it earns zero XP and no achievements (see
@@ -408,6 +420,35 @@ function ActionResultsPanel({
       >
         📋 Copy Result & Share
       </button>
+
+      {/* Phase 4 — race the analyst just above you (practice run on their seed) */}
+      {ghostLoading ? (
+        <p className="text-center text-xs text-gray-600" data-testid="daily-race-ghost-loading">
+          Checking for a ghost to race…
+        </p>
+      ) : hasGhost ? (
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={onRaceGhost}
+            disabled={raceBusy}
+            data-testid="daily-race-ghost"
+            className="w-full py-4 rounded-xl border border-phosphor/40 bg-phosphor/10 hover:bg-phosphor/20 text-phosphor font-bold text-lg transition-all active:scale-95 disabled:opacity-50"
+          >
+            {raceBusy ? "Starting race…" : "Race a ghost"}
+          </button>
+          <p className="text-center text-xs text-gray-600">
+            Live practice on the same seed as the run just above you — does not count as another Daily attempt.
+          </p>
+          {raceError && (
+            <p className="text-center text-xs text-red-400" role="alert">{raceError}</p>
+          )}
+        </div>
+      ) : (
+        <p className="text-center text-xs text-gray-600" data-testid="daily-race-ghost-unavailable">
+          No ghost above you on today&apos;s board (you&apos;re #1, or the board is empty).
+        </p>
+      )}
 
       {/* Action-mode leaderboard */}
       <div className="border border-gray-800 rounded-xl overflow-hidden">
@@ -537,6 +578,46 @@ export default function DailyBreachPage() {
     setTimeout(() => setCopied(false), 2500);
   }, [result, challenge]);
 
+  // Phase 4 — ghost above you on today's board (404 when #1 / empty).
+  const showResults = gamePhase === "results" && !!result;
+  const {
+    data: dailyGhost,
+    isLoading: dailyGhostLoading,
+  } = useQuery({
+    queryKey: ["daily-ghost", challenge?.id],
+    queryFn: async (): Promise<GhostDto | null> => {
+      try {
+        const { data } = await axiosInstance.get<GhostDto>("/daily/ghost", {
+          params: { daily_challenge_id: challenge!.id },
+        });
+        return data;
+      } catch {
+        // 404 = no ghost above you — treat as empty, not a hard failure.
+        return null;
+      }
+    },
+    enabled: showResults && !!challenge?.id,
+    retry: false,
+  });
+
+  const [raceBusy, setRaceBusy] = useState(false);
+  const [raceError, setRaceError] = useState<string | null>(null);
+
+  const handleRaceGhost = useCallback(async () => {
+    if (!dailyGhost?.ghost_run_id) return;
+    setRaceBusy(true);
+    setRaceError(null);
+    try {
+      const started = await startGhostRace({ ghost_run_id: dailyGhost.ghost_run_id });
+      navigate(`/race/${started.run_id}`);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Could not start race";
+      setRaceError(message);
+    } finally {
+      setRaceBusy(false);
+    }
+  }, [dailyGhost, navigate]);
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center">
@@ -610,6 +691,11 @@ export default function DailyBreachPage() {
               challenge={challenge}
               leaderboard={actionLeaderboard || []}
               onShare={handleShare}
+              onRaceGhost={handleRaceGhost}
+              raceBusy={raceBusy}
+              raceError={raceError}
+              hasGhost={!!dailyGhost?.ghost_run_id}
+              ghostLoading={dailyGhostLoading}
             />
           ) : challenge.already_played && challenge.my_attempt ? (
             // Legacy decision-gate completion (DailyAttempt row) from

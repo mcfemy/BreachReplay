@@ -19,6 +19,7 @@ const UserProfilePage = lazy(() => import("./pages/UserProfilePage"));
 const PricingPage = lazy(() => import("./pages/PricingPage"));
 const DailyBreachPage = lazy(() => import("./pages/DailyBreachPage"));
 const ActionConsolePage = lazy(() => import("./pages/ActionConsolePage"));
+const RaceRoomPage = lazy(() => import("./pages/RaceRoomPage"));
 const RedTeamPage = lazy(() => import("./pages/RedTeamPage"));
 const ArenaLobbyPage = lazy(() => import("./pages/ArenaLobbyPage"));
 const ArenaMatchPage = lazy(() => import("./pages/ArenaMatchPage"));
@@ -104,6 +105,7 @@ export default function App() {
               <Route path="/scenarios" element={<ScenarioLibraryPage />} />
               <Route path="/daily" element={<DailyBreachPage />} />
               <Route path="/run/:runId" element={<ActionConsolePage />} />
+              <Route path="/race/:runId" element={<RaceRoomPage />} />
               <Route path="/redteam" element={<RedTeamPage />} />
               <Route path="/arena" element={<ArenaLobbyPage />} />
               <Route path="/arena/match/:matchId" element={<ArenaMatchPage />} />

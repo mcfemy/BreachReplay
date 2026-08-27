@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/auth";
+import { safeAuthNext } from "../lib/ghostRace";
 
 const API_BASE = import.meta.env.VITE_API_URL || "/api/v1";
 
@@ -30,6 +31,8 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const { setAuth } = useAuthStore();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const postLoginPath = safeAuthNext(searchParams.get("next")) ?? "/scenarios";
 
   async function handleCredentials(e: React.FormEvent) {
     e.preventDefault();
@@ -42,7 +45,7 @@ export default function LoginPage() {
         setStep("mfa");
       } else {
         setAuth(data.access_token, data.refresh_token, data.user);
-        navigate("/scenarios");
+        navigate(postLoginPath);
       }
     } catch (err: any) {
       setError(err.message);
@@ -61,7 +64,7 @@ export default function LoginPage() {
         { mfa_token: mfaToken, code: mfaCode.trim() }
       );
       setAuth(data.access_token, data.refresh_token, data.user);
-      navigate("/scenarios");
+      navigate(postLoginPath);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -153,7 +156,7 @@ export default function LoginPage() {
               {loading ? "Authenticating..." : "Access System"}
             </button>
             <div className="flex items-center gap-3 text-xs text-breach-muted">
-              <Link to="/register" className="text-breach-blue hover:underline">Create account</Link>
+              <Link to={searchParams.get("next") ? `/register?next=${encodeURIComponent(searchParams.get("next")!)}` : "/register"} className="text-breach-blue hover:underline">Create account</Link>
               <span>·</span>
               <Link to="/forgot-password" className="hover:underline">Forgot password?</Link>
             </div>
