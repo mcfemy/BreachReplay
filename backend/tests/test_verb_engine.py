@@ -8,7 +8,7 @@ import re
 import pytest
 
 from app.services import action_engine, verb_engine
-from seed import LOG4SHELL
+from seed import LOG4SHELL, MGM_GRAND
 
 _SCENARIO = {
     "id": "test-scenario-colonial",
@@ -907,6 +907,74 @@ def test_log4shell_notification_matrix_works_end_to_end_with_zero_code_changes()
     assert breakdown["notification_points"] == verb_engine.NOTIFICATION_POINTS_PER_WARRANTED  # soc2_customers only
     # cisa and customer_contractual/legal/pr_comms are also warranted but
     # never notified in this test — each costs MISSED_NOTIFICATION_PENALTY.
+    assert breakdown["notification_penalty"] == verb_engine.MISSED_NOTIFICATION_PENALTY * 4
+
+
+_MGM_MATRIX_REQUIRED_KEYS = {
+    "id", "party_name", "warranted", "authority", "basis", "channel", "window", "rationale", "source_reference",
+}
+_MGM_EXPECTED_PARTIES = {
+    "pci_card_brands": True,
+    "fbi": True,
+    "affected_guests": True,
+    "sec": True,
+    "legal": True,
+    "caesars_quiet_payment": False,
+}
+
+
+def test_mgm_notification_matrix_matches_authored_spec_exactly():
+    """Phase 3 item 3 of 5 — seed matrix shape/content lock. Six parties,
+    warranted flags, and required schema keys must match the researched
+    MGM party list (PCI / FBI / guests / SEC / legal / Caesars-strategy)."""
+    matrix = MGM_GRAND["notification_matrix"]
+    assert len(matrix) == 6
+    assert {p["id"] for p in matrix} == set(_MGM_EXPECTED_PARTIES)
+    for party in matrix:
+        assert set(party.keys()) == _MGM_MATRIX_REQUIRED_KEYS
+        assert party["warranted"] is _MGM_EXPECTED_PARTIES[party["id"]]
+        assert isinstance(party["party_name"], str) and party["party_name"]
+        assert isinstance(party["authority"], str) and party["authority"]
+        assert isinstance(party["basis"], str) and party["basis"]
+        assert isinstance(party["channel"], str) and party["channel"]
+        assert isinstance(party["rationale"], str) and party["rationale"]
+        assert isinstance(party["source_reference"], str) and party["source_reference"]
+
+    by_id = {p["id"]: p for p in matrix}
+    assert "PCI-DSS" in by_id["pci_card_brands"]["basis"] or "PCI" in by_id["pci_card_brands"]["basis"]
+    assert "AA23-320A" in by_id["fbi"]["source_reference"]
+    assert "SIEM-411" in by_id["affected_guests"]["source_reference"]
+    assert "Item 1.05" in by_id["sec"]["party_name"] or "8-K" in by_id["sec"]["basis"]
+    assert "mgm-pressure-004" in by_id["legal"]["source_reference"]
+    assert "Caesars" in by_id["caesars_quiet_payment"]["party_name"]
+
+
+def test_mgm_notification_matrix_works_end_to_end_with_zero_code_changes():
+    """Phase 3 item 3 of 5 — extending the mechanism to MGM is pure content
+    authoring (seed.MGM_GRAND's notification_matrix + migration 0047), not a
+    verb_engine.py change. Compiles the REAL MGM_GRAND dict and exercises
+    escalate against its real 6-party matrix."""
+    compiled = action_engine.compile_scenario(MGM_GRAND, seed=11)
+    parties = verb_engine.public_notification_parties(compiled)
+    assert {p["id"] for p in parties} == set(_MGM_EXPECTED_PARTIES)
+    assert all(set(p.keys()) == {"id", "party_name"} for p in parties)
+
+    run = verb_engine.new_run(compiled)
+    warranted_result = verb_engine.apply_verb(run, "escalate", "pci_card_brands")
+    assert warranted_result.error is None
+    assert warranted_result.delta["warranted"] is True
+
+    unwarranted_result = verb_engine.apply_verb(
+        warranted_result.run, "escalate", "caesars_quiet_payment"
+    )
+    assert unwarranted_result.error is None
+    assert unwarranted_result.delta["warranted"] is False
+    assert any(p["type"] == "unwarranted_notification" for p in unwarranted_result.run.penalties)
+
+    breakdown = verb_engine.compute_score(unwarranted_result.run, "contained", cap_seconds=480)
+    assert breakdown["notification_points"] == verb_engine.NOTIFICATION_POINTS_PER_WARRANTED
+    # fbi / affected_guests / sec / legal are also warranted but never
+    # notified in this test — each costs MISSED_NOTIFICATION_PENALTY.
     assert breakdown["notification_penalty"] == verb_engine.MISSED_NOTIFICATION_PENALTY * 4
 
 
