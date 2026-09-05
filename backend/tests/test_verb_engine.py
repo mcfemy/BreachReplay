@@ -8,7 +8,7 @@ import re
 import pytest
 
 from app.services import action_engine, verb_engine
-from seed import LOG4SHELL, MGM_GRAND
+from seed import LOG4SHELL, MGM_GRAND, NHS_WANNACRY
 
 _SCENARIO = {
     "id": "test-scenario-colonial",
@@ -975,6 +975,79 @@ def test_mgm_notification_matrix_works_end_to_end_with_zero_code_changes():
     assert breakdown["notification_points"] == verb_engine.NOTIFICATION_POINTS_PER_WARRANTED
     # fbi / affected_guests / sec / legal are also warranted but never
     # notified in this test — each costs MISSED_NOTIFICATION_PENALTY.
+    assert breakdown["notification_penalty"] == verb_engine.MISSED_NOTIFICATION_PENALTY * 4
+
+
+_NHS_MATRIX_REQUIRED_KEYS = {
+    "id", "party_name", "warranted", "authority", "basis", "channel", "window", "rationale", "source_reference",
+}
+_NHS_EXPECTED_PARTIES = {
+    "ico_article_33": True,
+    "ncsc": True,
+    "nhs_england": True,
+    "trust_ceo_board": True,
+    "police_data_theft": True,
+    "ico_confirmed_breach": False,
+}
+
+
+def test_nhs_notification_matrix_matches_authored_spec_exactly():
+    """Phase 3 item 4 of 5 — seed matrix shape/content lock. Six parties,
+    warranted flags, and required schema keys must match the researched
+    NHS party list (ICO Article 33 / NCSC / NHS England / CEO-Board /
+    police judgment / ICO confirmed-breach wrong path)."""
+    matrix = NHS_WANNACRY["notification_matrix"]
+    assert len(matrix) == 6
+    assert {p["id"] for p in matrix} == set(_NHS_EXPECTED_PARTIES)
+    for party in matrix:
+        assert set(party.keys()) == _NHS_MATRIX_REQUIRED_KEYS
+        assert party["warranted"] is _NHS_EXPECTED_PARTIES[party["id"]]
+        assert isinstance(party["party_name"], str) and party["party_name"]
+        assert isinstance(party["authority"], str) and party["authority"]
+        assert isinstance(party["basis"], str) and party["basis"]
+        assert isinstance(party["channel"], str) and party["channel"]
+        assert isinstance(party["rationale"], str) and party["rationale"]
+        assert isinstance(party["source_reference"], str) and party["source_reference"]
+
+    by_id = {p["id"]: p for p in matrix}
+    assert "Article 33" in by_id["ico_article_33"]["party_name"] or "Article 33" in by_id["ico_article_33"]["basis"]
+    assert "nhs-gate-005" in by_id["ico_article_33"]["source_reference"]
+    assert "nhs-pressure-004" in by_id["ico_article_33"]["source_reference"]
+    assert "nhs-gate-004" in by_id["ncsc"]["source_reference"]
+    assert "nhs-gate-002" in by_id["nhs_england"]["source_reference"]
+    assert "nhs-pressure-001" in by_id["trust_ceo_board"]["source_reference"]
+    assert "JUDGMENT CALL" in by_id["police_data_theft"]["rationale"]
+    assert "nhs-gate-005" in by_id["ico_confirmed_breach"]["source_reference"]
+    assert by_id["ico_confirmed_breach"]["warranted"] is False
+
+
+def test_nhs_notification_matrix_works_end_to_end_with_zero_code_changes():
+    """Phase 3 item 4 of 5 — extending the mechanism to NHS WannaCry is pure
+    content authoring (seed.NHS_WANNACRY's notification_matrix + migration
+    0048), not a verb_engine.py change. Compiles the REAL NHS_WANNACRY dict
+    and exercises escalate against its real 6-party matrix."""
+    compiled = action_engine.compile_scenario(NHS_WANNACRY, seed=11)
+    parties = verb_engine.public_notification_parties(compiled)
+    assert {p["id"] for p in parties} == set(_NHS_EXPECTED_PARTIES)
+    assert all(set(p.keys()) == {"id", "party_name"} for p in parties)
+
+    run = verb_engine.new_run(compiled)
+    warranted_result = verb_engine.apply_verb(run, "escalate", "ico_article_33")
+    assert warranted_result.error is None
+    assert warranted_result.delta["warranted"] is True
+
+    unwarranted_result = verb_engine.apply_verb(
+        warranted_result.run, "escalate", "ico_confirmed_breach"
+    )
+    assert unwarranted_result.error is None
+    assert unwarranted_result.delta["warranted"] is False
+    assert any(p["type"] == "unwarranted_notification" for p in unwarranted_result.run.penalties)
+
+    breakdown = verb_engine.compute_score(unwarranted_result.run, "contained", cap_seconds=480)
+    assert breakdown["notification_points"] == verb_engine.NOTIFICATION_POINTS_PER_WARRANTED
+    # ncsc / nhs_england / trust_ceo_board / police_data_theft are also
+    # warranted but never notified in this test — each costs
+    # MISSED_NOTIFICATION_PENALTY.
     assert breakdown["notification_penalty"] == verb_engine.MISSED_NOTIFICATION_PENALTY * 4
 
 
