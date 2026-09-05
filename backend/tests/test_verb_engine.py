@@ -1087,8 +1087,11 @@ def test_colonial_notification_matrix_matches_authored_spec_exactly():
     by_id = {p["id"]: p for p in matrix}
     assert "Pipeline-2021-01" in by_id["cisa"]["basis"] or "Pipeline-2021-01" in by_id["cisa"]["source_reference"]
     assert "gate-009" in by_id["cisa"]["source_reference"]
-    assert "NERC CIP" in by_id["cisa"]["rationale"]
+    assert "NERC CIP MISMATCH" in by_id["cisa"]["rationale"]
+    assert "Colonial's real regulator is TSA/DHS via SD Pipeline-2021-01" in by_id["cisa"]["rationale"]
     assert "ADDED VIA RESEARCH" in by_id["tsa"]["rationale"]
+    assert "NERC CIP MISMATCH" in by_id["tsa"]["rationale"]
+    assert "Colonial's real regulator is TSA/DHS via SD Pipeline-2021-01" in by_id["tsa"]["rationale"]
     assert "Pipeline-2021-01" in by_id["tsa"]["basis"] or "Pipeline-2021-01" in by_id["tsa"]["source_reference"]
     assert "pressure-006" in by_id["fbi"]["source_reference"]
     assert "gate-010" in by_id["fbi"]["source_reference"]
