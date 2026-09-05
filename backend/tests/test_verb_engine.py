@@ -8,7 +8,7 @@ import re
 import pytest
 
 from app.services import action_engine, verb_engine
-from seed import LOG4SHELL, MGM_GRAND, NHS_WANNACRY
+from seed import COLONIAL_PIPELINE, LOG4SHELL, MGM_GRAND, NHS_WANNACRY
 
 _SCENARIO = {
     "id": "test-scenario-colonial",
@@ -1050,6 +1050,85 @@ def test_nhs_notification_matrix_works_end_to_end_with_zero_code_changes():
     # ncsc / nhs_england / trust_ceo_board / police_data_theft are also
     # warranted but never notified in this test — each costs
     # MISSED_NOTIFICATION_PENALTY.
+    assert breakdown["notification_penalty"] == verb_engine.MISSED_NOTIFICATION_PENALTY * 4
+
+
+_COLONIAL_MATRIX_REQUIRED_KEYS = {
+    "id", "party_name", "warranted", "authority", "basis", "channel", "window", "rationale", "source_reference",
+}
+_COLONIAL_EXPECTED_PARTIES = {
+    "cisa": True,
+    "tsa": True,
+    "fbi": True,
+    "legal_compliance": True,
+    "ceo_board_public": True,
+    "ransom_payment_strategy": False,
+}
+
+
+def test_colonial_notification_matrix_matches_authored_spec_exactly():
+    """Phase 3 item 5 of 5 — seed matrix shape/content lock. Six parties,
+    warranted flags, and required schema keys must match the researched
+    Colonial party list (CISA / TSA research / FBI / legal / CEO-Board /
+    ransom-as-strategy wrong path)."""
+    matrix = COLONIAL_PIPELINE["notification_matrix"]
+    assert len(matrix) == 6
+    assert {p["id"] for p in matrix} == set(_COLONIAL_EXPECTED_PARTIES)
+    for party in matrix:
+        assert set(party.keys()) == _COLONIAL_MATRIX_REQUIRED_KEYS
+        assert party["warranted"] is _COLONIAL_EXPECTED_PARTIES[party["id"]]
+        assert isinstance(party["party_name"], str) and party["party_name"]
+        assert isinstance(party["authority"], str) and party["authority"]
+        assert isinstance(party["basis"], str) and party["basis"]
+        assert isinstance(party["channel"], str) and party["channel"]
+        assert isinstance(party["rationale"], str) and party["rationale"]
+        assert isinstance(party["source_reference"], str) and party["source_reference"]
+
+    by_id = {p["id"]: p for p in matrix}
+    assert "Pipeline-2021-01" in by_id["cisa"]["basis"] or "Pipeline-2021-01" in by_id["cisa"]["source_reference"]
+    assert "gate-009" in by_id["cisa"]["source_reference"]
+    assert "NERC CIP" in by_id["cisa"]["rationale"]
+    assert "ADDED VIA RESEARCH" in by_id["tsa"]["rationale"]
+    assert "Pipeline-2021-01" in by_id["tsa"]["basis"] or "Pipeline-2021-01" in by_id["tsa"]["source_reference"]
+    assert "pressure-006" in by_id["fbi"]["source_reference"]
+    assert "gate-010" in by_id["fbi"]["source_reference"]
+    assert "gate-007" in by_id["legal_compliance"]["source_reference"]
+    assert "pressure-005" in by_id["ceo_board_public"]["source_reference"]
+    assert "pressure-007" in by_id["ceo_board_public"]["source_reference"]
+    assert by_id["ransom_payment_strategy"]["warranted"] is False
+    assert "gate-007" in by_id["ransom_payment_strategy"]["source_reference"]
+    # No manufactured NERC CIP party — honesty flag only.
+    assert "nerc" not in {p["id"] for p in matrix}
+    assert "nerc_cip" not in {p["id"] for p in matrix}
+
+
+def test_colonial_notification_matrix_works_end_to_end_with_zero_code_changes():
+    """Phase 3 item 5 of 5 — extending the mechanism to Colonial is pure
+    content authoring (seed.COLONIAL_PIPELINE's notification_matrix +
+    migration 0049), not a verb_engine.py change. Compiles the REAL
+    COLONIAL_PIPELINE dict and exercises escalate against its real
+    6-party matrix."""
+    compiled = action_engine.compile_scenario(COLONIAL_PIPELINE, seed=11)
+    parties = verb_engine.public_notification_parties(compiled)
+    assert {p["id"] for p in parties} == set(_COLONIAL_EXPECTED_PARTIES)
+    assert all(set(p.keys()) == {"id", "party_name"} for p in parties)
+
+    run = verb_engine.new_run(compiled)
+    warranted_result = verb_engine.apply_verb(run, "escalate", "cisa")
+    assert warranted_result.error is None
+    assert warranted_result.delta["warranted"] is True
+
+    unwarranted_result = verb_engine.apply_verb(
+        warranted_result.run, "escalate", "ransom_payment_strategy"
+    )
+    assert unwarranted_result.error is None
+    assert unwarranted_result.delta["warranted"] is False
+    assert any(p["type"] == "unwarranted_notification" for p in unwarranted_result.run.penalties)
+
+    breakdown = verb_engine.compute_score(unwarranted_result.run, "contained", cap_seconds=480)
+    assert breakdown["notification_points"] == verb_engine.NOTIFICATION_POINTS_PER_WARRANTED
+    # tsa / fbi / legal_compliance / ceo_board_public are also warranted
+    # but never notified in this test — each costs MISSED_NOTIFICATION_PENALTY.
     assert breakdown["notification_penalty"] == verb_engine.MISSED_NOTIFICATION_PENALTY * 4
 
 
