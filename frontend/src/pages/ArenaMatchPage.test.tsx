@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import ArenaMatchPage from "./ArenaMatchPage";
 import { useAuthStore } from "../store/auth";
@@ -13,6 +13,7 @@ import {
   setSoundEnabled,
   SOUND_STORAGE_KEY,
 } from "../lib/sound";
+import { TYPEWRITER_MS_PER_CHAR } from "../lib/typewriter";
 
 vi.mock("../lib/useArenaSocket", () => ({
   useArenaSocket: vi.fn(),
@@ -354,5 +355,108 @@ describe("ArenaMatchPage sound cues", () => {
     expect(playThud).toHaveBeenCalledTimes(1);
     expect(instances.length).toBeGreaterThan(0);
     expect(instances[0].createOscillator).toHaveBeenCalled();
+  });
+});
+
+const SAMPLE_ALERT = {
+  timestamp: "12:01:00",
+  severity: "high",
+  source_system: "EDR",
+  rule_id: "rule-lateral",
+  description: "Lateral movement detected on CORP-WKS-01",
+  raw_log: "proc=powershell.exe parent=winword.exe",
+};
+
+function stubMatchMedia(reduce: boolean) {
+  window.matchMedia = ((query: string) =>
+    ({
+      matches: query.includes("prefers-reduced-motion") ? reduce : false,
+      media: query,
+      onchange: null,
+      addListener: () => {},
+      removeListener: () => {},
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      dispatchEvent: () => false,
+    }) as unknown as MediaQueryList);
+}
+
+describe("ArenaMatchPage SIEM feed typewriter", () => {
+  beforeEach(() => {
+    resetSoundForTests();
+    localStorage.clear();
+    vi.mocked(api.get).mockResolvedValue(MATCH);
+    useAuthStore.setState({
+      user: {
+        id: "defender-1",
+        email: "blue@example.com",
+        full_name: "Blue Team",
+        role: "user",
+        organization_id: null,
+        has_seen_console_intro: true,
+        seen_verb_coachmarks: [],
+        has_acknowledged_racing_notice: true,
+      },
+      token: "tok",
+      refreshToken: "ref",
+    });
+    setSocket({});
+    stubMatchMedia(false);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    stubMatchMedia(false);
+  });
+
+  it("shows the empty alert-list placeholder when there are no events", async () => {
+    render(tree());
+    await screen.findByText("⚔️ Live Arena");
+    expect(screen.getByText(/Awaiting attacker activity/i)).toBeInTheDocument();
+    expect(screen.getByText("SIEM Feed — Live Arena")).toBeInTheDocument();
+    expect(screen.getByText("0 events")).toBeInTheDocument();
+    expect(screen.queryByTestId("arena-feed-line")).not.toBeInTheDocument();
+  });
+
+  it("types alert descriptions progressively via the shared typewriter", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { rerender } = render(tree());
+    await screen.findByText("⚔️ Live Arena");
+
+    setSocket({ alerts: [SAMPLE_ALERT] });
+    rerender(tree());
+
+    expect(screen.queryByTestId("arena-feed-line")).not.toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(TYPEWRITER_MS_PER_CHAR * 8);
+    });
+
+    const line = screen.getByTestId("arena-feed-line");
+    const partial = line.querySelector("p");
+    expect(partial?.textContent).toBe(SAMPLE_ALERT.description.slice(0, 8));
+    expect(partial?.textContent).not.toBe(SAMPLE_ALERT.description);
+    expect(screen.queryByText(SAMPLE_ALERT.raw_log!)).not.toBeInTheDocument();
+
+    await act(async () => {
+      vi.advanceTimersByTime(TYPEWRITER_MS_PER_CHAR * SAMPLE_ALERT.description.length);
+    });
+
+    expect(screen.getByTestId("arena-feed-line")).toHaveTextContent(SAMPLE_ALERT.description);
+    expect(screen.getByText(SAMPLE_ALERT.raw_log!)).toBeInTheDocument();
+    expect(screen.getByText("1 events")).toBeInTheDocument();
+  });
+
+  it("shows full alert text immediately under prefers-reduced-motion", async () => {
+    stubMatchMedia(true);
+    const { rerender } = render(tree());
+    await screen.findByText("⚔️ Live Arena");
+
+    setSocket({ alerts: [SAMPLE_ALERT] });
+    rerender(tree());
+
+    const line = await screen.findByTestId("arena-feed-line");
+    expect(line).toHaveTextContent(SAMPLE_ALERT.description);
+    expect(screen.getByText(SAMPLE_ALERT.raw_log!)).toBeInTheDocument();
   });
 });
