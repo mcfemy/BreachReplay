@@ -9,6 +9,12 @@
  *   thud  — isolate / correct block_ip / correct reset_creds (containment
  *           or a resolved targeted action)
  *   chime — run.end with contained / contained_at_cost (success only)
+ *
+ * Cues wired from ArenaMatchPage (same helpers — mute/unlock shared):
+ *   tick  — not wired: Arena has no player-facing countdown; the Phase H
+ *           `_MAX_MATCH_ACTIONS` turn-budget cap is a silent server fallback
+ *   thud  — defender isolate_host / disable_credential decision_result
+ *   chime — match_complete when THIS human's side won (not on a loss)
  */
 export const SOUND_STORAGE_KEY = "br_sound_enabled";
 
