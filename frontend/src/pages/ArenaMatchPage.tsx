@@ -4,6 +4,7 @@ import { api } from "../lib/api";
 import { useAuthStore } from "../store/auth";
 import { useArenaSocket } from "../lib/useArenaSocket";
 import { playChime, playThud } from "../lib/sound";
+import { useTypewriterLines } from "../lib/typewriter";
 import RankChangeToast from "../components/RankChangeToast";
 
 // ── Types (mirror OrgState.to_dict() from org_simulation.py exactly) ───────
@@ -626,6 +627,19 @@ function DefenderView({
   const enabledHarvestedCreds = credentials.filter((c) => c.harvested && !c.disabled);
   const flashedHosts = useHostChangeFlash(hosts);
 
+  // Same shared typewriter as Action Console's AlertFeed / the teaser —
+  // Arena alerts arrive as rich WS payloads (severity, source_system, …),
+  // so we map description → TypewriterLine and keep the SIEM card chrome.
+  const typewriterLines = useMemo(
+    () =>
+      alerts.map((a, i) => ({
+        id: `arena-${i}-${a.rule_id}-${a.timestamp}`,
+        text: a.description,
+      })),
+    [alerts],
+  );
+  const visibleChars = useTypewriterLines(typewriterLines);
+
   return (
     <div className="flex flex-1 overflow-hidden">
       {/* Left: SOC Console — persistent org visibility + free-form actions,
@@ -725,21 +739,41 @@ function DefenderView({
           <span className="text-[10px] text-slate-500 uppercase tracking-widest">SIEM Feed — Live Arena</span>
           <span className="text-[10px] text-slate-600">{alerts.length} events</span>
         </div>
-        <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
-          {alerts.map((alert, i) => (
-            <div key={i} className={`animate-bounce-in border border-slate-800 border-l-4 px-3 py-2 rounded text-[11px] ${SEV_BORDER[alert.severity] || "border-l-slate-600"}`}>
-              <div className="flex items-center gap-2 mb-1">
-                <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${SEV_BADGE[alert.severity] || "bg-slate-700 text-slate-300"}`}>
-                  {alert.severity}
-                </span>
-                <span className="text-slate-500 text-[9px]">{alert.timestamp}</span>
-                <span className="text-slate-600 text-[9px]">·</span>
-                <span className="text-slate-400 text-[9px] font-bold uppercase">{alert.source_system}</span>
+        <div
+          role="log"
+          aria-label="SIEM feed"
+          aria-live="polite"
+          className="flex-1 overflow-y-auto p-3 space-y-1.5"
+        >
+          {alerts.map((alert, i) => {
+            const line = typewriterLines[i];
+            const n = visibleChars[line.id] ?? 0;
+            // Match AlertFeed: don't mount the row until the typewriter
+            // has started (or reduced-motion has revealed full text).
+            if (!n) return null;
+            const shown = alert.description.slice(0, n);
+            const fullyTyped = n >= alert.description.length;
+            return (
+              <div
+                key={line.id}
+                data-testid="arena-feed-line"
+                className={`animate-bounce-in border border-slate-800 border-l-4 px-3 py-2 rounded text-[11px] ${SEV_BORDER[alert.severity] || "border-l-slate-600"}`}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${SEV_BADGE[alert.severity] || "bg-slate-700 text-slate-300"}`}>
+                    {alert.severity}
+                  </span>
+                  <span className="text-slate-500 text-[9px]">{alert.timestamp}</span>
+                  <span className="text-slate-600 text-[9px]">·</span>
+                  <span className="text-slate-400 text-[9px] font-bold uppercase">{alert.source_system}</span>
+                </div>
+                <p className="text-slate-200 leading-relaxed">{shown}</p>
+                {fullyTyped && alert.raw_log && (
+                  <p className="text-[9px] text-slate-600 mt-1 truncate">{alert.raw_log}</p>
+                )}
               </div>
-              <p className="text-slate-200 leading-relaxed">{alert.description}</p>
-              {alert.raw_log && <p className="text-[9px] text-slate-600 mt-1 truncate">{alert.raw_log}</p>}
-            </div>
-          ))}
+            );
+          })}
           {alerts.length === 0 && (
             <div className="flex flex-col items-center justify-center h-full py-20 text-slate-700">
               <div className="text-4xl mb-3">⚡</div>

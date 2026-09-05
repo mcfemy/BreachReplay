@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
 /**
- * Shared typewriter used by the Phase 1 teaser alert feed and the Action
- * Console incident feed (spec §1 / §5: ~20ms/char, staggered lines,
- * skipped entirely under prefers-reduced-motion).
+ * Shared typewriter used by the Phase 1 teaser alert feed, the Action
+ * Console incident feed, and Arena's SIEM feed (spec §1 / §5: ~20ms/char,
+ * staggered lines, skipped entirely under prefers-reduced-motion).
  */
 export const TYPEWRITER_MS_PER_CHAR = 20;
 export const ALERT_LINE_STAGGER_MS = 550;
