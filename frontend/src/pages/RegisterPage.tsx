@@ -64,7 +64,7 @@ export default function RegisterPage() {
       <div className="w-full max-w-md">
         <div className="mb-8 text-center">
           <h1 className="text-3xl font-bold text-breach-accent tracking-widest uppercase">BREACH REPLAY</h1>
-          <p className="text-breach-muted text-sm mt-2">Incident Response Training Platform</p>
+          <p className="text-breach-muted text-sm mt-2">Play Real Breaches</p>
         </div>
         <form onSubmit={handleSubmit} className="bg-breach-surface border border-breach-border rounded p-8 space-y-4">
           <h2 className="text-breach-text text-sm uppercase tracking-wider font-semibold">Create Account</h2>

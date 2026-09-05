@@ -158,7 +158,7 @@ function CertCard({ cert }: { cert: Cert }) {
   );
 }
 
-// ── Mastery (Phase 1 — Competency & Mastery Engine) ────────────────────────────
+// ── Mastery (Phase 1 — What You've Faced / technique profile) ─────────────────
 // Styling convention (house-wide decision made in Phase 7): pages that already use
 // the `breach-*` design tokens (this page, TeamsPage, AdminDashboardPage) keep using
 // `breach-*` for backgrounds/borders/muted text since it's the more distinctive brand
@@ -250,7 +250,7 @@ function MasterySection() {
   if (isLoading) {
     return (
       <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
-        <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-3">Competency &amp; Mastery</h2>
+        <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-3">What You've Faced</h2>
         <div className="flex justify-center py-6">
           <div className="w-6 h-6 border-2 border-yellow-500 border-t-transparent rounded-full animate-spin" />
         </div>
@@ -265,7 +265,7 @@ function MasterySection() {
   if (!mastery || (techniqueEntries.length === 0 && nistEntries.length === 0)) {
     return (
       <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
-        <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-3">Competency &amp; Mastery</h2>
+        <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-3">What You've Faced</h2>
         <div className="text-center py-8">
           <div className="text-3xl mb-2">🎯</div>
           <div className="text-xs text-breach-muted mb-1">No mastery data yet</div>
@@ -277,7 +277,7 @@ function MasterySection() {
 
   return (
     <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
-      <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-1">Competency &amp; Mastery</h2>
+      <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-1">What You've Faced</h2>
       <p className="text-[9px] text-gray-600 mb-4">Aggregated from every decision gate you've answered and every Red Team move you've executed</p>
 
       {weakest.length > 0 && (
@@ -922,7 +922,7 @@ export default function UserProfilePage() {
             <div className="bg-breach-surface border border-breach-border rounded-xl p-4">
               <h2 className="text-xs font-bold text-breach-muted uppercase tracking-widest mb-3">Recent XP</h2>
               {profile.recent_xp.length === 0 ? (
-                <p className="text-xs text-breach-muted">No XP yet. Complete a training activity!</p>
+                <p className="text-xs text-breach-muted">No XP yet. Complete a run!</p>
               ) : (
                 <div className="space-y-2.5">
                   {profile.recent_xp.map((tx, i) => (
@@ -960,7 +960,7 @@ export default function UserProfilePage() {
           </div>
         </div>
 
-        {/* Competency & Mastery */}
+        {/* What You've Faced */}
         <MasterySection />
 
         {/* Security */}
