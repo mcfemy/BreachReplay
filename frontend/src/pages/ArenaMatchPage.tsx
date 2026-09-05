@@ -3,6 +3,7 @@ import { Navigate, useNavigate, useParams } from "react-router-dom";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/auth";
 import { useArenaSocket } from "../lib/useArenaSocket";
+import { playChime, playThud } from "../lib/sound";
 import RankChangeToast from "../components/RankChangeToast";
 
 // ── Types (mirror OrgState.to_dict() from org_simulation.py exactly) ───────
@@ -155,6 +156,28 @@ export default function ArenaMatchPage() {
     if (match.defender_user_id === user.id) return "defender";
     return null;
   }, [match, user]);
+
+  // Containment landing — mirror ActionConsole's thud on isolate /
+  // correct reset_creds. Arena defender actions always arrive as
+  // decision_result with is_correct: true; only the two containment
+  // verbs get the cue (not patch/monitoring).
+  useEffect(() => {
+    const actionType = lastDecisionResult?.action_type;
+    if (actionType === "isolate_host" || actionType === "disable_credential") {
+      playThud();
+    }
+  }, [lastDecisionResult]);
+
+  // Human win only — don't chime on a loss or abandon. Tick is intentionally
+  // unwired: Arena has no player-facing clock/turn-budget UI (see sound.ts).
+  useEffect(() => {
+    if (!matchComplete || !role) return;
+    const status = matchComplete.status;
+    const humanWon =
+      (role === "defender" && status === "defender_won") ||
+      (role === "attacker" && status === "attacker_won");
+    if (humanWon) playChime();
+  }, [matchComplete, role]);
 
   // Guard placed after all hooks (not before) so hooks are always called in
   // the same order every render, regardless of whether the route actually
