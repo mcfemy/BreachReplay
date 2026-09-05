@@ -338,26 +338,23 @@ same conceptual scenario — not shared seed data. Don't assume a
 
 ---
 
-## Phase 3 — in progress
+## Phase 3 — juice / escalation / dossier (complete for 3(a) matrix roll-out)
 
 The written spec's Phase 3 (`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md` §5)
-is "Juice pass + share cards." The two items below shipped under the
-"Phase 3" label before that spec section documented them — added
-retroactively to §5 as 3(a)/3(b) rather than left untraceable. Neither
-touches `mastery_service.py`, `/mastery/me`, or Org Tabletop mode.
+is "Juice pass + share cards." Items 3(a)/3(b) shipped under the "Phase 3"
+label and were added retroactively to §5. Neither touches
+`mastery_service.py`, `/mastery/me`, or Org Tabletop mode.
 
 - **3(a) — Targeted escalation & notification proportionality**
-  (migration `0038_scenario_notification_matrix`) — `scenarios.
-  notification_matrix`: per-scenario authored ground truth for which
-  parties a warranted notification decision covers, so `escalate` can
-  finally be scored on proportionality (over-notifying a party the
-  incident doesn't warrant now has a cost), mirroring how Proportionate
-  Response already scores over-aggressive containment. Grounded in the
-  CMMC evidence-pack bar (Carter Schoenberg, Lead CMMC Certified
-  Assessor) logged as a Phase 3 follow-up in
-  `docs/PHASE_2_5_CMMC_EVIDENCE_SPEC_FINAL.md` §10. SolarWinds is the
-  only scenario with a real authored matrix so far; the other 4 flagship
-  scenarios are logged in `docs/BACKLOG.md`.
+  (migrations `0038` SolarWinds, `0042` Log4Shell, `0047` MGM, `0048` NHS,
+  `0049` Colonial) — `scenarios.notification_matrix`: per-scenario authored
+  ground truth for which parties a warranted notification decision covers,
+  so `escalate` can be scored on proportionality. Grounded in the CMMC
+  evidence-pack bar (Carter Schoenberg) logged as a Phase 3 follow-up in
+  `docs/PHASE_2_5_CMMC_EVIDENCE_SPEC_FINAL.md` §10. **All five flagship
+  scenarios now have complete authored matrices**, merged and deployed to
+  production (PRs #25/#27/#63/#64/#65; alembic head
+  `0049_colonial_notification_matrix`).
 
 - **3(b) — Technique Dossier** (PR #31, PR #32) — cross-run tracking of
   which real-world MITRE techniques a player has encountered via the
@@ -371,3 +368,45 @@ touches `mastery_service.py`, `/mastery/me`, or Org Tabletop mode.
   standalone `/dossier` page — all 30 techniques grouped by tactic, a
   fill counter, full content for encountered techniques, locked
   placeholders for the rest.
+
+Other Phase 3 juice-pass / share-card work may still be tracked separately
+in BACKLOG / the written §5 checklist; the notification-matrix 5-scenario
+roll-out itself is complete.
+
+---
+
+## Phase 4 — Ghost racing (complete — shipped and deployed)
+
+Written spec: `docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md` §6. Fully shipped
+and production-deployed via PRs #50–#59 (supporting CI/build PRs #52/#54/#58
+included in that range):
+
+- **#50** — ghost selection + leak-safe DTOs (`action_run_ghost.py`,
+  Daily + public share-token endpoints)
+- **#51** — ghost playback client + `/dev` harness
+- **#53** — race UI wired into Daily debrief and `/r/{token}` (practice
+  runs: `mode=scenario`, never a second Daily attempt — PR #53 integrity)
+- **#55** — beat-email consent foundation (schema, unsubscribe, racing notice)
+- **#56** — ghost-race beat detection (no email yet)
+- **#57** — ghost-race beat-notification emails
+- **#59** — per-user `response_index` bump on ghost-race beats
+
+Spec correction (2026-09-05, PR #62): literal "take their Daily
+leaderboard slot" is superseded — races do not reorder today's Daily
+board; the real reward loop is `GhostRaceBeat` + optional beat email +
+`response_index`.
+
+---
+
+## Phase 5 — Tone overhaul, session enforcement, cleanup (in progress)
+
+Written spec: `docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md` §7 — copy sweep,
+session-length enforcement audit, scenario library as case files,
+enterprise/consumer split, dead-flow cleanup.
+
+**Status (2026-09-05):** kicked off. Currently in progress, starting with
+documentation drift / naming-collision cleanup before any tone/copy work
+begins. Guided first-run (`9d58c58`, 2026-07-27) is **not** Phase 5 — already
+live (see Phase 2 Item 5 notes above). Fog-of-war two-tier unknown/known
+shipped earlier under a Phase 5 BACKLOG label (PR #35); Tier 0 and the
+broader copy sweep remain.

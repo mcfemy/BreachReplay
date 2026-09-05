@@ -347,8 +347,9 @@ export default function ActionConsole({ runId, onComplete, ghost = null }: Actio
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.lastDelta]);
 
-  // Idle nudge (onboarding layer 1 — see BREACHREPLAY_GAME_OVERHAUL_SPEC.md
-  // Phase 5 for the full guided first-run this is a small slice of). A
+  // Idle nudge (onboarding layer 1 — the full guided first-run shipped
+  // 2026-07-27 in commit `9d58c58` / ConsolePreBrief + in-run beats; this
+  // idle nudge is a small slice of that, not Phase 5 work). A
   // push to act, never a hint about WHAT to do: no host/IP/direction is
   // named. Any successful verb (a new lastDelta) resets the idle clock and
   // this stretch's one-shot flag, so the nudge can fire again later in the
@@ -566,9 +567,9 @@ export default function ActionConsole({ runId, onComplete, ghost = null }: Actio
       </div>
 
       {/* Objective line — persistent, one line, in-voice. Never names a
-          host/IP/direction; that deduction is the game (onboarding layer 1,
-          see BREACHREPLAY_GAME_OVERHAUL_SPEC.md — the full guided first-run
-          is Phase 5, this is deliberately smaller than that). */}
+          host/IP/direction; that deduction is the game (onboarding layer 1 —
+          the full guided first-run shipped 2026-07-27 and is NOT a Phase 5
+          item; this objective line is deliberately smaller than that). */}
       <div className="shrink-0 px-4 py-1.5 border-b border-dim/20 bg-panel/50">
         <p className="text-[11px] font-term text-white/80 leading-snug">
           <span className="text-phosphor font-bold">OBJECTIVE</span>{" "}
