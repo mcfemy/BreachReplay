@@ -121,7 +121,7 @@ export default function AppShell() {
               <span className="text-breach-accent text-lg font-black tracking-tight">BREACH</span>
               <span className="text-breach-text text-lg font-black tracking-tight">REPLAY</span>
             </div>
-            <div className="text-[9px] text-breach-muted uppercase tracking-widest mt-0.5">Cyber Training Platform</div>
+            <div className="text-[9px] text-breach-muted uppercase tracking-widest mt-0.5">Play Real Breaches</div>
           </div>
           <button
             onClick={closeMobileNav}
@@ -134,7 +134,7 @@ export default function AppShell() {
 
         {/* Main nav */}
         <nav className="flex-1 py-4 px-2 space-y-0.5 overflow-y-auto">
-          <div className="px-2 pb-2 text-[9px] text-breach-muted uppercase tracking-widest">Training</div>
+          <div className="px-2 pb-2 text-[9px] text-breach-muted uppercase tracking-widest">Play</div>
           {NAV.map(({ to, label, icon, desc }) => (
             <NavLink
               key={to}

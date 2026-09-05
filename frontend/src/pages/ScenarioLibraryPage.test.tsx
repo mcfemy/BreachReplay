@@ -32,7 +32,7 @@ const SCENARIOS = [
 ];
 
 // Distinct from SCENARIOS so a ticker click cannot be confused with the
-// grid card's "Launch Simulation" button (same POST /action-runs, different
+// grid card's "Start Run" button (same POST /action-runs, different
 // scenario_id). Shape matches FreshIncidentTicker's RecentScenario.
 const RECENT = [
   {
@@ -72,7 +72,7 @@ describe("ScenarioLibraryPage", () => {
     const user = userEvent.setup();
     renderPage();
 
-    await user.click(await screen.findByText("Launch Simulation →"));
+    await user.click(await screen.findByText("Start Run →"));
 
     await waitFor(() =>
       expect(api.post).toHaveBeenCalledWith("/action-runs", { scenario_id: "scn-1" }),

@@ -50,7 +50,7 @@ export default function OnboardingModal() {
           Welcome to BreachReplay
         </h2>
         <p className="text-xs text-breach-muted mb-6">
-          The only cybersecurity training platform built from real breach data.
+          The only platform where you play real breaches — built from real breach data.
         </p>
 
         <div className="space-y-3 mb-7">

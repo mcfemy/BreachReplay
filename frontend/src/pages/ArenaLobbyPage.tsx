@@ -70,7 +70,7 @@ const MODE_CARDS: { mode: Mode; icon: string; title: string; description: string
 ];
 
 const DIFF_META: Record<Difficulty, { label: string; color: string; desc: string }> = {
-  easy: { label: "Easy", color: "border-green-500/40 text-green-400 bg-green-500/10", desc: "Bot acts greedily and noisily — good for learning the mechanics." },
+  easy: { label: "Easy", color: "border-green-500/40 text-green-400 bg-green-500/10", desc: "Bot acts greedily and noisily — good for dialing in the mechanics." },
   medium: { label: "Medium", color: "border-yellow-500/40 text-yellow-400 bg-yellow-500/10", desc: "Balanced pacing — evaluates more of the org before acting." },
   hard: { label: "Hard", color: "border-red-500/40 text-red-400 bg-red-500/10", desc: "Bot plays near-optimally and reacts fast — a real test." },
 };

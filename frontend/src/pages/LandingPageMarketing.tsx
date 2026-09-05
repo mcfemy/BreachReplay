@@ -134,7 +134,7 @@ export default function LandingPageMarketing() {
       {/* ── How it works ─────────────────────────────────────── */}
       <section className="py-24 px-6 max-w-6xl mx-auto">
         <div className="text-center mb-16">
-          <h2 className="text-3xl font-bold mb-4">Run your first tabletop in under 5 minutes</h2>
+          <h2 className="text-3xl font-bold mb-4">Run your first breach in under 5 minutes</h2>
           <p className="text-gray-400 max-w-xl mx-auto">No facilitators. No slide decks. No scheduling chaos. Just pick a scenario and go.</p>
         </div>
         <div className="grid md:grid-cols-3 gap-8">

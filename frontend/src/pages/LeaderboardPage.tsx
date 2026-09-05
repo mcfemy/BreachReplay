@@ -35,7 +35,7 @@ export default function LeaderboardPage() {
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-xl font-black text-breach-text uppercase tracking-widest">Global Leaderboard</h1>
-          <p className="text-breach-muted text-xs mt-1">Ranked by total XP earned across all training activities</p>
+          <p className="text-breach-muted text-xs mt-1">Ranked by total XP earned across all runs</p>
         </div>
 
         {/* Top 3 podium */}
