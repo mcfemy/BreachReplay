@@ -1017,6 +1017,8 @@ def test_nhs_notification_matrix_matches_authored_spec_exactly():
     assert "nhs-gate-002" in by_id["nhs_england"]["source_reference"]
     assert "nhs-pressure-001" in by_id["trust_ceo_board"]["source_reference"]
     assert "JUDGMENT CALL" in by_id["police_data_theft"]["rationale"]
+    assert "WARRANTED, BUT NOT FIRST-PRIORITY" in by_id["police_data_theft"]["rationale"]
+    assert "not as a co-equal or first-wave" in by_id["police_data_theft"]["rationale"]
     assert "nhs-gate-005" in by_id["ico_confirmed_breach"]["source_reference"]
     assert by_id["ico_confirmed_breach"]["warranted"] is False
 
