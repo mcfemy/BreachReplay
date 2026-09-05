@@ -232,7 +232,7 @@ export default function ScenarioLibraryPage() {
                   )}
                 </div>
                 <div className="flex items-center justify-between text-[10px] text-breach-muted mb-4 border-t border-breach-border/40 pt-3">
-                  <span className="flex items-center gap-1">⏱ 10-minute run</span>
+                  <span className="flex items-center gap-1">⏱ {s.estimated_minutes}-minute run</span>
                   <span className="flex items-center gap-1">▶ {s.play_count} plays</span>
                   {s.avg_score != null && (
                     <span className={`flex items-center gap-1 font-bold ${s.avg_score >= 80 ? "text-green-400" : s.avg_score >= 60 ? "text-yellow-400" : "text-breach-accent"}`}>
