@@ -45,9 +45,12 @@ E2E) are functionally implemented with direct code/test evidence but not
 formally proven via dedicated determinism / mobile-viewport / brand-new-signup
 E2E tests. Treated as accepted QA debt given real functional correctness.
 
-**Explicitly unshipped spec language (deferred, not forgotten):** player
-experience "take their leaderboard slot" — beat is recorded; no dynamic slot
-reorder yet.
+**"Take their leaderboard slot" — resolved / superseded (2026-09-05):** not an
+open Phase 4 gap. Literal Daily-board reorder from a ghost race contradicts
+the PR #53 practice-run integrity design. Spec §6 now documents the shipped
+substitute (`GhostRaceBeat` + beat email + `response_index` bump; PRs #56/#57/#59).
+A separate head-to-head / race-standings surface would be new product scope
+if ever wanted — not unfinished Phase 4 work.
 
 **Retroactive racing notice:** resolved via first-use `has_acknowledged_racing_notice`
 gate — existing users see the notice on first race/share; no separate retroactive
