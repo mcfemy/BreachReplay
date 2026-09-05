@@ -204,6 +204,7 @@ Also not part of the original juice-pass build items — same gap as 3(a) above:
 ### Player experience
 
 On today's Daily Breach (and any scenario with prior runs), the player can race a **ghost**: another player's recorded action log replayed on the identical seed. Split map view — your org on top, the ghost's org below, both clocks live. You watch them isolate the wrong host in real time while you find the right one. Beat their containment time, take their leaderboard slot.
+  - **Correction (2026-09-05):** the literal reading (beating a ghost reorders today's Daily leaderboard) is **incompatible** with the one-attempt-per-day integrity protection shipped in PR #53 — races are `mode=scenario` practice runs that deliberately never touch today's Daily board. The actual shipped substitute for "taking their slot" is a recorded `GhostRaceBeat`, an optional beat-notification email to the ghost's owner, and a `response_index` bump for the racer (PRs #56, #57, #59) — that is the real competitive reward loop, not a literal board reorder. A genuinely new head-to-head / race-standings surface (separate from Daily) would be **new product scope**, not a missing Phase 4 wire-up; log it in BACKLOG as a distinct future idea if worth keeping, not as unfinished Phase 4 work.
 
 ### Build items
 
