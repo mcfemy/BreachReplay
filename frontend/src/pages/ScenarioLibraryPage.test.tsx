@@ -67,12 +67,12 @@ describe("ScenarioLibraryPage", () => {
     expect(await screen.findByText("Colonial Pipeline")).toBeInTheDocument();
   });
 
-  it("launches compressed by default via primary button", async () => {
+  it("launches compressed via POST /action-runs — no Full length control", async () => {
     vi.mocked(api.post).mockResolvedValue({ run_id: "run-1" });
     const user = userEvent.setup();
     renderPage();
 
-    await user.click(await screen.findByText("Compressed · 10 min →"));
+    await user.click(await screen.findByText("Start Run →"));
 
     await waitFor(() =>
       expect(api.post).toHaveBeenCalledWith("/action-runs", {
@@ -80,27 +80,9 @@ describe("ScenarioLibraryPage", () => {
         length: "compressed",
       }),
     );
-  });
-
-  it("launches full length via secondary button", async () => {
-    vi.mocked(api.post).mockResolvedValue({ run_id: "run-full" });
-    const user = userEvent.setup();
-    renderPage();
-
-    await user.click(await screen.findByText("Full length · 45 min →"));
-
-    await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith("/action-runs", {
-        scenario_id: "scn-1",
-        length: "full",
-      }),
-    );
-  });
-
-  it("does not use the word tabletop on length controls", async () => {
-    renderPage();
-    await screen.findByText("Colonial Pipeline");
+    expect(screen.queryByText(/Full length/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/tabletop/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/10-minute run/i)).toBeInTheDocument();
   });
 
   it("launches a ticker scenario via POST /action-runs on click", async () => {

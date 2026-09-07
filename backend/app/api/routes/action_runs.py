@@ -71,7 +71,8 @@ class ActionRunCreateRequest(BaseModel):
     scenario_id: str
     # Solo Action Console length. Default compressed = today's 10-min behavior.
     # "full" = estimated_minutes budget + uncompressed timeline (ratio 1.0).
-    # Not Org Tabletop — never use the word tabletop on this consumer path.
+    # Spec §0.1: Full is org/enterprise-only — gated on User.organization_id
+    # (same membership check as Teams/OrgUpload), never on consumer solo.
     length: Literal["compressed", "full"] = "compressed"
 
 
@@ -100,6 +101,16 @@ async def create_action_run(
     scenario = result.scalar_one_or_none()
     if scenario is None:
         raise HTTPException(status_code=404, detail="Scenario not found")
+
+    # Spec §0.1 — Full length is org/enterprise only. Membership is
+    # User.organization_id (same gate as Teams `_get_org_id` / OrgUpload /
+    # billing). Reject rather than silent-fallback to compressed so a client
+    # that asked for Full never believes it got an uncompressed run.
+    if payload.length == "full" and not current_user.organization_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Full-length runs require an organization account",
+        )
 
     # secrets.randbelow: non-deterministic seed CHOICE is intentional and
     # safe here — mirrors arena.py's create_match — never inside
@@ -188,6 +199,14 @@ async def start_ghost_race(
         raise HTTPException(status_code=404, detail="Ghost not found")
     if not ghost_row.outcome or ghost_row.duration_seconds is None:
         raise HTTPException(status_code=404, detail="Ghost not found")
+    # Full-length ghosts used compression_ratio=1.0; always recompiling at
+    # the compressed default would race a different world on the same seed.
+    # Refuse rather than silently mismatch (BACKLOG length-mode follow-up #1).
+    if ghost_row.length_mode == "full":
+        raise HTTPException(
+            status_code=400,
+            detail="Full-length runs cannot be raced",
+        )
 
     scenario = await db.scalar(select(Scenario).where(Scenario.id == ghost_row.scenario_id))
     if scenario is None or scenario.status != "approved":

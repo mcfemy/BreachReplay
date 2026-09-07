@@ -193,3 +193,140 @@ def test_compile_scenario_ratio_override_is_independent_of_scenario_field():
     f_final = next(s for s in full.stages if s.is_final)
     assert c_final.trigger_seconds == 2940 // 8
     assert f_final.trigger_seconds == 2940
+
+
+@pytest.fixture
+async def consumer_user(db):
+    """Solo account with no organization_id — consumer path for §0.1 gate."""
+    from app.core.security import create_access_token, hash_password
+    from app.models.user import User
+
+    user = User(
+        email="consumer-solo@example.com",
+        hashed_password=hash_password("StrongPass1!"),
+        full_name="Solo Consumer",
+        role="analyst",
+        organization_id=None,
+    )
+    db.add(user)
+    await db.flush()
+    token = create_access_token({"sub": user.id})
+    return {"token": token, "user": user}
+
+
+async def test_non_org_user_cannot_create_full_length_run(
+    client, consumer_user, compressible_scenario,
+):
+    """API-level §0.1 gate — not merely UI absence on ScenarioLibraryPage."""
+    resp = await client.post(
+        "/api/v1/action-runs",
+        json={"scenario_id": compressible_scenario.id, "length": "full"},
+        headers=_auth_headers(consumer_user["token"]),
+    )
+    assert resp.status_code == 403
+    assert "organization" in resp.json()["detail"].lower()
+    assert not any(
+        live.user_id == consumer_user["user"].id
+        for live in action_run_store._runs.values()
+    )
+
+
+async def test_non_org_user_can_still_create_compressed(
+    client, consumer_user, compressible_scenario,
+):
+    resp = await client.post(
+        "/api/v1/action-runs",
+        json={"scenario_id": compressible_scenario.id, "length": "compressed"},
+        headers=_auth_headers(consumer_user["token"]),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["length"] == "compressed"
+    async with action_run_store._lock:
+        action_run_store._runs.pop(resp.json()["run_id"], None)
+
+
+async def test_org_user_can_create_full_length(
+    client, test_user, compressible_scenario,
+):
+    """test_user has organization_id via test_org — Full remains available."""
+    assert test_user["user"].organization_id is not None
+    resp = await client.post(
+        "/api/v1/action-runs",
+        json={"scenario_id": compressible_scenario.id, "length": "full"},
+        headers=_auth_headers(test_user["token"]),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["length"] == "full"
+    async with action_run_store._lock:
+        action_run_store._runs.pop(resp.json()["run_id"], None)
+
+
+async def test_race_rejects_full_length_ghost_by_share_token(
+    client, db, test_user, compressible_scenario,
+):
+    import uuid
+
+    ghost = ActionRun(
+        id=str(uuid.uuid4()),
+        user_id=test_user["user"].id,
+        scenario_id=compressible_scenario.id,
+        seed=42,
+        mode="scenario",
+        length_mode=LENGTH_FULL,
+        cap_seconds=2700,
+        compression_ratio=1.0,
+        action_log=[],
+        score_breakdown={},
+        total_score=100,
+        duration_seconds=200,
+        outcome="contained",
+        share_token="fullghosttok123456789012345678",  # 32 chars
+        public_snapshot={"hosts": [], "edges": [], "techniques_encountered": []},
+    )
+    db.add(ghost)
+    await db.flush()
+
+    resp = await client.post(
+        "/api/v1/action-runs/race",
+        json={"share_token": ghost.share_token},
+        headers=_auth_headers(test_user["token"]),
+    )
+    assert resp.status_code == 400
+    assert "full-length" in resp.json()["detail"].lower()
+    assert not any(
+        live.ghost_opponent_run_id == ghost.id
+        for live in action_run_store._runs.values()
+    )
+
+
+async def test_race_rejects_full_length_ghost_by_ghost_run_id(
+    client, db, test_user, compressible_scenario,
+):
+    import uuid
+
+    ghost = ActionRun(
+        id=str(uuid.uuid4()),
+        user_id=test_user["user"].id,
+        scenario_id=compressible_scenario.id,
+        seed=99,
+        mode="scenario",
+        length_mode=LENGTH_FULL,
+        cap_seconds=2700,
+        compression_ratio=1.0,
+        action_log=[],
+        score_breakdown={},
+        total_score=50,
+        duration_seconds=180,
+        outcome="contained",
+        public_snapshot={"hosts": [], "edges": [], "techniques_encountered": []},
+    )
+    db.add(ghost)
+    await db.flush()
+
+    resp = await client.post(
+        "/api/v1/action-runs/race",
+        json={"ghost_run_id": ghost.id},
+        headers=_auth_headers(test_user["token"]),
+    )
+    assert resp.status_code == 400
+    assert "full-length" in resp.json()["detail"].lower()

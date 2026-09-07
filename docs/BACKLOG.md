@@ -62,18 +62,18 @@ Shipped: solo `POST /action-runs` accepts `length: compressed|full`
 (default compressed). Full = `estimated_minutes * 60` cap **and**
 `compression_ratio=1.0` at compile; Compressed keeps scenario ratio + 600s.
 `ActionRun` persists `length_mode` / `cap_seconds` / `compression_ratio`
-(migration `0050`). Library UI: "Compressed · 10 min" / "Full length · N min"
-(no "tabletop" on consumer controls). Daily 480, teaser, and Org
-Tabletop/SimulationSession are untouched.
+(migration `0050`). **Full is org-gated** (`User.organization_id`, same
+check as Teams/OrgUpload) — consumer library is compressed-only
+("10-minute run"). Daily 480, teaser, and Org Tabletop/SimulationSession
+are untouched. **Ghost races refuse Full-length ghosts** (400) rather than
+recompiling them compressed on the same seed.
 
 **Open — do not silently ignore:**
 
-1. **Ghost-race length matching.** `POST /action-runs/race` still always
-   starts a compressed practice run. A ghost recorded from a Full-length
-   run used an uncompressed timeline; racing it on the compressed compile
-   is a different world clock. Decide whether races should inherit the
-   ghost's persisted `length_mode` (and ratio/cap), always stay compressed,
-   or refuse Full ghosts until matching exists.
+1. ~~Ghost-race length matching.~~ **Resolved for safety (refuse Full
+   ghosts).** Optional later: inherit Full ghost ratio/cap so org players
+   can race Full-vs-Full; not required while Full stays org-gated and
+   races refuse those ghosts.
 
 2. **Score / speed-bonus comparability across lengths.**
    `compute_score` speed bonus is `(cap_seconds - elapsed) * 2`. A Full

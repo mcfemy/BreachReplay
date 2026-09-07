@@ -61,14 +61,13 @@ export default function ScenarioLibraryPage() {
     setSemantic((v) => !v);
   }
 
-  async function launchScenario(scenarioId: string, length: "compressed" | "full" = "compressed") {
-    // Solo Action Console length choice — Compressed (10 min) is the default;
-    // Full length uses estimated_minutes + uncompressed timeline. Org Tabletop
-    // (SimulationSession / SessionMultiplayerLobbyPage) is a separate system.
+  async function launchScenario(scenarioId: string) {
+    // Consumer library is compressed-only (Phase 5 / spec §0.1). Full length
+    // is org/enterprise-gated at the API; Org Tabletop stays on SimulationSession.
     try {
       const run = await api.post<{ run_id: string }>("/action-runs", {
         scenario_id: scenarioId,
-        length,
+        length: "compressed",
       });
       navigate(`/run/${run.run_id}`);
     } catch (err: any) {
@@ -232,7 +231,7 @@ export default function ScenarioLibraryPage() {
                   )}
                 </div>
                 <div className="flex items-center justify-between text-[10px] text-breach-muted mb-4 border-t border-breach-border/40 pt-3">
-                  <span className="flex items-center gap-1">⏱ Compressed 10 min · Full {s.estimated_minutes} min</span>
+                  <span className="flex items-center gap-1">⏱ 10-minute run</span>
                   <span className="flex items-center gap-1">▶ {s.play_count} plays</span>
                   {s.avg_score != null && (
                     <span className={`flex items-center gap-1 font-bold ${s.avg_score >= 80 ? "text-green-400" : s.avg_score >= 60 ? "text-yellow-400" : "text-breach-accent"}`}>
@@ -240,20 +239,12 @@ export default function ScenarioLibraryPage() {
                     </span>
                   )}
                 </div>
-                <div className="flex flex-col gap-2">
-                  <button
-                    onClick={() => launchScenario(s.id, "compressed")}
-                    className="w-full bg-breach-accent hover:bg-red-600 text-white py-2 rounded text-xs uppercase tracking-widest transition-colors font-bold"
-                  >
-                    Compressed · 10 min →
-                  </button>
-                  <button
-                    onClick={() => launchScenario(s.id, "full")}
-                    className="w-full border border-breach-border hover:border-breach-blue text-breach-text hover:text-white py-2 rounded text-xs uppercase tracking-widest transition-colors font-bold bg-transparent"
-                  >
-                    Full length · {s.estimated_minutes} min →
-                  </button>
-                </div>
+                <button
+                  onClick={() => launchScenario(s.id)}
+                  className="w-full bg-breach-accent hover:bg-red-600 text-white py-2 rounded text-xs uppercase tracking-widest transition-colors font-bold"
+                >
+                  Start Run →
+                </button>
               </div>
             ))}
           </div>
