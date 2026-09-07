@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import String, Integer, DateTime, ForeignKey, JSON, Enum as SAEnum, UniqueConstraint
+from sqlalchemy import String, Integer, Float, DateTime, ForeignKey, JSON, Enum as SAEnum, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
@@ -47,6 +47,18 @@ class ActionRun(Base):
         nullable=False,
         index=True,
     )
+    # Solo Action Console length choice (migration 0050). "compressed" =
+    # 10-min default; "full" = estimated_minutes budget + uncompressed
+    # timeline. Daily/teaser/pre-0050 rows use server_default "compressed".
+    # Not Org Tabletop — that stays on SimulationSession.
+    length_mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="compressed", server_default="compressed",
+    )
+    # Cap actually enforced for this run (game-clock seconds). Nullable for
+    # rows finalized before 0050; new rows always set at finalize.
+    cap_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Compression ratio applied at compile for this run (1.0 for Full).
+    compression_ratio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     action_log: Mapped[list] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=False, default=list, server_default="[]")
     score_breakdown: Mapped[dict] = mapped_column(JSONB().with_variant(JSON, "sqlite"), nullable=False, default=dict, server_default="{}")
     # Plain sortable column, deliberately separate from score_breakdown

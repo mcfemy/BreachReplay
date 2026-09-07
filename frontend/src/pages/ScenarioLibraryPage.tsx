@@ -62,14 +62,13 @@ export default function ScenarioLibraryPage() {
   }
 
   async function launchScenario(scenarioId: string) {
-    // Phase 2 Item 5: individual/solo launches now go through the action
-    // console (mode="scenario", 10-minute "Compressed Run" cap) instead of
-    // the org-tabletop SimulationSession flow — this button was already the
-    // only caller that ever created a "solo" session, so the multiplayer
-    // lobby flow (reached elsewhere, via SessionMultiplayerLobbyPage) is
-    // untouched.
+    // Consumer library is compressed-only (Phase 5 / spec §0.1). Full length
+    // is org/enterprise-gated at the API; Org Tabletop stays on SimulationSession.
     try {
-      const run = await api.post<{ run_id: string }>("/action-runs", { scenario_id: scenarioId });
+      const run = await api.post<{ run_id: string }>("/action-runs", {
+        scenario_id: scenarioId,
+        length: "compressed",
+      });
       navigate(`/run/${run.run_id}`);
     } catch (err: any) {
       alert(err.message);
@@ -232,7 +231,7 @@ export default function ScenarioLibraryPage() {
                   )}
                 </div>
                 <div className="flex items-center justify-between text-[10px] text-breach-muted mb-4 border-t border-breach-border/40 pt-3">
-                  <span className="flex items-center gap-1">⏱ {s.estimated_minutes}-minute run</span>
+                  <span className="flex items-center gap-1">⏱ 10-minute run</span>
                   <span className="flex items-center gap-1">▶ {s.play_count} plays</span>
                   {s.avg_score != null && (
                     <span className={`flex items-center gap-1 font-bold ${s.avg_score >= 80 ? "text-green-400" : s.avg_score >= 60 ? "text-yellow-400" : "text-breach-accent"}`}>

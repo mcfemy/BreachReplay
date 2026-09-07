@@ -53,15 +53,38 @@ logger = logging.getLogger(__name__)
 # teaser 60-90s hard cap (90 used here — the no-auth landing teaser itself
 # is a separate system, TeaserEvent/teaser.py, not this store; this entry
 # exists for when/if a teaser-flavored action run is wired to it), Daily
-# Breach 8 minutes max, full scenarios default to the 10-minute compressed
-# mode for individual users. Org tabletop sessions are a completely
-# different system (SimulationSession/simulation_ws_handler) and never
-# reach this store at all.
+# Breach 8 minutes max, scenario default is the 10-minute compressed mode.
+# Scenario "Full length" overrides the scenario entry with
+# estimated_minutes * 60 at start_run (see resolve_scenario_length_params).
+# Org tabletop sessions are a completely different system
+# (SimulationSession/simulation_ws_handler) and never reach this store.
 CAP_SECONDS_BY_MODE: dict[str, int] = {
     "teaser": 90,
     "daily": 8 * 60,
     "scenario": 10 * 60,
 }
+
+# Action Console solo length choice (POST /action-runs). Not used by Daily
+# or Org Tabletop. "full" forces compression_ratio=1.0 at compile time.
+LENGTH_COMPRESSED = "compressed"
+LENGTH_FULL = "full"
+
+
+def resolve_scenario_length_params(
+    length: str, estimated_minutes: Optional[int],
+) -> tuple[str, int, Optional[float]]:
+    """Map a solo scenario length choice → (length_mode, cap_seconds, ratio_override).
+
+    Compressed (default): 600s cap; ratio_override=None so compile_scenario
+    uses Scenario.compression_ratio. Full: estimated_minutes*60 cap;
+    ratio_override=1.0 (uncompressed authored timeline). Cap alone without
+    the ratio change would leave stages on the 8× schedule — both must move
+    together.
+    """
+    if length == LENGTH_FULL:
+        minutes = estimated_minutes if estimated_minutes and estimated_minutes > 0 else 45
+        return LENGTH_FULL, int(minutes) * 60, 1.0
+    return LENGTH_COMPRESSED, CAP_SECONDS_BY_MODE["scenario"], None
 
 # "force-finalizes any run whose elapsed time has passed the mode's cap
 # plus a 60s grace" — the grace absorbs normal WS round-trip latency around
@@ -82,6 +105,15 @@ class LiveRun:
     scenario_id: str
     mode: str
     run_state: verb_engine.RunState
+    # Real per-run budget (game-clock seconds). Defaults from
+    # CAP_SECONDS_BY_MODE at start_run; scenario "Full length" overrides.
+    cap_seconds: int = 0
+    # Solo Action Console length choice; persisted on ActionRun at finalize.
+    # Daily/teaser/race stay "compressed". Not Org Tabletop.
+    length_mode: str = LENGTH_COMPRESSED
+    # Effective compression applied at compile (1.0 for Full; scenario's
+    # stored ratio for Compressed). Persisted for historical honesty.
+    compression_ratio: Optional[float] = None
     # Set only for mode="daily" runs — carried through to the persisted
     # ActionRun row in finalize() (migration 0030's daily_challenge_id).
     daily_challenge_id: Optional[str] = None
@@ -90,10 +122,6 @@ class LiveRun:
     ghost_opponent_run_id: Optional[str] = None
     real_started_at: datetime = field(default_factory=datetime.utcnow)
     last_activity_at: datetime = field(default_factory=datetime.utcnow)
-
-    @property
-    def cap_seconds(self) -> int:
-        return CAP_SECONDS_BY_MODE[self.mode]
 
 
 class ActionRunStore:
@@ -112,13 +140,22 @@ class ActionRunStore:
         self, run_id: str, user_id: Optional[str], scenario_id: str, mode: str, compiled: CompiledRun,
         daily_challenge_id: Optional[str] = None,
         ghost_opponent_run_id: Optional[str] = None,
+        cap_seconds: Optional[int] = None,
+        length_mode: str = LENGTH_COMPRESSED,
+        compression_ratio: Optional[float] = None,
     ) -> LiveRun:
+        effective_cap = (
+            cap_seconds if cap_seconds is not None else CAP_SECONDS_BY_MODE[mode]
+        )
         live = LiveRun(
             run_id=run_id,
             user_id=user_id,
             scenario_id=scenario_id,
             mode=mode,
             run_state=verb_engine.new_run(compiled),
+            cap_seconds=effective_cap,
+            length_mode=length_mode,
+            compression_ratio=compression_ratio,
             daily_challenge_id=daily_challenge_id,
             ghost_opponent_run_id=ghost_opponent_run_id,
         )
@@ -230,6 +267,9 @@ class ActionRunStore:
             daily_challenge_id=live.daily_challenge_id,
             seed=run_state.compiled.seed,
             mode=live.mode,
+            length_mode=live.length_mode,
+            cap_seconds=live.cap_seconds,
+            compression_ratio=live.compression_ratio,
             action_log=list(run_state.action_log),
             score_breakdown=score_breakdown,
             total_score=score_breakdown["total_score"],

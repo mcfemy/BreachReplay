@@ -56,6 +56,33 @@ if ever wanted — not unfinished Phase 4 work.
 gate — existing users see the notice on first race/share; no separate retroactive
 consent flow needed.
 
+## Action Console length modes — open follow-ups (2026-09-07)
+
+Shipped: solo `POST /action-runs` accepts `length: compressed|full`
+(default compressed). Full = `estimated_minutes * 60` cap **and**
+`compression_ratio=1.0` at compile; Compressed keeps scenario ratio + 600s.
+`ActionRun` persists `length_mode` / `cap_seconds` / `compression_ratio`
+(migration `0050`). **Full is org-gated** (`User.organization_id`, same
+check as Teams/OrgUpload) — consumer library is compressed-only
+("10-minute run"). Daily 480, teaser, and Org Tabletop/SimulationSession
+are untouched. **Ghost races refuse Full-length ghosts** (400) rather than
+recompiling them compressed on the same seed.
+
+**Open — do not silently ignore:**
+
+1. ~~Ghost-race length matching.~~ **Resolved for safety (refuse Full
+   ghosts).** Optional later: inherit Full ghost ratio/cap so org players
+   can race Full-vs-Full; not required while Full stays org-gated and
+   races refuse those ghosts.
+
+2. **Score / speed-bonus comparability across lengths.**
+   `compute_score` speed bonus is `(cap_seconds - elapsed) * 2`. A Full
+   Colonial run (cap 2700) can earn a much larger speed bonus than the
+   same containment time on Compressed (cap 600). Leaderboards, XP, and
+   CMMC evidence comparisons must not treat these as the same scale
+   without an explicit policy (normalize by cap, separate boards, or
+   disable cross-length ranking).
+
 ## Phase 3 juice pass — sound, map/feed, public run page, share cards SHIPPED
 
 Spec §5 (`docs/BREACHREPLAY_GAME_OVERHAUL_SPEC.md`) "Juice pass + share

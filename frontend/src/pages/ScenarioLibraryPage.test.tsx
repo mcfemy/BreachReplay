@@ -21,7 +21,7 @@ const SCENARIOS = [
     title: "Colonial Pipeline",
     industry_vertical: "energy",
     difficulty: "practitioner",
-    estimated_minutes: 10,
+    estimated_minutes: 45,
     source_type: "cisa",
     source_reference: null,
     mitre_techniques: ["T1078"],
@@ -67,7 +67,7 @@ describe("ScenarioLibraryPage", () => {
     expect(await screen.findByText("Colonial Pipeline")).toBeInTheDocument();
   });
 
-  it("launches a scenario via POST /action-runs on click", async () => {
+  it("launches compressed via POST /action-runs — no Full length control", async () => {
     vi.mocked(api.post).mockResolvedValue({ run_id: "run-1" });
     const user = userEvent.setup();
     renderPage();
@@ -75,8 +75,14 @@ describe("ScenarioLibraryPage", () => {
     await user.click(await screen.findByText("Start Run →"));
 
     await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith("/action-runs", { scenario_id: "scn-1" }),
+      expect(api.post).toHaveBeenCalledWith("/action-runs", {
+        scenario_id: "scn-1",
+        length: "compressed",
+      }),
     );
+    expect(screen.queryByText(/Full length/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/tabletop/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/10-minute run/i)).toBeInTheDocument();
   });
 
   it("launches a ticker scenario via POST /action-runs on click", async () => {
