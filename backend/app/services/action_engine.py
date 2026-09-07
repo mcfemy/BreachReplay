@@ -497,11 +497,17 @@ def _place_iocs(
     return tuple(placements)
 
 
-def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
+def compile_scenario(
+    scenario: ScenarioLike,
+    seed: int,
+    *,
+    compression_ratio: Optional[float] = None,
+) -> CompiledRun:
     """Deterministically compile a Scenario (ORM instance or a plain dict
     with the same field names) plus a seed into a CompiledRun. Same
-    (scenario content, seed) always produces a byte-identical CompiledRun —
-    verified by tests/test_action_engine.py's determinism tests.
+    (scenario content, seed, effective compression_ratio) always produces
+    a byte-identical CompiledRun — verified by tests/test_action_engine.py's
+    determinism tests.
 
     Host namespace unification (docs/HOST_NAMESPACE_UNIFICATION_SPEC.md):
     hostnames the scenario's own authored content names (alert_sequence,
@@ -509,6 +515,12 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
     host_harvest.build_host_plan — instead of the network map generating a
     disconnected namespace of its own with no reliable mapping back to
     what the player actually read.
+
+    `compression_ratio` (keyword-only): when provided, overrides
+    Scenario.compression_ratio for this compile. Action Console "Full
+    length" mode passes 1.0 so the authored real-world timeline is not
+    squashed into the 10-minute compressed budget; omitted/None keeps
+    today's behavior (scenario field, defaulting to 1.0 for bare fixtures).
     """
     scenario_id = str(_field(scenario, "id", ""))
     archetype_key = _archetype_key_for_scenario(_field(scenario, "industry_vertical"))
@@ -539,7 +551,9 @@ def compile_scenario(scenario: ScenarioLike, seed: int) -> CompiledRun:
     # Scenario.compression_ratio (default 8.0 at the DB level) — see
     # _compress_seconds. Defaults to 1.0 (no scaling) for content that
     # doesn't carry the field at all, e.g. plain-dict test fixtures.
-    compression_ratio = _field(scenario, "compression_ratio", 1.0)
+    # Explicit override (Full length) wins when provided.
+    if compression_ratio is None:
+        compression_ratio = _field(scenario, "compression_ratio", 1.0)
 
     # Attack-path preference, in priority order: every host a hidden_ioc
     # names directly (guarantees that IOC's host lands on the attack path —

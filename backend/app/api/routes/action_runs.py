@@ -30,7 +30,7 @@ passthrough — see action_run_ghost.py / spec §6 correction):
 import html
 import secrets
 import uuid
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, Response
@@ -58,13 +58,21 @@ from app.services.action_run_share import (
     share_card_extras,
 )
 from app.services.action_run_share_card import build_share_card_text, render_share_card_png
-from app.services.action_run_store import CAP_SECONDS_BY_MODE, action_run_store
+from app.services.action_run_store import (
+    LENGTH_COMPRESSED,
+    action_run_store,
+    resolve_scenario_length_params,
+)
 
 router = APIRouter(prefix="/action-runs", tags=["action-runs"])
 
 
 class ActionRunCreateRequest(BaseModel):
     scenario_id: str
+    # Solo Action Console length. Default compressed = today's 10-min behavior.
+    # "full" = estimated_minutes budget + uncompressed timeline (ratio 1.0).
+    # Not Org Tabletop — never use the word tabletop on this consumer path.
+    length: Literal["compressed", "full"] = "compressed"
 
 
 class RaceStartRequest(BaseModel):
@@ -98,11 +106,27 @@ async def create_action_run(
     # action_engine.py's own compile_scenario, which must stay deterministic
     # given a seed (same seed, same run, which Phase 4 ghosts depend on).
     seed = secrets.randbelow(2**31 - 1)
-    compiled = action_engine.compile_scenario(scenario, seed)
+
+    length_mode, cap_seconds, ratio_override = resolve_scenario_length_params(
+        payload.length, scenario.estimated_minutes,
+    )
+    if ratio_override is not None:
+        compiled = action_engine.compile_scenario(
+            scenario, seed, compression_ratio=ratio_override,
+        )
+        effective_ratio = ratio_override
+    else:
+        compiled = action_engine.compile_scenario(scenario, seed)
+        effective_ratio = scenario.compression_ratio
 
     run_id = str(uuid.uuid4())
     mode = "scenario"
-    await action_run_store.start_run(run_id, current_user.id, scenario.id, mode, compiled)
+    live = await action_run_store.start_run(
+        run_id, current_user.id, scenario.id, mode, compiled,
+        cap_seconds=cap_seconds,
+        length_mode=length_mode,
+        compression_ratio=effective_ratio,
+    )
 
     return {
         # The live-store key AND the WS connection id (/ws/run/{run_id}) —
@@ -119,7 +143,8 @@ async def create_action_run(
         "scenario_id": scenario.id,
         "seed": seed,
         "mode": mode,
-        "cap_seconds": CAP_SECONDS_BY_MODE[mode],
+        "length": live.length_mode,
+        "cap_seconds": live.cap_seconds,
     }
 
 
@@ -206,13 +231,17 @@ async def start_ghost_race(
         raise HTTPException(status_code=404, detail="Ghost not found")
 
     # Seed stays server-side until this create response for the racer's own run.
+    # Length matching vs the ghost's Full/Compressed choice is a known follow-up
+    # (docs/BACKLOG.md); races stay on the compressed default for now.
     seed = ghost_row.seed
     compiled = action_engine.compile_scenario(scenario, seed)
     run_id = str(uuid.uuid4())
     mode = "scenario"
-    await action_run_store.start_run(
+    live = await action_run_store.start_run(
         run_id, current_user.id, scenario.id, mode, compiled,
         ghost_opponent_run_id=ghost_row.id,
+        length_mode=LENGTH_COMPRESSED,
+        compression_ratio=scenario.compression_ratio,
     )
 
     return {
@@ -221,7 +250,8 @@ async def start_ghost_race(
         "scenario_id": scenario.id,
         "seed": seed,
         "mode": mode,
-        "cap_seconds": CAP_SECONDS_BY_MODE[mode],
+        "length": live.length_mode,
+        "cap_seconds": live.cap_seconds,
         "ghost": ghost_dto,
     }
 

@@ -22,6 +22,7 @@ async def test_create_action_run_for_an_approved_scenario(client, test_user, app
     body = resp.json()
     assert body["scenario_id"] == approved_scenario.id
     assert body["mode"] == "scenario"
+    assert body["length"] == "compressed"
     assert body["cap_seconds"] == 600
     assert isinstance(body["seed"], int)
     # A real gap found end-to-end on breachreplay.com: the WS run_id and
