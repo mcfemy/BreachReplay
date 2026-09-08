@@ -62,3 +62,49 @@ async def test_create_scenario_non_admin(client, test_user):
         },
     )
     assert response.status_code == 403
+
+
+async def test_list_and_get_include_real_world_stakes(client, test_user, db):
+    """Library case-file field must round-trip through list + detail APIs."""
+    from app.models.scenario import Scenario
+
+    stakes = "$4.4M ransom paid. 45% of East Coast fuel supply, shut down for days."
+    scenario = Scenario(
+        title="Colonial Pipeline Ransomware Attack",
+        description="Test description for library card.",
+        real_world_stakes=stakes,
+        source_type="manual",
+        source_reference="CISA-AA21-131A",
+        difficulty="expert",
+        status="approved",
+        is_private=False,
+        # list_scenarios filters out empty alert_sequence — match library shape.
+        alert_sequence=[
+            {
+                "timestamp": "+0m",
+                "severity": "critical",
+                "source_system": "SIEM",
+                "rule_id": "RULE-001",
+                "description": "Unusual VPN login",
+            }
+        ],
+    )
+    db.add(scenario)
+    await db.commit()
+    await db.refresh(scenario)
+
+    list_resp = await client.get("/api/v1/scenarios", headers=auth_headers(test_user["token"]))
+    assert list_resp.status_code == 200
+    listed = next(s for s in list_resp.json() if s["id"] == scenario.id)
+    assert listed["real_world_stakes"] == stakes
+    assert listed["source_reference"] == "CISA-AA21-131A"
+    assert listed["description"] == "Test description for library card."
+
+    detail_resp = await client.get(
+        f"/api/v1/scenarios/{scenario.id}",
+        headers=auth_headers(test_user["token"]),
+    )
+    assert detail_resp.status_code == 200
+    detail = detail_resp.json()
+    assert detail["real_world_stakes"] == stakes
+    assert detail["source_reference"] == "CISA-AA21-131A"

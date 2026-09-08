@@ -13,6 +13,10 @@ class Scenario(Base):
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=True)
+    # Phase 5 library case-file line — short verified real-world stakes for
+    # ScenarioLibraryPage (migration 0051). Nullable: private/draft scenarios
+    # and pre-0051 rows may lack one.
+    real_world_stakes: Mapped[str] = mapped_column(Text, nullable=True)
 
     source_type: Mapped[str] = mapped_column(SAEnum("cisa", "sec_8k", "hhs", "verizon_dbir", "private", "manual", name="source_type"), nullable=False)
     source_url: Mapped[str] = mapped_column(String(1000), nullable=True)

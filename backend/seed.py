@@ -25,6 +25,10 @@ COLONIAL_PIPELINE = {
         "and the decision to shut down 5,500 miles of pipeline. Twelve escalating decision "
         "gates track the real incident timeline from first anomaly to OT compromise."
     ),
+    # Verified public facts (CEO Blount / WSJ / AP; Colonial's own ~45% claim).
+    "real_world_stakes": (
+        "$4.4M ransom paid. 45% of East Coast fuel supply, shut down for days."
+    ),
     "source_type": "manual",
     "source_reference": "CISA-AA21-131A",
     "industry_vertical": "energy",
@@ -450,6 +454,10 @@ SOLARWINDS = {
         "stealthy 14-month dwell time, identify the dormant SUNBURST beacon, and make containment "
         "decisions with zero certainty about the full blast radius."
     ),
+    # SolarWinds SEC disclosure — ~18,000 customers downloaded trojanized Orion.
+    "real_world_stakes": (
+        "~18,000 organizations installed the trojanized Orion update."
+    ),
     "source_type": "manual",
     "source_reference": "CISA-AA20-352A",
     "industry_vertical": "technology",
@@ -777,6 +785,10 @@ MGM_GRAND = {
         "senior engineer via LinkedIn reconnaissance, and deployed ALPHV BlackCat ransomware. "
         "Teams navigate the social engineering vector, accelerating chaos, and a $100M+ business impact."
     ),
+    # MGM Form 8-K (Oct 2023) — ~$100M negative impact to Adjusted Property EBITDAR.
+    "real_world_stakes": (
+        "~$100M hit to quarterly earnings. Las Vegas systems dark for days."
+    ),
     "source_type": "manual",
     "source_reference": "MGM-2023-SEC-8K",
     "industry_vertical": "hospitality",
@@ -1044,6 +1056,10 @@ LOG4SHELL = {
         "an unknown blast radius across dozens of Java services, prioritize patching under impossible "
         "time pressure, and contain active exploitation attempts while the patch itself wasn't yet "
         "available."
+    ),
+    # Contrast Security / industry research: Log4j in ~64% of Java apps; critical RCE.
+    "real_world_stakes": (
+        "Critical RCE in Log4j — used by roughly two-thirds of Java apps worldwide."
     ),
     "source_type": "manual",
     "source_reference": "CVE-2021-44228",
@@ -1320,6 +1336,10 @@ NHS_WANNACRY = {
         "across unpatched Windows XP clinical systems, imaging machines going dark, A&E departments "
         "losing patient records, and the decision to divert ambulances mid-response. Uniquely: the "
         "kill switch domain changes everything if you know to allow it."
+    ),
+    # NAO / NHS England lessons learned — ~1/3 of trusts; thousands of appointments cancelled.
+    "real_world_stakes": (
+        "One third of NHS England trusts disrupted. Thousands of appointments cancelled."
     ),
     "source_type": "hhs",
     "source_reference": "NHS-WannaCry-NCSC-2017",
