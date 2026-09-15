@@ -19,11 +19,13 @@ const SCENARIOS = [
   {
     id: "scn-1",
     title: "Colonial Pipeline",
+    description: "Replay the May 2021 DarkSide ransomware attack.",
+    real_world_stakes: "$4.4M ransom paid. 45% of East Coast fuel supply, shut down for days.",
     industry_vertical: "energy",
     difficulty: "practitioner",
     estimated_minutes: 45,
     source_type: "cisa",
-    source_reference: null,
+    source_reference: "CISA-AA21-131A",
     mitre_techniques: ["T1078"],
     regulatory_frameworks: null,
     play_count: 120,
@@ -65,6 +67,18 @@ describe("ScenarioLibraryPage", () => {
   it("loads and renders the scenario list", async () => {
     renderPage();
     expect(await screen.findByText("Colonial Pipeline")).toBeInTheDocument();
+  });
+
+  it("renders CASE FILE badge and real-world stakes on each card", async () => {
+    renderPage();
+    expect(await screen.findByText(/CASE FILE · CISA-AA21-131A/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "$4.4M ransom paid. 45% of East Coast fuel supply, shut down for days.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/case study/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/training/i)).not.toBeInTheDocument();
   });
 
   it("launches compressed via POST /action-runs — no Full length control", async () => {

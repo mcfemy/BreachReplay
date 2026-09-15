@@ -47,6 +47,7 @@ class ScenarioCreate(BaseModel):
 
     title: str = Field(min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=5000)
+    real_world_stakes: Optional[str] = Field(default=None, max_length=500)
     source_type: SourceType
     source_url: Optional[str] = Field(default=None, max_length=2000)
     source_reference: Optional[str] = Field(default=None, max_length=500)
@@ -103,6 +104,7 @@ class ScenarioOut(BaseModel):
     id: str
     title: str
     description: Optional[str]
+    real_world_stakes: Optional[str] = None
     source_type: str
     source_reference: Optional[str]
     incident_date: Optional[datetime]

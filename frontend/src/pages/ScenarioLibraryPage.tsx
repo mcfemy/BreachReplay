@@ -6,6 +6,8 @@ import FreshIncidentTicker from "../components/FreshIncidentTicker";
 interface Scenario {
   id: string;
   title: string;
+  description: string | null;
+  real_world_stakes: string | null;
   industry_vertical: string | null;
   difficulty: string;
   estimated_minutes: number;
@@ -206,8 +208,13 @@ export default function ScenarioLibraryPage() {
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
             {scenarios.map((s) => (
               <div key={s.id} className="bg-breach-surface border border-breach-border rounded p-4 hover:border-breach-blue transition-all flex flex-col">
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-center gap-2">
+                <div className="flex items-start justify-between mb-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {s.source_reference && (
+                      <span className="text-[9px] text-breach-yellow uppercase tracking-widest border border-breach-yellow/40 px-1.5 py-0.5 rounded font-mono">
+                        CASE FILE · {s.source_reference}
+                      </span>
+                    )}
                     <span className="text-[9px] text-breach-muted uppercase tracking-widest border border-breach-border px-1.5 py-0.5 rounded">
                       {s.source_type.replace(/_/g, " ")}
                     </span>
@@ -217,10 +224,15 @@ export default function ScenarioLibraryPage() {
                       </span>
                     )}
                   </div>
-                  <span className={`text-[10px] font-bold uppercase tracking-wider ${SEVERITY_COLOR[s.difficulty] || "text-breach-muted"}`}>
+                  <span className={`text-[10px] font-bold uppercase tracking-wider shrink-0 ml-2 ${SEVERITY_COLOR[s.difficulty] || "text-breach-muted"}`}>
                     {s.difficulty}
                   </span>
                 </div>
+                {s.real_world_stakes && (
+                  <p className="text-sm font-bold text-breach-accent leading-snug mb-1.5">
+                    {s.real_world_stakes}
+                  </p>
+                )}
                 <h3 className="text-sm font-semibold text-breach-text mb-3 leading-snug flex-1">{s.title}</h3>
                 <div className="flex flex-wrap gap-1 mb-3">
                   {s.mitre_techniques?.slice(0, 4).map((t) => (
