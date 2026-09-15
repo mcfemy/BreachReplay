@@ -5,6 +5,19 @@ scope for the phase/item in progress when they were found. Not a general
 issue tracker — just the small set of things flagged mid-work worth not
 losing.
 
+## Certbot renewal failure alerting — no notification wired
+
+Found 2026-09-15 while fixing the breachreplay.com cert expiry outage
+(the Sep 13 expiry itself was root-caused to no renewal automation ever
+existing on the box — fixed via a new `certbot-renew.timer`, see
+`project_aws_deployment` deploy notes). No notification is wired if
+`certbot-renew.timer` ever fails going forward. Recommended:
+`--deploy-hook`/failure-path script publishing to the existing
+`breachreplay-alerts` SNS topic on non-zero exit. Needs confirming the
+instance IAM role has `sns:Publish` rights to that topic before
+building. Not urgent — the timer itself is `Persistent=true` and
+self-healing across reboots/scale-to-zero.
+
 ## First EBS snapshot restore drill — wait for DLM's first fire
 
 First EBS snapshot should exist after Sunday 23 August 2026 09:00 UTC
